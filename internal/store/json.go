@@ -74,14 +74,16 @@ func (s *Store) Save(state *State) error {
 	tmpName := tmpFile.Name()
 
 	defer func() {
-		_ = tmpFile.Close()
+		if tmpFile != nil {
+			_ = tmpFile.Close()
+		}
 		if _, err := os.Stat(tmpName); err == nil {
 			_ = os.Remove(tmpName)
 		}
 	}()
 
 	if err := tmpFile.Chmod(0600); err != nil {
-		return fmt.Errorf("failed to close temp file: %w", err)
+		return fmt.Errorf("failed to chmod temp file: %w", err)
 	}
 
 	if _, err := tmpFile.Write(data); err != nil {
@@ -94,6 +96,7 @@ func (s *Store) Save(state *State) error {
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
+	tmpFile = nil
 
 	if err := os.Rename(tmpName, s.filePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
