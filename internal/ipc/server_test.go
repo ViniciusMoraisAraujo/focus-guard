@@ -1,0 +1,204 @@
+package ipc
+
+import (
+	"encoding/json"
+	"net"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"focusguard/internal/scheduler"
+	"focusguard/internal/store"
+)
+
+type mockEnforcer struct{}
+
+func (m *mockEnforcer) BlockDomain(_ string, _ []string) error   { return nil }
+func (m *mockEnforcer) UnblockDomain(_ string, _ []string) error { return nil }
+func (m *mockEnforcer) Sync(_ map[string][]string) error         { return nil }
+
+func setupTestServer(t *testing.T) *Server {
+	t.Helper()
+
+	tmpDir := t.TempDir()
+	st, err := store.NewStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create test store: %v", err)
+	}
+
+	sched := scheduler.NewScheduler(st, &mockEnforcer{})
+	return NewServer(sched)
+}
+
+func executeRequest(t *testing.T, server *Server, req Request) Response {
+	t.Helper()
+
+	clientConn, serverConn := net.Pipe()
+	defer func() {
+		_ = clientConn.Close()
+	}()
+
+	go server.handleConnection(serverConn)
+
+	if err := json.NewEncoder(clientConn).Encode(req); err != nil {
+		t.Fatalf("failed to encode request: %v", err)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	return resp
+}
+
+func TestServer_NewServer(t *testing.T) {
+	server := setupTestServer(t)
+
+	if server == nil {
+		t.Fatal("expected NewServer to return a non-nil instance")
+	}
+	if server.scheduler == nil {
+		t.Error("expected scheduler to be set on server instance")
+	}
+}
+
+func TestServer_Stop_NilListener(t *testing.T) {
+	server := setupTestServer(t)
+
+	if err := server.Stop(); err != nil {
+		t.Errorf("expected Stop() to return nil when listener is uninitialized, got: %v", err)
+	}
+}
+
+func TestServer_HandleConnection_InvalidJSON(t *testing.T) {
+	server := setupTestServer(t)
+
+	clientConn, serverConn := net.Pipe()
+	defer func() {
+		_ = clientConn.Close()
+	}()
+
+	go server.handleConnection(serverConn)
+
+	if _, err := clientConn.Write([]byte("{invalid-json-payload\n")); err != nil {
+		t.Fatalf("failed to write raw data: %v", err)
+	}
+
+	var resp Response
+	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
+		t.Fatalf("failed to decode response: %v", err)
+	}
+
+	if resp.Success {
+		t.Error("expected response success to be false for invalid JSON payload")
+	}
+	if resp.Message != "Request invalid" {
+		t.Errorf("expected message %q, got %q", "Request invalid", resp.Message)
+	}
+}
+
+func TestServer_HandleConnection_UnsupportedAction(t *testing.T) {
+	server := setupTestServer(t)
+
+	req := Request{
+		Action: "delete",
+	}
+
+	resp := executeRequest(t, server, req)
+
+	if resp.Success {
+		t.Error("expected response success to be false for unsupported action")
+	}
+	expectedMsg := "Not suported action: delete"
+	if resp.Message != expectedMsg {
+		t.Errorf("expected message %q, got %q", expectedMsg, resp.Message)
+	}
+}
+
+func TestServer_HandleConnection_Block_InvalidDuration(t *testing.T) {
+	server := setupTestServer(t)
+
+	testCases := []struct {
+		name     string
+		duration string
+	}{
+		{name: "malformed duration string", duration: "invalid-time"},
+		{name: "negative duration value", duration: "-30m"},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			req := Request{
+				Action:   "block",
+				Domain:   "example.com",
+				Duration: tc.duration,
+			}
+
+			resp := executeRequest(t, server, req)
+
+			if resp.Success {
+				t.Errorf("expected request to fail for %s", tc.name)
+			}
+			if !strings.HasPrefix(resp.Message, "Duration invalid") {
+				t.Errorf("expected error message starting with 'Duration invalid', got %q", resp.Message)
+			}
+		})
+	}
+}
+
+func TestServer_HandleConnection_Block_Success(t *testing.T) {
+	server := setupTestServer(t)
+
+	req := Request{
+		Action:   "block",
+		Domain:   "example.com",
+		Duration: "1h",
+	}
+
+	resp := executeRequest(t, server, req)
+
+	if !resp.Success {
+		t.Fatalf("expected block request to succeed, got error: %s", resp.Message)
+	}
+
+	if !strings.Contains(resp.Message, "Domain example.com blocked") {
+		t.Errorf("expected success message containing domain confirmation, got %q", resp.Message)
+	}
+}
+
+func TestServer_HandleConnection_Status(t *testing.T) {
+	server := setupTestServer(t)
+
+	statusReq := Request{Action: "status"}
+	resp := executeRequest(t, server, statusReq)
+
+	if !resp.Success {
+		t.Fatalf("expected status request to succeed, got error: %s", resp.Message)
+	}
+	if len(resp.Blocks) != 0 {
+		t.Errorf("expected 0 active blocks initially, found %d", len(resp.Blocks))
+	}
+
+	blockReq := Request{
+		Action:   "block",
+		Domain:   "socialmedia.com",
+		Duration: "30m",
+	}
+	blockResp := executeRequest(t, server, blockReq)
+	if !blockResp.Success {
+		t.Fatalf("failed to set up active block: %s", blockResp.Message)
+	}
+
+	respAfterBlock := executeRequest(t, server, statusReq)
+
+	if !respAfterBlock.Success {
+		t.Fatalf("expected status request to succeed, got error: %s", respAfterBlock.Message)
+	}
+	if len(respAfterBlock.Blocks) != 1 {
+		t.Fatalf("expected 1 active block in status response, found %d", len(respAfterBlock.Blocks))
+	}
+	if respAfterBlock.Blocks[0].Domain != "socialmedia.com" {
+		t.Errorf("expected domain %q in active block, got %q", "socialmedia.com", respAfterBlock.Blocks[0].Domain)
+	}
+}
