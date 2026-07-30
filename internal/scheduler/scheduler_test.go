@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"errors"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -206,5 +207,233 @@ func TestScheduler_TimerExpiration(t *testing.T) {
 
 	if !stateRemoved {
 		t.Errorf("Expected %s to be removed from state.json after expiration", domain)
+	}
+}
+
+type syncFailingEnforcer struct {
+	*mockEnforcer
+}
+
+func (e *syncFailingEnforcer) Sync(_ map[string][]string) error {
+	return errors.New("sync failed: permission denied")
+}
+
+func TestScheduler_Start_SyncError(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	now := time.Now()
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			"active.com": {
+				Domain:      "active.com",
+				StartedAt:   now,
+				ExpiresAt:   now.Add(24 * time.Hour),
+				ResolvedIPs: []string{"1.2.3.4"},
+			},
+		},
+	}
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	enf := &syncFailingEnforcer{mockEnforcer: newMockEnforcer()}
+	sched := NewScheduler(st, enf)
+
+	err = sched.Start()
+	if err == nil {
+		t.Fatal("expected Start() to return an error when Sync() fails")
+	}
+	if err.Error() != "sync failed: permission denied" {
+		t.Errorf("expected 'sync failed: permission denied', got: %v", err)
+	}
+}
+
+func TestScheduler_Reconcile_ActiveBlocks(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			"active.com": {
+				Domain:      "active.com",
+				StartedAt:   now,
+				ExpiresAt:   now.Add(24 * time.Hour),
+				ResolvedIPs: []string{"1.2.3.4"},
+			},
+		},
+	}
+
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("Failed to prepare test state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() failed: %v", err)
+	}
+
+	enf.mu.Lock()
+	synced, exists := enf.syncedBlocks["active.com"]
+	enf.mu.Unlock()
+
+	if !exists {
+		t.Errorf("Expected active.com to be synced after Reconcile")
+	} else if len(synced) == 0 {
+		t.Errorf("Expected active.com to have IPs after Reconcile")
+	}
+}
+
+func TestScheduler_Reconcile_CleansExpired(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			"expired.com": {
+				Domain:      "expired.com",
+				StartedAt:   now.Add(-48 * time.Hour),
+				ExpiresAt:   now.Add(-24 * time.Hour),
+				ResolvedIPs: []string{"1.1.1.1"},
+			},
+		},
+	}
+
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("Failed to prepare test state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() failed: %v", err)
+	}
+
+	enf.mu.Lock()
+	_, unblocked := enf.unblockedDomains["expired.com"]
+	enf.mu.Unlock()
+
+	if !unblocked {
+		t.Errorf("Expected expired.com to be unblocked after Reconcile")
+	}
+
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Failed to load state: %v", err)
+	}
+
+	if _, exists := state.Blocks["expired.com"]; exists {
+		t.Errorf("Expected expired.com to be removed from state after Reconcile")
+	}
+}
+
+func TestScheduler_Reconcile_EmptyState(t *testing.T) {
+	sched, _, _ := setupTestScheduler(t)
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() on empty state should not error: %v", err)
+	}
+}
+
+func TestScheduler_Reconcile_MixedBlocks(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			"expired.com": {
+				Domain:      "expired.com",
+				StartedAt:   now.Add(-48 * time.Hour),
+				ExpiresAt:   now.Add(-24 * time.Hour),
+				ResolvedIPs: []string{"1.1.1.1"},
+			},
+			"active.com": {
+				Domain:      "active.com",
+				StartedAt:   now,
+				ExpiresAt:   now.Add(24 * time.Hour),
+				ResolvedIPs: []string{"2.2.2.2"},
+			},
+		},
+	}
+
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("Failed to prepare test state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() failed: %v", err)
+	}
+
+	enf.mu.Lock()
+	_, unblocked := enf.unblockedDomains["expired.com"]
+	_, synced := enf.syncedBlocks["active.com"]
+	enf.mu.Unlock()
+
+	if !unblocked {
+		t.Errorf("Expected expired.com to be unblocked")
+	}
+	if !synced {
+		t.Errorf("Expected active.com to be synced")
+	}
+
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Failed to load state: %v", err)
+	}
+
+	if len(state.Blocks) != 1 {
+		t.Errorf("Expected exactly 1 block in state after Reconcile, got %d", len(state.Blocks))
+	}
+	if _, exists := state.Blocks["expired.com"]; exists {
+		t.Errorf("Expected expired.com to be removed from state")
+	}
+}
+
+func TestScheduler_PeriodicIPRefresh(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+	domain := "localhost"
+
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			domain: {
+				Domain:      domain,
+				StartedAt:   now,
+				ExpiresAt:   now.Add(1 * time.Hour),
+				ResolvedIPs: []string{"192.0.2.1"},
+			},
+		},
+	}
+
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("Failed to prepare test state: %v", err)
+	}
+
+	go sched.startPeriodicIPRefresh(20 * time.Millisecond)
+
+	updated := waitForCondition(2*time.Second, func() bool {
+		state, err := st.Load()
+		if err != nil {
+			return false
+		}
+		b, ok := state.Blocks[domain]
+		return ok && len(b.ResolvedIPs) > 1
+	})
+
+	if !updated {
+		t.Errorf("Expected periodic refresh worker to aggregate newly resolved IPs for %s", domain)
+	}
+
+	enf.mu.Lock()
+	ips, exists := enf.blockedDomains[domain]
+	enf.mu.Unlock()
+
+	if !exists || len(ips) <= 1 {
+		t.Errorf("Expected enforcer to receive refreshed IPs for %s", domain)
 	}
 }
