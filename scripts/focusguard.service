@@ -1,0 +1,15 @@
+[Unit]
+Description=FocusGuard Daemon
+Documentation=https://github.com/focusguard
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/focusguard-daemon
+Restart=always
+RestartSec=3
+WatchdogSec=30
+NotifyAccess=main
+
+[Install]
+WantedBy=multi-user.target
