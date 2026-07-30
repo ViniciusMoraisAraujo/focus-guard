@@ -17,34 +17,104 @@
 - 💾 **Persistência de estado** — Armazena bloqueios em JSON com gravação atômica
 - 🔄 **Arquitetura Cliente-Servidor** — Daemon em background com IPC via Unix socket
 - 🐳 **Systemd Watchdog** — Suporte a health check via `NOTIFY_SOCKET`
-- 🪟 **Suporte Windows** — Firewall via `netsh advfirewall` + edição do `hosts`
+- 🪟 **Serviço Windows nativo** — Roda como serviço Windows sem console visível
+- 👁️ **File Watcher** — Monitora `/etc/hosts` em tempo real com `fsnotify` e reaplica regras se detectar violação
+
+---
+
+## Build
+
+```bash
+# Build tudo (usa Makefile)
+make build
+
+# Ou manualmente
+go build -o bin/focusguard.exe ./cmd/focusguard
+go build -o bin/focusguard-daemon.exe ./cmd/focusguard-daemon
+```
+
+> No Linux, os binários não terão a extensão `.exe`.
 
 ---
 
 ## Instalação
 
-### Pré-requisitos
+### Windows — Serviço nativo
 
-- Go 1.26.5 ou superior
-- Linux com `iptables`/`ip6tables` ou Windows
-- Acesso root/admin (necessário para firewall e edição do `hosts`)
+O daemon roda como um **serviço Windows legítimo** (gerenciado pelo Service Control Manager), sem console visível.
 
-### Build
+#### Via CLI (recomendado)
 
-```bash
-git clone https://github.com/seu-usuario/focusguard.git
-cd focusguard
-go build ./...
+```powershell
+# Como Administrador:
+.\bin\focusguard.exe install
 ```
 
-### Binários
+Isso cria o serviço, copia os binários e inicia o daemon automaticamente.
+
+#### Via PowerShell script
+
+```powershell
+# Como Administrador:
+.\scripts\install-daemon.ps1 install
+```
+
+#### Manualmente com `sc.exe`
+
+```powershell
+# Como Administrador:
+sc create FocusGuard binPath="C:\caminho\completo\focusguard-daemon.exe" start=auto displayname="FocusGuard Daemon"
+sc start FocusGuard
+```
+
+#### Gerenciar o serviço
+
+```powershell
+# Status
+sc query FocusGuard
+
+# Parar
+sc stop FocusGuard
+
+# Iniciar
+sc start FocusGuard
+
+# Remover
+.\bin\focusguard.exe uninstall
+# ou
+sc stop FocusGuard
+sc delete FocusGuard
+```
+
+> ✅ O daemon não mostra console — roda em segundo plano como serviço Windows legítimo.
+> ⚠️ Todos os comandos de instalação/gerenciamento exigem **Administrador**.
+
+### Linux — Systemd
 
 ```bash
-# Daemon (deve rodar como root/admin)
-go build -o focusguard-daemon ./cmd/focusguard-daemon/
+# Via CLI (recomendado)
+sudo make install
+# ou
+sudo ./bin/focusguard install
 
-# CLI
-go build -o focusguard ./cmd/focusguard/
+# Verificar status
+systemctl status focusguard
+
+# Parar
+sudo systemctl stop focusguard
+
+# Remover
+sudo make uninstall
+```
+
+#### Manualmente
+
+```bash
+# Copiar service file
+sudo cp scripts/focusguard.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable focusguard
+sudo systemctl start focusguard
 ```
 
 ---
@@ -70,18 +140,35 @@ Navegue pelos bloqueios ativos, adicione novos bloqueios e acompanhe o tempo res
 ### Linha de Comando
 
 ```bash
-# Bloquear um domínio
+# Bloquear um domínio (requer daemon rodando)
 focusguard block twitter.com --duration 4h
 focusguard block youtube.com 30m
 
 # Ver status dos bloqueios
 focusguard status
 
+# Instalar/remover da inicialização automática
+focusguard install
+focusguard uninstall
+
 # Modo interativo
 focusguard interactive
+focusguard              # (sem argumentos também abre a TUI)
 ```
 
-> ⚠️ O daemon (`focusguard-daemon`) precisa estar rodando para que os comandos funcionem.
+> ⚠️ O daemon (`focusguard-daemon`) precisa estar rodando para que `block` e `status` funcionem.
+
+### Makefile
+
+```bash
+make build       # Compila CLI e daemon em ./bin/
+make install     # Build + instala como serviço (Windows: sc, Linux: systemd)
+make uninstall   # Remove da inicialização
+make test        # Executa todos os testes
+make clean       # Remove artefatos de build
+make fmt         # Formata o código Go
+make tidy        # go mod tidy
+```
 
 ---
 
@@ -89,41 +176,51 @@ focusguard interactive
 
 ```
 focusguard/
+├── Makefile                       # Build, test, install, uninstall
+├── scripts/
+│   ├── install-daemon.ps1         # Instalação Windows via PowerShell
+│   └── focusguard.service         # Unit file systemd para Linux
 ├── cmd/
-│   ├── focusguard/              # CLI do usuário
-│   │   └── main.go                  # Entrada: TUI + comandos (block, status)
-│   └── focusguard-daemon/       # Serviço em background
-│       └── main.go                  # Inicializa store, enforcer, scheduler, IPC
+│   ├── focusguard/                # CLI do usuário
+│   │   └── main.go                # Entrada: TUI + comandos (block, status, install, uninstall)
+│   └── focusguard-daemon/         # Serviço em background
+│       ├── main.go                # Inicialização do daemon (store, enforcer, scheduler, IPC)
+│       ├── service_windows.go     # Wrapper de serviço Windows (golang.org/x/sys/windows/svc)
+│       └── service_other.go       # Stub para Linux/macOS
 ├── internal/
-│   ├── policy/                  # Modelo de dados e regras de negócio
-│   │   ├── policy.go                # Block, IsActive, CanUnblock, RemainingTime
+│   ├── autostart/                 # Gerenciamento de inicialização automática
+│   │   ├── autostart.go           # Dispatcher por plataforma + IsInstalled()
+│   │   ├── autostart_svc.go       # Windows: sc create/delete/query
+│   │   └── autostart_systemd.go   # Linux: systemd service + systemctl
+│   ├── policy/                    # Modelo de dados e regras de negócio
+│   │   ├── policy.go              # Block, IsActive, CanUnblock, RemainingTime
 │   │   └── policy_test.go
-│   ├── store/                   # Persistência de estado em JSON
-│   │   ├── json.go                  # Store com gravação atômica (temp file + rename)
+│   ├── store/                     # Persistência de estado em JSON
+│   │   ├── json.go                # Store com gravação atômica (temp file + rename)
 │   │   └── json_test.go
-│   ├── enforcer/                # Aplicação das regras no SO
-│   │   ├── enforcer.go              # Interface Enforcer + ResolveIPs
-│   │   ├── enforcer_linux.go        # Implementação Linux (hosts + iptables)
-│   │   ├── enforcer_linux_test.go
-│   │   ├── enforcer_windows.go      # Implementação Windows (hosts + netsh)
-│   │   └── enforcer_windows_test.go
-│   ├── scheduler/               # Gerenciamento de timers e expiração
-│   │   ├── scheduler.go             # Block, timer, refresh periódico de IPs
+│   ├── enforcer/                  # Aplicação das regras no SO
+│   │   ├── enforcer.go            # Interface Enforcer + ResolveIPs
+│   │   ├── enforcer_linux.go      # Implementação Linux (hosts + iptables)
+│   │   ├── enforcer_windows.go    # Implementação Windows (hosts + netsh)
+│   │   └── *test.go
+│   ├── scheduler/                 # Gerenciamento de timers e expiração
+│   │   ├── scheduler.go           # Block, timer, refresh periódico de IPs
 │   │   └── scheduler_test.go
-│   ├── ipc/                     # Comunicação cliente-servidor
-│   │   ├── ipc.go                   # Request/Response (JSON sobre Unix socket)
-│   │   ├── client.go                # Cliente IPC
-│   │   ├── server.go                # Servidor IPC
-│   │   ├── ipc_linux.go             # Unix socket (/run/focusguard.sock)
-│   │   ├── ipc_linux_test.go
-│   │   ├── ipc_windows.go           # Unix socket (%PROGRAMDATA%/FocusGuard/)
-│   │   ├── ipc_windows_test.go
-│   │   └── server_test.go
-│   ├── tui/                     # Interface interativa (Bubble Tea)
-│   │   ├── tui.go                   # Modelo TUI com tabela + formulário
+│   ├── hostswatch/                # File watcher para /etc/hosts
+│   │   ├── hostswatch.go          # Monitora alterações com fsnotify, reaplica bloqueios
+│   │   └── hostswatch_test.go
+│   ├── ipc/                       # Comunicação cliente-servidor
+│   │   ├── ipc.go                 # Request/Response (JSON sobre Unix socket)
+│   │   ├── client.go              # Cliente IPC
+│   │   ├── server.go              # Servidor IPC
+│   │   ├── ipc_linux.go           # Unix socket (/run/focusguard.sock)
+│   │   ├── ipc_windows.go         # Unix socket (%PROGRAMDATA%/FocusGuard/)
+│   │   └── *test.go
+│   ├── tui/                       # Interface interativa (Bubble Tea)
+│   │   ├── tui.go                 # Modelo TUI com tabela + formulário
 │   │   └── tui_test.go
-│   └── watchdog/                # Systemd watchdog
-│       ├── watchdog.go              # Notificações via NOTIFY_SOCKET
+│   └── watchdog/                  # Systemd watchdog
+│       ├── watchdog.go            # Notificações via NOTIFY_SOCKET
 │       └── watchdog_test.go
 └── go.mod
 ```
@@ -143,7 +240,33 @@ CLI (focusguard) ←→ Daemon (focusguard-daemon)
                            │       │
                        /etc/hosts  Firewall
                        (hosts)   (iptables/netsh)
+
+                          [HostsWatcher]
+                        (fsnotify /etc/hosts)
+                         │ se detectar violação
+                         ▼
+                     reaplica bloqueios
 ```
+
+### Windows Service
+
+No Windows, o daemon usa `golang.org/x/sys/windows/svc` para rodar como serviço nativo:
+
+```
+Service Control Manager (services.msc)
+       │
+       ▼
+svc.Run("FocusGuard", handler)
+       │
+       ├─ Inicia runDaemon() em goroutine
+       ├─ Escuta STOP/SHUTDOWN do SCM
+       └─ Fecha serviceStopCh → runDaemon() para o servidor IPC
+```
+
+- **Sem console visível** — roda em segundo plano
+- **Inicia com o sistema** — `start=auto`
+- **Gerenciável** — `sc start/stop/query FocusGuard`
+- **Fallback**: Se não detectar o SCM, roda em modo console (útil para debug)
 
 ---
 
@@ -159,12 +282,13 @@ Interface interativa construída com [Bubble Tea](https://github.com/charmbracel
 
 ### CLI (`cmd/focusguard/`)
 
-Comandos disponíveis:
 | Comando | Descrição |
 |---------|-----------|
 | `focusguard` | Abre modo interativo (TUI) |
 | `focusguard block <domínio> --duration <tempo>` | Bloqueia um domínio |
 | `focusguard status` | Lista bloqueios ativos |
+| `focusguard install` | Instala daemon como serviço de inicialização |
+| `focusguard uninstall` | Remove daemon da inicialização |
 | `focusguard interactive` | Abre modo interativo (TUI) |
 
 ### Daemon (`cmd/focusguard-daemon/`)
@@ -174,6 +298,27 @@ Serviço em background que:
 - Reconcilia bloqueios salvos com o estado atual do sistema
 - Expõe servidor IPC para comunicação com a CLI
 - Mantém timers de expiração e refresh periódico de IPs
+- Executa como **serviço Windows** (sem console) ou **processo Linux** com systemd
+
+### Autostart (`internal/autostart/`)
+
+Gerencia a inicialização automática do daemon:
+
+| Plataforma | Comando | Descrição |
+|------------|---------|-----------|
+| Windows | `sc create FocusGuard binPath=...` | Cria serviço Windows |
+| Windows | `sc delete FocusGuard` | Remove serviço Windows |
+| Windows | `sc query FocusGuard` | Verifica se serviço existe |
+| Linux | Cria `/etc/systemd/system/focusguard.service` | Cria unit systemd |
+| Linux | `systemctl daemon-reload` + `enable` + `start` | Ativa e inicia o serviço |
+
+### HostsWatcher (`internal/hostswatch/`)
+
+Monitora o arquivo `hosts` em tempo real usando `fsnotify`:
+- Detecta edições externas (com `sudo`, por exemplo)
+- Aplica debounce para evitar múltiplas reações a uma mesma alteração
+- Reaplica bloqueios automaticamente se detectar violação
+- Roda em background no daemon
 
 ### Scheduler (`internal/scheduler/`)
 
@@ -182,6 +327,7 @@ Gerencia o ciclo de vida dos bloqueios:
 - `Start()` — Reconcilia estado salvo na inicialização do daemon
 - `onExpire()` — Remove bloqueio quando o tempo expira
 - `startPeriodicIPRefresh()` — Atualiza IPs periodicamente (a cada 15 min)
+- `HasActiveBlocks()` — Verifica se há bloqueios ativos (usado para bloquear shutdown)
 
 ### Enforcer (`internal/enforcer/`)
 
@@ -213,6 +359,8 @@ Integração com systemd:
 ```bash
 # Rodar todos os testes
 go test ./...
+# ou
+make test
 
 # Rodar com cobertura
 go test -cover ./...
@@ -226,32 +374,36 @@ go test ./internal/scheduler/... -v
 
 | Pacote | Testes |
 |--------|--------|
+| `autostart` | Instalação/desinstalação Windows (sc.exe) e Linux (systemd), IsInstalled, erros de plataforma |
 | `policy` | Ciclo de vida do Block (IsActive, CanUnblock, RemainingTime) |
 | `store` | Save e Load com gravação atômica |
 | `enforcer` | ResolveIPs, hosts file operations, iptables bin selection |
 | `ipc` | Listen/Dial, server handleConnection, invalid JSON, unsupported action |
 | `scheduler` | Block/List, boot reconciliation, timer expiration, periodic IP refresh |
+| `hostswatch` | New, detectTamper (intact, missing, partial), Start/Stop, eventLoop, debounce |
 | `watchdog` | New() config, sendNotification, Start() com health check |
 | `tui` | Model Init/Update/View, key handling, state transitions, messages |
+| `cmd/focusguard` | printUsage, handleBlockCommand, handleStatusCommand, main com flags, runInteractive |
 
 ---
 
 ## Plataformas Suportadas
 
-### ✅ Linux
+### 🐧 Linux
 
-Implementação completa com:
 - Edição do `/etc/hosts` com entradas marcadas (`# FOCUSGUARD:`)
 - Regras `iptables` e `ip6tables` para IPv4 e IPv6
 - Unix socket em `/run/focusguard.sock`
+- Systemd service com watchdog
 - Requer privilégios root (`sudo`)
 
-### ✅ Windows
+### 🪟 Windows
 
-Implementação completa com:
 - Edição do `hosts` em `C:\Windows\System32\drivers\etc\hosts`
 - Regras de firewall via `netsh advfirewall`
 - Unix socket em `%PROGRAMDATA%/FocusGuard/focusguard.sock`
+- **Serviço Windows nativo** (sem console visível) via `golang.org/x/sys/windows/svc`
+- Gerenciável via `sc.exe` ou `services.msc`
 - Requer privilégios de administrador
 
 ---
