@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net"
 	"reflect"
+	"strings"
 	"testing"
 )
 
@@ -180,5 +181,88 @@ func TestHeaderMarker_Value(t *testing.T) {
 	expected := "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
 	if HeaderMarker != expected {
 		t.Errorf("HeaderMarker = %q, want %q", HeaderMarker, expected)
+	}
+}
+
+func TestDoHProviders_NoDuplicateIPs(t *testing.T) {
+	seen := make(map[string]string)
+	for _, p := range DoHProviders {
+		for _, ip := range p.IPs {
+			if existing, ok := seen[ip]; ok {
+				t.Errorf("IP %s aparece em dois provedores: %s e %s", ip, existing, p.Name)
+			}
+			seen[ip] = p.Name
+		}
+	}
+}
+
+func TestDoHProviders_HaveNonEmptyName(t *testing.T) {
+	for _, p := range DoHProviders {
+		if p.Name == "" {
+			t.Error("DoHProvider with empty name found")
+		}
+		if p.Port <= 0 {
+			t.Errorf("DoHProvider %s has invalid port %d", p.Name, p.Port)
+		}
+	}
+}
+
+func TestDoHProviders_DoTHasNoIPs(t *testing.T) {
+	for _, p := range DoHProviders {
+		if p.IsDoT && len(p.IPs) > 0 {
+			t.Errorf("DoT provider %s should not have IPs (block by port only)", p.Name)
+		}
+	}
+}
+
+func TestDoHProviders_DoHHasIPs(t *testing.T) {
+	for _, p := range DoHProviders {
+		if !p.IsDoT && len(p.IPs) == 0 {
+			t.Errorf("DoH provider %s has no IPs", p.Name)
+		}
+	}
+}
+
+func TestDoHProviders_DoTHasProtocol(t *testing.T) {
+	for _, p := range DoHProviders {
+		if !p.IsDoT {
+			continue
+		}
+		if p.Protocol == "" {
+			t.Errorf("DoT provider %s must have Protocol set", p.Name)
+		}
+		if p.Protocol != "tcp" && p.Protocol != "udp" {
+			t.Errorf("DoT provider %s has invalid Protocol %q (expected tcp or udp)", p.Name, p.Protocol)
+		}
+		if strings.Contains(p.Name, strings.ToUpper(p.Protocol)) ||
+			strings.Contains(p.Name, p.Protocol) {
+			continue
+		}
+		t.Errorf("DoT provider %s Protocol %q does not match name", p.Name, p.Protocol)
+	}
+}
+
+func TestDoHProviders_DoHProtocolIsEmpty(t *testing.T) {
+	for _, p := range DoHProviders {
+		if p.IsDoT {
+			continue // DoT precisa de protocolo
+		}
+		if p.Protocol != "" {
+			t.Errorf("DoH provider %s should have empty Protocol (uses remoteip:port on tcp), got %q",
+				p.Name, p.Protocol)
+		}
+	}
+}
+
+func TestDoHProviders_DoTNameMatchesProtocol(t *testing.T) {
+	for _, p := range DoHProviders {
+		if !p.IsDoT {
+			continue
+		}
+		expectedName := "DoT_" + strings.ToUpper(p.Protocol)
+		if p.Name != expectedName {
+			t.Errorf("DoT provider with Protocol %q should have Name %q, got %q",
+				p.Protocol, expectedName, p.Name)
+		}
 	}
 }

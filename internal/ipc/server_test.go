@@ -16,6 +16,8 @@ type mockEnforcer struct{}
 func (m *mockEnforcer) BlockDomain(_ string, _ []string) error   { return nil }
 func (m *mockEnforcer) UnblockDomain(_ string, _ []string) error { return nil }
 func (m *mockEnforcer) Sync(_ map[string][]string) error         { return nil }
+func (m *mockEnforcer) BlockDoH() error                          { return nil }
+func (m *mockEnforcer) UnblockDoH() error                        { return nil }
 
 func setupTestServer(t *testing.T) *Server {
 	t.Helper()

@@ -50,6 +50,9 @@ func (m *mockEnforcer) Sync(activeBlocks map[string][]string) error {
 	return nil
 }
 
+func (m *mockEnforcer) BlockDoH() error   { return nil }
+func (m *mockEnforcer) UnblockDoH() error { return nil }
+
 func setupTestScheduler(t *testing.T) (*Scheduler, *mockEnforcer, *store.Store) {
 	t.Helper()
 

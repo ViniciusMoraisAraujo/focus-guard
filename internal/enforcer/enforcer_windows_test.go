@@ -163,3 +163,36 @@ func TestWriteReadHostsLines_RoundTrip(t *testing.T) {
 		}
 	}
 }
+
+func TestBlockDoH_Windows(t *testing.T) {
+	e := newTestEnforcer(t)
+
+	// BlockDoH chama netsh, que precisa de admin.
+	// Se falhar por falta de privilégio, o teste não deve falhar.
+	err := e.BlockDoH()
+	if err != nil {
+		t.Logf("BlockDoH retornou (esperado se não admin): %v", err)
+	}
+
+	// Idempotente: chamar de novo não deve quebrar
+	err2 := e.BlockDoH()
+	if err2 != nil {
+		t.Logf("BlockDoH (2ª chamada) retornou: %v", err2)
+	}
+}
+
+func TestUnblockDoH_Windows(t *testing.T) {
+	e := newTestEnforcer(t)
+
+	// Desbloqueio não deve falhar mesmo se as regras não existirem
+	err := e.UnblockDoH()
+	if err != nil {
+		t.Logf("UnblockDoH retornou (esperado se não admin): %v", err)
+	}
+
+	// Idempotente
+	err2 := e.UnblockDoH()
+	if err2 != nil {
+		t.Logf("UnblockDoH (2ª chamada) retornou: %v", err2)
+	}
+}

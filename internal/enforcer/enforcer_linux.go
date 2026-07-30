@@ -264,3 +264,119 @@ func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 	}
 	return nil
 }
+
+// ─── DoH / DoT Blocking ──────────────────────────────────────────────────────
+
+func (e *linuxEnforcer) BlockDoH() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := checkRoot(); err != nil {
+		return err
+	}
+
+	for _, provider := range DoHProviders {
+		if err := e.addIptablesDoHRule(provider); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *linuxEnforcer) UnblockDoH() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := checkRoot(); err != nil {
+		return err
+	}
+
+	for _, provider := range DoHProviders {
+		if err := e.removeIptablesDoHRule(provider); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (e *linuxEnforcer) addIptablesDoHRule(provider DoHProvider) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if provider.IsDoT {
+		// Bloqueio global da porta (DoT) — usa o protocolo explícito do provider
+		checkCmd := exec.CommandContext(ctx, "iptables", "-C", "OUTPUT", "-p", provider.Protocol,
+			"--dport", fmt.Sprintf("%d", provider.Port), "-j", "DROP")
+		if err := checkCmd.Run(); err == nil {
+			return nil // já existe
+		}
+
+		addCmd := exec.CommandContext(ctx, "iptables", "-A", "OUTPUT", "-p", provider.Protocol,
+			"--dport", fmt.Sprintf("%d", provider.Port), "-j", "DROP")
+		if out, err := addCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("iptables DoT block falhou para %s: %w (%s)",
+				provider.Name, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	// Bloqueio de IPs específicos na porta 443 (DoH)
+	for _, ip := range provider.IPs {
+		bin, err := iptablesBinFor(ip)
+		if err != nil {
+			continue
+		}
+
+		// Check if rule exists
+		checkCmd := exec.CommandContext(ctx, bin, "-C", "OUTPUT", "-d", ip,
+			"-p", "tcp", "--dport", fmt.Sprintf("%d", provider.Port), "-j", "DROP")
+		if err := checkCmd.Run(); err == nil {
+			continue
+		}
+
+		addCmd := exec.CommandContext(ctx, bin, "-A", "OUTPUT", "-d", ip,
+			"-p", "tcp", "--dport", fmt.Sprintf("%d", provider.Port), "-j", "DROP")
+		if out, err := addCmd.CombinedOutput(); err != nil {
+			return fmt.Errorf("iptables DoH block falhou para %s (%s): %w (%s)",
+				provider.Name, ip, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}
+
+func (e *linuxEnforcer) removeIptablesDoHRule(provider DoHProvider) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+
+	if provider.IsDoT {
+		// Usa o protocolo explícito do provider — sem loop
+		cmd := exec.CommandContext(ctx, "iptables", "-D", "OUTPUT", "-p", provider.Protocol,
+			"--dport", fmt.Sprintf("%d", provider.Port), "-j", "DROP")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "does a matching rule exist") {
+				return nil
+			}
+			return fmt.Errorf("iptables DoT remove falhou para %s: %w (%s)",
+				provider.Name, err, strings.TrimSpace(string(out)))
+		}
+		return nil
+	}
+
+	for _, ip := range provider.IPs {
+		bin, err := iptablesBinFor(ip)
+		if err != nil {
+			continue
+		}
+
+		cmd := exec.CommandContext(ctx, bin, "-D", "OUTPUT", "-d", ip,
+			"-p", "tcp", "--dport", fmt.Sprintf("%d", provider.Port), "-j", "DROP")
+		if out, err := cmd.CombinedOutput(); err != nil {
+			if strings.Contains(string(out), "does a matching rule exist") {
+				continue
+			}
+			return fmt.Errorf("iptables DoH remove falhou para %s (%s): %w (%s)",
+				provider.Name, ip, err, strings.TrimSpace(string(out)))
+		}
+	}
+	return nil
+}

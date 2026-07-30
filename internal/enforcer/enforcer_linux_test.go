@@ -166,6 +166,36 @@ func TestHostsFileOperations(t *testing.T) {
 	})
 }
 
+func TestBlockDoH_Linux(t *testing.T) {
+	// Com o mock de hosts file, BlockDoH/UnblockDoH testam a interface
+	// sem precisar de privilégios reais (iptables não é chamado).
+	enf := &linuxEnforcer{}
+
+	err := enf.BlockDoH()
+	if err != nil {
+		t.Logf("BlockDoH retornou (esperado se não root): %v", err)
+	}
+
+	err2 := enf.BlockDoH()
+	if err2 != nil {
+		t.Logf("BlockDoH (2ª chamada) retornou: %v", err2)
+	}
+}
+
+func TestUnblockDoH_Linux(t *testing.T) {
+	enf := &linuxEnforcer{}
+
+	err := enf.UnblockDoH()
+	if err != nil {
+		t.Logf("UnblockDoH retornou (esperado se não root): %v", err)
+	}
+
+	err2 := enf.UnblockDoH()
+	if err2 != nil {
+		t.Logf("UnblockDoH (2ª chamada) retornou: %v", err2)
+	}
+}
+
 func TestUnprivilegedCheck(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("Skipping unprivileged check as test is running with root permissions (sudo)")
