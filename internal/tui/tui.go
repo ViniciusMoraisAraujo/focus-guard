@@ -299,8 +299,14 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case blockErrMsg:
 		m.loading = false
-		m.err = msg.err
-		return m, nil
+		m.state = viewList
+		m.domainInput.Reset()
+		m.durationInput.Reset()
+		m.formFocus = 0
+		m.statusMessage = ""
+		// Show a clean, user-friendly message instead of raw technical error
+		m.err = fmt.Errorf("não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente.")
+		return m, m.fetchStatusCmd()
 	}
 
 	return m, nil

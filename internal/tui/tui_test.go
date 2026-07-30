@@ -317,11 +317,12 @@ func TestMessage_BlockApplied(t *testing.T) {
 
 func TestMessage_BlockErr(t *testing.T) {
 	m := newTestModel(nil)
+	m.state = viewForm
 	m.loading = true
-	msg := blockErrMsg{err: errors.New("invalid duration")}
+	msg := blockErrMsg{err: errors.New("netsh firewall add falhou")}
 	result, cmd := m.Update(msg)
-	if cmd != nil {
-		t.Error("blockErrMsg should return nil command")
+	if cmd == nil {
+		t.Error("blockErrMsg should dispatch a refresh command")
 	}
 	if result != m {
 		t.Error("should return same model")
@@ -329,11 +330,17 @@ func TestMessage_BlockErr(t *testing.T) {
 	if m.loading {
 		t.Error("loading should be false after error")
 	}
+	if m.state != viewList {
+		t.Error("should return to list view after block error")
+	}
 	if m.err == nil {
 		t.Fatal("error should be set")
 	}
-	if m.err.Error() != "invalid duration" {
-		t.Errorf("expected 'invalid duration', got %v", m.err)
+	if m.err.Error() != "não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente." {
+		t.Errorf("expected user-friendly error message, got %v", m.err)
+	}
+	if m.statusMessage != "" {
+		t.Error("statusMessage should be cleared on block error")
 	}
 }
 
