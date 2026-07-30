@@ -87,6 +87,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: true, Blocks: blocks}
 		}
 
+	case "ping":
+		if err := s.scheduler.Ping(); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: "pong"}
+		}
+
 	default:
 		resp = Response{Success: false, Message: "Not suported action: " + req.Action}
 	}
