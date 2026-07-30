@@ -55,7 +55,11 @@ func setupTestScheduler(t *testing.T) (*Scheduler, *mockEnforcer, *store.Store) 
 	tempDir := t.TempDir()
 	dbPath := filepath.Join(tempDir, "state.json")
 
-	st := store.NewStore(dbPath)
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("error creating store: %v", err)
+	}
+
 	enf := newMockEnforcer()
 	sched := NewScheduler(st, enf)
 
