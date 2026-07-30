@@ -12,11 +12,13 @@ type Enforcer interface {
 	Sync(activeBlocks map[string][]string) error
 }
 
+type lookupFunc func(host string) ([]net.IP, error)
+
 const (
 	HeaderMarker = "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
 )
 
-func ResolveIPs(domain string) ([]string, error) {
+func resolveIPs(domain string, lookup lookupFunc) ([]string, error) {
 	cleaned := strings.TrimPrefix(domain, "http://")
 	cleaned = strings.TrimPrefix(cleaned, "https://")
 	cleaned = strings.Split(cleaned, "/")[0]
@@ -38,4 +40,8 @@ func ResolveIPs(domain string) ([]string, error) {
 	}
 
 	return ipStrings, nil
+}
+
+func ResolveIPs(domain string) ([]string, error) {
+	return resolveIPs(domain, net.LookupIP)
 }
