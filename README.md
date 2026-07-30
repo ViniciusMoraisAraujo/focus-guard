@@ -1,53 +1,23 @@
 # FocusGuard 🛡️
 
-**FocusGuard** é uma biblioteca Go para bloquear sites distractivos e manter o foco. Ela opera em nível de sistema, utilizando regras de firewall (`iptables`/`ip6tables`) e o arquivo `/etc/hosts` para impedir o acesso a domínios indesejados.
-
-> ⚠️ **Status**: Em desenvolvimento ativo. Atualmente com suporte completo apenas para Linux. Suporte para Windows em planejamento.
+**FocusGuard** é uma ferramenta Go para bloquear sites distractivos e manter o foco. Opera em nível de sistema, utilizando regras de firewall e o arquivo `hosts` para impedir o acesso a domínios indesejados.
 
 ---
 
 ## Funcionalidades
 
+- 🖥️ **Interface TUI interativa** — Modo gráfico no terminal com Bubble Tea
+- ⌨️ **CLI completa** — Bloqueio rápido via linha de comando
 - 🚫 **Bloqueio de domínios** — Impede o acesso a sites distractivos por tempo determinado
-- ⏱️ **Bloqueios temporários** — Cada bloqueio tem data de expiração, e não pode ser removido manualmente antes do prazo
-- 🔄 **Resolução automática de IPs** — Resolve endereços IPv4 e IPv6 dos domínios bloqueados
-- 🧱 **Dupla camada de bloqueio** (Linux):
-  - **`/etc/hosts`** — Redireciona o domínio para `127.0.0.1` e `::1`
-  - **`iptables`/`ip6tables`** — Regras `DROP` na chain `OUTPUT` para os IPs resolvidos
-- 💾 **Persistência de estado** — Armazena bloqueios ativos em arquivo JSON com gravação atômica
-- 🔄 **Sincronização** — Reconcilia o estado salvo com as regras do sistema
-
----
-
-## Arquitetura
-
-```
-focusguard/
-├── go.mod
-├── internal/
-│   ├── policy/          # Modelo de dados e regras de negócio
-│   │   ├── policy.go        # Definição do Block e métodos de ciclo de vida
-│   │   └── policy_test.go   # Testes do ciclo de vida do Block
-│   ├── enforcer/        # Aplicação das regras no sistema operacional
-│   │   ├── enforcer.go          # Interface Enforcer + utilitário ResolveIPs
-│   │   ├── enforcer_linux.go    # Implementação Linux (hosts + iptables)
-│   │   └── enforcer_windows.go  # Stub para Windows (em construção)
-│   └── store/           # Persistência de estado
-│       ├── json.go          # Store com gravação atômica em JSON
-│       └── json_test.go     # Testes de save/load do estado
-```
-
-### Fluxo de Dados
-
-```
-Policy (definição do bloqueio)
-    ↓
-Store (persistência em JSON)
-    ↓
-Enforcer (aplicação no SO)
-    ├── /etc/hosts (redirecionamento localhost)
-    └── iptables/ip6tables (DROP packets)
-```
+- ⏱️ **Bloqueios temporários** — Expiração automática sem possibilidade de desbloqueio manual
+- 🔄 **Resolução automática de IPs** — Resolve IPv4 e IPv6 dos domínios bloqueados, com refresh periódico
+- 🧱 **Dupla camada de bloqueio:**
+  - **`hosts`** — Redireciona o domínio para `127.0.0.1` e `::1`
+  - **Firewall** — Regras `iptables`/`ip6tables` (Linux) ou `netsh advfirewall` (Windows)
+- 💾 **Persistência de estado** — Armazena bloqueios em JSON com gravação atômica
+- 🔄 **Arquitetura Cliente-Servidor** — Daemon em background com IPC via Unix socket
+- 🐳 **Systemd Watchdog** — Suporte a health check via `NOTIFY_SOCKET`
+- 🪟 **Suporte Windows** — Firewall via `netsh advfirewall` + edição do `hosts`
 
 ---
 
@@ -56,14 +26,8 @@ Enforcer (aplicação no SO)
 ### Pré-requisitos
 
 - Go 1.26.5 ou superior
-- Linux com `iptables` e `ip6tables` (para funcionalidade completa do enforcer)
-- Acesso root/sudo (necessário para manipular firewall e `/etc/hosts`)
-
-### Como dependência
-
-```bash
-go get github.com/seu-usuario/focusguard
-```
+- Linux com `iptables`/`ip6tables` ou Windows
+- Acesso root/admin (necessário para firewall e edição do `hosts`)
 
 ### Build
 
@@ -73,95 +37,174 @@ cd focusguard
 go build ./...
 ```
 
+### Binários
+
+```bash
+# Daemon (deve rodar como root/admin)
+go build -o focusguard-daemon ./cmd/focusguard-daemon/
+
+# CLI
+go build -o focusguard ./cmd/focusguard/
+```
+
 ---
 
 ## Uso
 
-> **Nota sobre plataforma**: A implementação do `Enforcer` (`NewEnforcer()`) está disponível apenas em Linux devido às build tags (`//go:build linux`). O stub para Windows existe mas ainda não possui funcionalidades implementadas.
+### Modo Interativo (TUI)
 
-```go
-package main
-
-import (
-    "focusguard/internal/policy"
-    "focusguard/internal/store"
-    "time"
-)
-
-func main() {
-    // Criar um bloqueio
-    block := policy.Block{
-        Domain:    "youtube.com",
-        StartedAt: time.Now(),
-        ExpiresAt: time.Now().Add(1 * time.Hour),
-    }
-
-    // Persistir o estado
-    st := store.NewStore("/etc/focusguard/state.json")
-    state, _ := st.Load()
-    state.Blocks[block.Domain] = block
-    st.Save(state)
-
-    // Nota: NewEnforcer() requer Linux + build tag linux
-    // enf := enforcer.NewEnforcer()
-    // enf.BlockDomain(block.Domain, block.ResolvedIPs)
-}
+```
+focusguard
 ```
 
-### Conceitos
+Navegue pelos bloqueios ativos, adicione novos bloqueios e acompanhe o tempo restante — tudo em uma interface visual no terminal.
 
-#### `policy.Block`
+**Atalhos:**
+- `b` — Bloquear novo domínio
+- `r` — Atualizar lista
+- `q` — Sair
+- `Tab` — Navegar entre campos no formulário
+- `Enter` — Confirmar bloqueio
+- `Esc` — Cancelar / Voltar
 
-Representa um bloqueio individual:
+### Linha de Comando
 
-| Campo | Tipo | Descrição |
-|-------|------|-----------|
-| `Domain` | `string` | Domínio a ser bloqueado |
-| `StartedAt` | `time.Time` | Início do bloqueio |
-| `ExpiresAt` | `time.Time` | Fim do bloqueio (após essa data, o bloqueio expira) |
-| `ResolvedIPs` | `[]string` | IPs resolvidos do domínio |
+```bash
+# Bloquear um domínio
+focusguard block twitter.com --duration 4h
+focusguard block youtube.com 30m
 
-**Regras de negócio:**
-- `IsActive()` → retorna `true` se `time.Now() < ExpiresAt`
-- `CanUnblock()` → sempre retorna `false` (bloqueios não podem ser removidos manualmente)
-- `RemainingTime()` → retorna o tempo restante do bloqueio
+# Ver status dos bloqueios
+focusguard status
 
-#### `enforcer.Enforcer` (Interface)
-
-```go
-type Enforcer interface {
-    BlockDomain(domain string, ips []string) error
-    UnblockDomain(domain string, ips []string) error
-    Sync(activeBlocks map[string][]string) error
-}
+# Modo interativo
+focusguard interactive
 ```
 
-> 💡 A interface também define a constante `HeaderMarker = "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"` (reservada para uso futuro em marcação de regras). A implementação Linux atual utiliza o marcador `# FOCUSGUARD:` para identificar suas entradas no `/etc/hosts`.
-
-#### `store.Store`
-
-Armazena o estado em formato JSON, com:
-
-- **Gravação atômica**: escreve em arquivo temporário (`os.CreateTemp`) e renomeia (`os.Rename`)
-- **Thread-safe**: utiliza `sync.RWMutex` para leitura/escrita concorrente
-- **Inicialização segura**: se o arquivo não existir, retorna estado vazio
-- **Permissões restritas**: arquivo salvo com `Chmod(0600)`
+> ⚠️ O daemon (`focusguard-daemon`) precisa estar rodando para que os comandos funcionem.
 
 ---
 
-## Plataformas Suportadas
+## Arquitetura
 
-### ✅ Linux (`//go:build linux`)
+```
+focusguard/
+├── cmd/
+│   ├── focusguard/              # CLI do usuário
+│   │   └── main.go                  # Entrada: TUI + comandos (block, status)
+│   └── focusguard-daemon/       # Serviço em background
+│       └── main.go                  # Inicializa store, enforcer, scheduler, IPC
+├── internal/
+│   ├── policy/                  # Modelo de dados e regras de negócio
+│   │   ├── policy.go                # Block, IsActive, CanUnblock, RemainingTime
+│   │   └── policy_test.go
+│   ├── store/                   # Persistência de estado em JSON
+│   │   ├── json.go                  # Store com gravação atômica (temp file + rename)
+│   │   └── json_test.go
+│   ├── enforcer/                # Aplicação das regras no SO
+│   │   ├── enforcer.go              # Interface Enforcer + ResolveIPs
+│   │   ├── enforcer_linux.go        # Implementação Linux (hosts + iptables)
+│   │   ├── enforcer_linux_test.go
+│   │   ├── enforcer_windows.go      # Implementação Windows (hosts + netsh)
+│   │   └── enforcer_windows_test.go
+│   ├── scheduler/               # Gerenciamento de timers e expiração
+│   │   ├── scheduler.go             # Block, timer, refresh periódico de IPs
+│   │   └── scheduler_test.go
+│   ├── ipc/                     # Comunicação cliente-servidor
+│   │   ├── ipc.go                   # Request/Response (JSON sobre Unix socket)
+│   │   ├── client.go                # Cliente IPC
+│   │   ├── server.go                # Servidor IPC
+│   │   ├── ipc_linux.go             # Unix socket (/run/focusguard.sock)
+│   │   ├── ipc_linux_test.go
+│   │   ├── ipc_windows.go           # Unix socket (%PROGRAMDATA%/FocusGuard/)
+│   │   ├── ipc_windows_test.go
+│   │   └── server_test.go
+│   ├── tui/                     # Interface interativa (Bubble Tea)
+│   │   ├── tui.go                   # Modelo TUI com tabela + formulário
+│   │   └── tui_test.go
+│   └── watchdog/                # Systemd watchdog
+│       ├── watchdog.go              # Notificações via NOTIFY_SOCKET
+│       └── watchdog_test.go
+└── go.mod
+```
 
-Implementação completa com:
-- Edição do `/etc/hosts` com entradas marcadas (`# FOCUSGUARD:`)
-- Regras `iptables` e `ip6tables` para IPv4 e IPv6
-- Requer privilégios root (`sudo`)
-- Mensagens de erro em português
+### Fluxo de Dados
 
-### 🚧 Windows (`//go:build windows`)
+```
+CLI (focusguard) ←→ Daemon (focusguard-daemon)
+                          │
+                     [IPC Server]
+                          │
+                    [Scheduler]
+                     ┌─────┴─────┐
+                     │           │
+               [Store]     [Enforcer]
+                (JSON)     ┌───┴───┐
+                           │       │
+                       /etc/hosts  Firewall
+                       (hosts)   (iptables/netsh)
+```
 
-Em desenvolvimento. Atualmente apenas um stub — o arquivo existe com a build tag `windows` mas sem implementação.
+---
+
+## Módulos
+
+### TUI (`internal/tui/`)
+
+Interface interativa construída com [Bubble Tea](https://github.com/charmbracelet/bubbletea):
+- **Tela principal**: Tabela com bloqueios ativos (domínio, início, expiração, tempo restante)
+- **Formulário**: Campos para domínio e duração com navegação por `Tab`
+- **Feedback visual**: Indicador de carregamento, mensagens de erro/sucesso com cores
+- **Estilo profissional**: Tema adaptativo (claro/escuro), bordas arredondadas
+
+### CLI (`cmd/focusguard/`)
+
+Comandos disponíveis:
+| Comando | Descrição |
+|---------|-----------|
+| `focusguard` | Abre modo interativo (TUI) |
+| `focusguard block <domínio> --duration <tempo>` | Bloqueia um domínio |
+| `focusguard status` | Lista bloqueios ativos |
+| `focusguard interactive` | Abre modo interativo (TUI) |
+
+### Daemon (`cmd/focusguard-daemon/`)
+
+Serviço em background que:
+- Inicializa o store, enforcer e scheduler
+- Reconcilia bloqueios salvos com o estado atual do sistema
+- Expõe servidor IPC para comunicação com a CLI
+- Mantém timers de expiração e refresh periódico de IPs
+
+### Scheduler (`internal/scheduler/`)
+
+Gerencia o ciclo de vida dos bloqueios:
+- `Block()` — Cria bloqueio, persiste estado, aplica regras, inicia timer
+- `Start()` — Reconcilia estado salvo na inicialização do daemon
+- `onExpire()` — Remove bloqueio quando o tempo expira
+- `startPeriodicIPRefresh()` — Atualiza IPs periodicamente (a cada 15 min)
+
+### Enforcer (`internal/enforcer/`)
+
+Interface para aplicação de regras no sistema operacional:
+
+| Plataforma | Arquivo | Firewall | Hosts |
+|------------|---------|----------|-------|
+| Linux | `enforcer_linux.go` | `iptables`/`ip6tables` | `/etc/hosts` |
+| Windows | `enforcer_windows.go` | `netsh advfirewall` | `C:\Windows\System32\drivers\etc\hosts` |
+
+### IPC (`internal/ipc/`)
+
+Comunicação entre CLI e Daemon via Unix socket:
+- **Request**: `{ action, domain, duration }`
+- **Response**: `{ success, message, blocks }`
+- Socket em `/run/focusguard.sock` (Linux) ou `%PROGRAMDATA%/FocusGuard/focusguard.sock` (Windows)
+
+### Watchdog (`internal/watchdog/`)
+
+Integração com systemd:
+- Envia `READY=1` na inicialização
+- Envia `WATCHDOG=1` periodicamente
+- Usa `NOTIFY_SOCKET` para comunicação
 
 ---
 
@@ -171,30 +214,51 @@ Em desenvolvimento. Atualmente apenas um stub — o arquivo existe com a build t
 # Rodar todos os testes
 go test ./...
 
-# Rodar testes com cobertura
+# Rodar com cobertura
 go test -cover ./...
 
 # Rodar testes de um pacote específico
-go test ./internal/policy/...
-go test ./internal/store/...
+go test ./internal/tui/... -v
+go test ./internal/scheduler/... -v
 ```
+
+### Cobertura
+
+| Pacote | Testes |
+|--------|--------|
+| `policy` | Ciclo de vida do Block (IsActive, CanUnblock, RemainingTime) |
+| `store` | Save e Load com gravação atômica |
+| `enforcer` | ResolveIPs, hosts file operations, iptables bin selection |
+| `ipc` | Listen/Dial, server handleConnection, invalid JSON, unsupported action |
+| `scheduler` | Block/List, boot reconciliation, timer expiration, periodic IP refresh |
+| `watchdog` | New() config, sendNotification, Start() com health check |
+| `tui` | Model Init/Update/View, key handling, state transitions, messages |
+
+---
+
+## Plataformas Suportadas
+
+### ✅ Linux
+
+Implementação completa com:
+- Edição do `/etc/hosts` com entradas marcadas (`# FOCUSGUARD:`)
+- Regras `iptables` e `ip6tables` para IPv4 e IPv6
+- Unix socket em `/run/focusguard.sock`
+- Requer privilégios root (`sudo`)
+
+### ✅ Windows
+
+Implementação completa com:
+- Edição do `hosts` em `C:\Windows\System32\drivers\etc\hosts`
+- Regras de firewall via `netsh advfirewall`
+- Unix socket em `%PROGRAMDATA%/FocusGuard/focusguard.sock`
+- Requer privilégios de administrador
 
 ---
 
 ## Licença
 
-Este projeto está sob a licença MIT. Veja o arquivo [LICENSE](LICENSE) para mais detalhes.
-
----
-
-## Contribuindo
-
-Contribuições são bem-vindas! Especialmente para:
-
-- 🪟 **Windows**: Implementar o enforcer usando `netsh advfirewall` ou similar
-- 🍎 **macOS**: Suporte a `pfctl` para firewall
-- ⌨️ **CLI**: Criar uma interface de linha de comando amigável
-- 📊 **Relatórios**: Dashboard de bloqueios ativos e histórico
+Este projeto está sob a licença MIT.
 
 ---
 
