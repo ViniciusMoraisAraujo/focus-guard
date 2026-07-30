@@ -3,21 +3,24 @@
 package ipc
 
 import (
+	"fmt"
 	"net"
-	"os"
-	"path/filepath"
 )
 
-var SocketPath = filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard", "focusguard.sock")
+const WindowsPort = 48901
 
 func Listen() (net.Listener, error) {
-	dir := filepath.Dir(SocketPath)
-	_ = os.MkdirAll(dir, 0755)
-	_ = os.Remove(SocketPath)
-
-	return net.Listen("unix", SocketPath)
+	addr := fmt.Sprintf("127.0.0.1:%d", WindowsPort)
+	if TestDialAddr != "" {
+		addr = TestDialAddr
+	}
+	return net.Listen("tcp", addr)
 }
 
 func Dial() (net.Conn, error) {
-	return net.Dial("unix", SocketPath)
+	addr := fmt.Sprintf("127.0.0.1:%d", WindowsPort)
+	if TestDialAddr != "" {
+		addr = TestDialAddr
+	}
+	return net.Dial("tcp", addr)
 }

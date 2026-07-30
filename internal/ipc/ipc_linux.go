@@ -10,16 +10,23 @@ import (
 const SocketPath = "/run/focusguard.sock"
 
 func Listen() (net.Listener, error) {
-	_ = os.Remove(SocketPath)
-	l, err := net.Listen("unix", SocketPath)
+	path := SocketPath
+	if TestSocketPath != "" {
+		path = TestSocketPath
+	}
+	_ = os.Remove(path)
+	l, err := net.Listen("unix", path)
 	if err != nil {
 		return nil, err
 	}
-
-	_ = os.Chmod(SocketPath, 0660)
+	_ = os.Chmod(path, 0660)
 	return l, nil
 }
 
 func Dial() (net.Conn, error) {
-	return net.Dial("unix", SocketPath)
+	path := SocketPath
+	if TestSocketPath != "" {
+		path = TestSocketPath
+	}
+	return net.Dial("unix", path)
 }

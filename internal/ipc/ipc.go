@@ -2,6 +2,11 @@ package ipc
 
 import "focusguard/internal/policy"
 
+var (
+	TestSocketPath string
+	TestDialAddr   string
+)
+
 type Request struct {
 	Action   string `json:"action"` // "block" ou "status"
 	Domain   string `json:"domain,omitempty"`

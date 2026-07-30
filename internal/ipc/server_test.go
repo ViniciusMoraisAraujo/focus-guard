@@ -52,6 +52,83 @@ func executeRequest(t *testing.T, server *Server, req Request) Response {
 	return resp
 }
 
+func TestNewClient(t *testing.T) {
+	c := NewClient()
+	if c == nil {
+		t.Fatal("expected non-nil client")
+	}
+}
+
+func TestClientSend_DialError(t *testing.T) {
+	c := NewClient()
+	_, err := c.Send(Request{Action: "ping"})
+	if err == nil {
+		t.Fatal("expected dial error when no server is running")
+	}
+	if !strings.Contains(err.Error(), "error connecting to ipc") {
+		t.Errorf("expected connection error message, got: %v", err)
+	}
+}
+
+func TestClientSend_Success(t *testing.T) {
+	server := setupTestServer(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	origDialAddr := TestDialAddr
+	TestDialAddr = ln.Addr().String()
+	defer func() { TestDialAddr = origDialAddr }()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			server.handleConnection(conn)
+		}
+	}()
+
+	c := NewClient()
+	resp, err := c.Send(Request{Action: "status"})
+	if err != nil {
+		t.Fatalf("Send failed: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("expected success, got: %s", resp.Message)
+	}
+}
+
+func TestClientSend_DecodeError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	origDialAddr := TestDialAddr
+	TestDialAddr = ln.Addr().String()
+	defer func() { TestDialAddr = origDialAddr }()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			conn.Write([]byte("invalid-json\n"))
+			conn.Close()
+		}
+	}()
+
+	c := NewClient()
+	_, err = c.Send(Request{Action: "ping"})
+	if err == nil {
+		t.Fatal("expected decode error with invalid response")
+	}
+	if !strings.Contains(err.Error(), "error decoding") {
+		t.Errorf("expected decode error message, got: %v", err)
+	}
+}
+
 func TestServer_NewServer(t *testing.T) {
 	server := setupTestServer(t)
 
