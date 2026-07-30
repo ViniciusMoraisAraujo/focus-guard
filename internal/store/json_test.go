@@ -17,7 +17,10 @@ func TestStoreSaveAndLoad(t *testing.T) {
 	defer os.RemoveAll(tempDir)
 
 	dbPath := filepath.Join(tempDir, "state.json")
-	s := NewStore(dbPath)
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
 
 	state, err := s.Load()
 	if err != nil {
