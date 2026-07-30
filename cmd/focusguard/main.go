@@ -4,9 +4,12 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"path/filepath"
+	"runtime"
 	"text/tabwriter"
 	"time"
 
+	"focusguard/internal/autostart"
 	"focusguard/internal/ipc"
 	"focusguard/internal/tui"
 )
@@ -28,6 +31,10 @@ func main() {
 		handleBlockCommand(client, os.Args[2:])
 	case "status":
 		handleStatusCommand(client)
+	case "install":
+		handleInstallCommand()
+	case "uninstall":
+		handleUninstallCommand()
 	case "interactive", "i":
 		runInteractive()
 	case "help", "-h", "--help":
@@ -37,6 +44,60 @@ func main() {
 		printUsage()
 		osExit(1)
 	}
+}
+
+func daemonExePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	ext := filepath.Ext(exe)
+	base := "focusguard-daemon"
+	if ext != "" {
+		base += ext
+	}
+	return filepath.Join(dir, base)
+}
+
+func handleInstallCommand() {
+	path := daemonExePath()
+	if path == "" {
+		fmt.Println("Erro: Não foi possível determinar o caminho do daemon.")
+		osExit(1)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("Erro: Daemon não encontrado em %s\n", path)
+		fmt.Println("Compile o daemon primeiro: go build ./cmd/focusguard-daemon")
+		osExit(1)
+	}
+	var err error
+	if runtime.GOOS == "linux" {
+		err = autostart.InstallSvc(path)
+	} else {
+		err = autostart.Install(path)
+	}
+	if err != nil {
+		fmt.Printf("Falha ao instalar: %v\n", err)
+		osExit(1)
+	}
+	fmt.Printf("✔ Daemon instalado como serviço de inicialização.\n")
+	fmt.Printf("  Binário: %s\n", path)
+	fmt.Printf("  Iniciará automaticamente no próximo login.\n")
+}
+
+func handleUninstallCommand() {
+	var err error
+	if runtime.GOOS == "linux" {
+		err = autostart.UninstallSvc()
+	} else {
+		err = autostart.Uninstall()
+	}
+	if err != nil {
+		fmt.Printf("Falha ao desinstalar: %v\n", err)
+		osExit(1)
+	}
+	fmt.Println("✔ Daemon removido da inicialização automática.")
 }
 
 func runInteractive() {
@@ -143,8 +204,11 @@ func printUsage() {
 	fmt.Println("  focusguard                        Modo interativo (TUI)")
 	fmt.Println("  focusguard block <dominio> --duration <tempo>")
 	fmt.Println("  focusguard status")
+	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
+	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")
 	fmt.Println("  focusguard interactive             Modo interativo (TUI)")
 	fmt.Println("\nExemplos:")
+	fmt.Println("  focusguard install")
 	fmt.Println("  focusguard block twitter.com --duration 4h")
 	fmt.Println("  focusguard block youtube.com 30m")
 	fmt.Println("  focusguard status")
