@@ -25,6 +25,18 @@ func NewStore(filePath string) (*Store, error) {
 	if filePath == "" {
 		return nil, errors.New("file path is empty")
 	}
+
+	dir := filepath.Dir(filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, fmt.Errorf("erro ao criar diretório de estado (%s): %w", dir, err)
+	}
+
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		if err := os.WriteFile(filePath, []byte("{}"), 0644); err != nil {
+			return nil, fmt.Errorf("erro ao criar arquivo de estado (%s): %w", filePath, err)
+		}
+	}
+
 	return &Store{filePath: filePath}, nil
 }
 
