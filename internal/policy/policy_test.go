@@ -32,7 +32,7 @@ func TestBlockLifeCycle(t *testing.T) {
 		t.Errorf("block should not be active")
 	}
 
-	if expiredBlock.CanUnblock() {
-		t.Errorf("block should not be unblocked")
+	if !expiredBlock.CanUnblock() {
+		t.Errorf("expired block should be ready for unblock (CanUnblock = true)")
 	}
 }
