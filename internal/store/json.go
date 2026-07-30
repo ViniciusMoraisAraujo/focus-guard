@@ -2,6 +2,7 @@ package store
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,9 +21,11 @@ type Store struct {
 	filePath string
 }
 
-func NewStore(filePath string) *Store {
-	return &Store{
-		filePath: filePath}
+func NewStore(filePath string) (*Store, error) {
+	if filePath == "" {
+		return nil, errors.New("file path is empty")
+	}
+	return &Store{filePath: filePath}, nil
 }
 
 func (s *Store) Load() (*State, error) {
