@@ -10,6 +10,8 @@ import (
 	"focusguard/internal/store"
 )
 
+var resolveFunc = enforcer.ResolveIPs
+
 type Scheduler struct {
 	mu       sync.Mutex
 	store    *store.Store
@@ -26,6 +28,16 @@ func NewScheduler(st *store.Store, enf enforcer.Enforcer) *Scheduler {
 }
 
 func (s *Scheduler) Start() error {
+	if err := s.Reconcile(); err != nil {
+		return err
+	}
+
+	go s.startPeriodicIPRefresh(15 * time.Minute)
+
+	return nil
+}
+
+func (s *Scheduler) Reconcile() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -50,21 +62,104 @@ func (s *Scheduler) Start() error {
 
 	if updated {
 		if err := s.store.Save(state); err != nil {
-			return fmt.Errorf("scheduler: erro ao atualizar estado pós-boot: %w", err)
+			return fmt.Errorf("scheduler: erro ao atualizar estado pós-reconciliação: %w", err)
 		}
 	}
 
-	return s.enforcer.Sync(activeIPs)
+	if err := s.enforcer.Sync(activeIPs); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+
+	for range ticker.C {
+		type refreshEntry struct {
+			domain string
+			ips    []string
+		}
+
+		// Step 1: collect active domains (quick lock, no DNS)
+		var entries []refreshEntry
+		s.mu.Lock()
+		state, err := s.store.Load()
+		if err != nil {
+			s.mu.Unlock()
+			continue
+		}
+		for domain, block := range state.Blocks {
+			if block.IsActive() {
+				entries = append(entries, refreshEntry{domain: domain, ips: block.ResolvedIPs})
+			}
+		}
+		s.mu.Unlock()
+
+		if len(entries) == 0 {
+			continue
+		}
+
+		// Step 2: resolve DNS for each domain (outside lock)
+		refreshed := make(map[string][]string)
+		for _, entry := range entries {
+			newIPs, err := resolveFunc(entry.domain)
+			if err != nil || len(newIPs) == 0 {
+				continue
+			}
+
+			ipMap := make(map[string]bool)
+			for _, ip := range entry.ips {
+				ipMap[ip] = true
+			}
+
+			var hasNewIP bool
+			for _, ip := range newIPs {
+				if !ipMap[ip] {
+					entry.ips = append(entry.ips, ip)
+					ipMap[ip] = true
+					hasNewIP = true
+				}
+			}
+
+			if hasNewIP {
+				refreshed[entry.domain] = entry.ips
+			}
+		}
+
+		if len(refreshed) == 0 {
+			continue
+		}
+
+		// Step 3: persist updates (quick lock)
+		s.mu.Lock()
+		state, err = s.store.Load()
+		if err != nil {
+			s.mu.Unlock()
+			continue
+		}
+		for domain, ips := range refreshed {
+			if block, exists := state.Blocks[domain]; exists && block.IsActive() {
+				block.ResolvedIPs = ips
+				state.Blocks[domain] = block
+				_ = s.enforcer.BlockDomain(domain, ips)
+			}
+		}
+		_ = s.store.Save(state)
+		s.mu.Unlock()
+	}
 }
 
 func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	ips, err := enforcer.ResolveIPs(domain)
+	ips, err := resolveFunc(domain)
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: %w", err)
 	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
 	now := time.Now()
 	block := policy.Block{
@@ -141,4 +236,28 @@ func (s *Scheduler) onExpire(domain string) {
 	delete(state.Blocks, domain)
 	_ = s.store.Save(state)
 	delete(s.timers, domain)
+}
+
+func (s *Scheduler) HasActiveBlocks() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state, err := s.store.Load()
+	if err != nil {
+		return false
+	}
+
+	for _, block := range state.Blocks {
+		if block.IsActive() {
+			return true
+		}
+	}
+	return false
+}
+
+func (s *Scheduler) Ping() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	return nil
 }
