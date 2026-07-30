@@ -134,6 +134,48 @@ func TestResolveIPs_PublicWrapperUsesRealLookup(t *testing.T) {
 	}
 }
 
+func TestResolveIPs_WWWPrefix(t *testing.T) {
+	fakeLookup := func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("1.2.3.4")}, nil
+	}
+
+	ips, err := resolveIPs("www.youtube.com", fakeLookup)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 1 || ips[0] != "1.2.3.4" {
+		t.Errorf("expected [1.2.3.4], got %v", ips)
+	}
+}
+
+func TestResolveIPs_TrailingSlash(t *testing.T) {
+	fakeLookup := func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("5.6.7.8")}, nil
+	}
+
+	ips, err := resolveIPs("example.com/", fakeLookup)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 1 || ips[0] != "5.6.7.8" {
+		t.Errorf("expected [5.6.7.8], got %v", ips)
+	}
+}
+
+func TestResolveIPs_IPv6Result(t *testing.T) {
+	fakeLookup := func(host string) ([]net.IP, error) {
+		return []net.IP{net.ParseIP("2001:db8::1")}, nil
+	}
+
+	ips, err := resolveIPs("ipv6.example", fakeLookup)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(ips) != 1 || ips[0] != "2001:db8::1" {
+		t.Errorf("expected [2001:db8::1], got %v", ips)
+	}
+}
+
 func TestHeaderMarker_Value(t *testing.T) {
 	expected := "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
 	if HeaderMarker != expected {
