@@ -8,7 +8,10 @@ import (
 	"strings"
 )
 
-const serviceName = "FocusGuard"
+const (
+	serviceName         = "FocusGuard"
+	watchdogServiceName = "FocusGuardWatchdog"
+)
 
 func installWindows(exePath string) error {
 	stateDir := filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard")
@@ -63,4 +66,50 @@ func isInstalledWindows() (bool, error) {
 		return false, fmt.Errorf("autostart: falha ao consultar serviço: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return true, nil
+}
+
+func installWatchdogWindows(exePath string) error {
+	// Cria o serviço watchdog
+	args := []string{
+		"create", watchdogServiceName,
+		"binPath=", exePath,
+		"start=", "auto",
+		"displayname=", "FocusGuard Watchdog",
+		"description=", "Monitora o daemon FocusGuard e o reinicia se não responder.",
+	}
+	out, err := execCommand("sc", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("autostart: falha ao criar serviço watchdog: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	// Dependência do daemon principal (watchdog só roda se daemon estiver rodando)
+	execCommand("sc", "config", watchdogServiceName, "depend="+serviceName).CombinedOutput()
+
+	// Recovery: restart a cada 5s
+	failureArgs := []string{
+		"failure", watchdogServiceName,
+		"reset=", "86400",
+		"actions=", "restart/5000/restart/5000/restart/5000",
+	}
+	if out2, err2 := execCommand("sc", failureArgs...).CombinedOutput(); err2 != nil {
+		log.Printf("[FocusGuard Watchdog] Aviso: não foi configurar recovery: %v (%s)", err2, strings.TrimSpace(string(out2)))
+	}
+
+	// Inicia o serviço
+	if out3, err3 := execCommand("sc", "start", watchdogServiceName).CombinedOutput(); err3 != nil {
+		return fmt.Errorf("autostart: falha ao iniciar watchdog: %w (%s)", err3, strings.TrimSpace(string(out3)))
+	}
+
+	return nil
+}
+
+func uninstallWatchdogWindows() error {
+	execCommand("sc", "stop", watchdogServiceName).CombinedOutput()
+
+	args := []string{"delete", watchdogServiceName}
+	out, err := execCommand("sc", args...).CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("autostart: falha ao remover watchdog: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
 }

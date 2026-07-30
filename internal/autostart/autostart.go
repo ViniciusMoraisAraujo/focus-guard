@@ -72,3 +72,20 @@ func UninstallSvc() error {
 	}
 	return uninstallSystemd()
 }
+
+func InstallWatchdog(exePath string) error {
+	if exePath == "" {
+		return fmt.Errorf("autostart: caminho do watchdog não pode ser vazio")
+	}
+	if goos != "windows" {
+		return fmt.Errorf("autostart: watchdog externo é exclusivo do Windows")
+	}
+	return installWatchdogWindows(exePath)
+}
+
+func UninstallWatchdog() error {
+	if goos != "windows" {
+		return fmt.Errorf("autostart: watchdog externo é exclusivo do Windows")
+	}
+	return uninstallWatchdogWindows()
+}

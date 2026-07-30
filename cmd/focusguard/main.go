@@ -35,6 +35,10 @@ func main() {
 		handleInstallCommand()
 	case "uninstall":
 		handleUninstallCommand()
+	case "install-watchdog":
+		handleInstallWatchdogCommand()
+	case "uninstall-watchdog":
+		handleUninstallWatchdogCommand()
 	case "interactive", "i":
 		runInteractive()
 	case "help", "-h", "--help":
@@ -98,6 +102,57 @@ func handleUninstallCommand() {
 		osExit(1)
 	}
 	fmt.Println("✔ Daemon removido da inicialização automática.")
+}
+
+func watchdogExePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	ext := filepath.Ext(exe)
+	base := "focusguard-watchdog"
+	if ext != "" {
+		base += ext
+	}
+	return filepath.Join(dir, base)
+}
+
+func handleInstallWatchdogCommand() {
+	if runtime.GOOS != "windows" {
+		fmt.Println("Watchdog externo é exclusivo do Windows (Linux usa systemd watchdog).")
+		return
+	}
+
+	path := watchdogExePath()
+	if path == "" {
+		fmt.Println("Erro: Não foi possível determinar o caminho do watchdog.")
+		osExit(1)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("Erro: Watchdog não encontrado em %s\n", path)
+		fmt.Println("Compile o watchdog primeiro: go build ./cmd/focusguard-watchdog")
+		osExit(1)
+	}
+
+	if err := autostart.InstallWatchdog(path); err != nil {
+		fmt.Printf("Falha ao instalar watchdog: %v\n", err)
+		osExit(1)
+	}
+	fmt.Println("✔ Watchdog instalado como serviço e iniciado.")
+}
+
+func handleUninstallWatchdogCommand() {
+	if runtime.GOOS != "windows" {
+		fmt.Println("Watchdog só está presente no Windows.")
+		return
+	}
+
+	if err := autostart.UninstallWatchdog(); err != nil {
+		fmt.Printf("Falha ao desinstalar watchdog: %v\n", err)
+		osExit(1)
+	}
+	fmt.Println("✔ Watchdog removido.")
 }
 
 func runInteractive() {
@@ -207,8 +262,11 @@ func printUsage() {
 	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
 	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")
 	fmt.Println("  focusguard interactive             Modo interativo (TUI)")
+	fmt.Println("  focusguard install-watchdog         Instalar watchdog externo (Windows)")
+	fmt.Println("  focusguard uninstall-watchdog       Remover watchdog externo")
 	fmt.Println("\nExemplos:")
 	fmt.Println("  focusguard install")
+	fmt.Println("  focusguard install-watchdog")
 	fmt.Println("  focusguard block twitter.com --duration 4h")
 	fmt.Println("  focusguard block youtube.com 30m")
 	fmt.Println("  focusguard status")
