@@ -13,10 +13,9 @@ func (b *Block) IsActive() bool {
 	return time.Now().Before(b.ExpiresAt)
 }
 
-// CanUnblock sempre retorna false: bloqueios não podem ser removidos
-// manualmente antes do ExpiresAt.
 func (b *Block) CanUnblock() bool {
-	return false
+
+	return time.Now().After(b.ExpiresAt) || time.Now().Equal(b.ExpiresAt)
 }
 
 func (b *Block) RemainingTime() time.Duration {
