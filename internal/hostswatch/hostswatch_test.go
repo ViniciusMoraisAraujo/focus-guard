@@ -195,6 +195,134 @@ func TestDetectTamper_NoBlocks(t *testing.T) {
 	}
 }
 
+func TestDetectTamper_FileDeleted(t *testing.T) {
+	dir := t.TempDir()
+	hostsPath := filepath.Join(dir, "hosts")
+
+	writeHosts(t, hostsPath, []string{"127.0.0.1 localhost"})
+
+	enf := &mockEnforcer{}
+	sched := &mockScheduler{
+		blocks: []policy.Block{
+			{Domain: "twitter.com", ResolvedIPs: []string{"1.2.3.4"}},
+		},
+	}
+
+	w := &HostsWatcher{
+		HostsPath: hostsPath,
+		enf:       enf,
+		sched:     sched,
+		debounce:  10 * time.Millisecond,
+	}
+
+	if err := os.Remove(hostsPath); err != nil {
+		t.Fatalf("failed to remove hosts file: %v", err)
+	}
+
+	w.detectTamper()
+	if calls := atomic.LoadInt32(&enf.syncCalls); calls != 1 {
+		t.Fatalf("expected 1 Sync call after file deletion, got %d", calls)
+	}
+
+	enf.mu.Lock()
+	if _, ok := enf.lastBlocks["twitter.com"]; !ok {
+		t.Error("expected twitter.com in synced blocks")
+	}
+	enf.mu.Unlock()
+}
+
+func waitForSync(t *testing.T, enf *mockEnforcer, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(&enf.syncCalls) > 0 {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatal("expected Sync call within timeout")
+}
+
+// removeHosts removes the hosts file, retrying on Windows where a lingering
+// handle (indexer/Defender) can transiently hold the file open.
+func removeHosts(t *testing.T, path string) {
+	t.Helper()
+	for i := 0; i < 20; i++ {
+		err := os.Remove(path)
+		if err == nil || os.IsNotExist(err) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("failed to remove hosts file: %v", path)
+}
+
+func TestRemoveEvent_TriggersSync(t *testing.T) {
+	dir := t.TempDir()
+	hostsPath := filepath.Join(dir, "hosts")
+	writeHosts(t, hostsPath, []string{
+		"127.0.0.1 localhost",
+		"127.0.0.1 twitter.com # FOCUSGUARD: twitter.com",
+	})
+
+	enf := &mockEnforcer{}
+	sched := &mockScheduler{
+		blocks: []policy.Block{
+			{Domain: "twitter.com", ResolvedIPs: []string{"1.2.3.4"}},
+		},
+	}
+
+	w := New(enf, sched)
+	w.HostsPath = hostsPath
+	w.debounce = 10 * time.Millisecond
+
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer w.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	removeHosts(t, hostsPath)
+
+	waitForSync(t, enf, 3*time.Second)
+}
+
+func TestPeriodicSweep_RestoresDeletedFile(t *testing.T) {
+	dir := t.TempDir()
+	hostsPath := filepath.Join(dir, "hosts")
+	writeHosts(t, hostsPath, []string{
+		"127.0.0.1 localhost",
+		"127.0.0.1 twitter.com # FOCUSGUARD: twitter.com",
+	})
+
+	enf := &mockEnforcer{}
+	sched := &mockScheduler{
+		blocks: []policy.Block{
+			{Domain: "twitter.com", ResolvedIPs: []string{"1.2.3.4"}},
+		},
+	}
+
+	w := New(enf, sched)
+	w.HostsPath = hostsPath
+	w.debounce = 10 * time.Millisecond
+	w.sweepInterval = 50 * time.Millisecond
+
+	if err := w.Start(); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	defer w.Stop()
+
+	time.Sleep(100 * time.Millisecond)
+
+	// Suppress the fsnotify Remove event so only the periodic sweep can detect
+	// the deletion.
+	w.MarkSelfWrite()
+	removeHosts(t, hostsPath)
+
+	waitForSync(t, enf, 2*time.Second)
+}
+
 func TestStartStop(t *testing.T) {
 	dir := t.TempDir()
 	hostsPath := filepath.Join(dir, "hosts")

@@ -15,8 +15,9 @@ import (
 )
 
 const (
-	defaultDebounce  = 200 * time.Millisecond
-	selfWriteWindow = 500 * time.Millisecond
+	defaultDebounce   = 200 * time.Millisecond
+	selfWriteWindow   = 500 * time.Millisecond
+	defaultSweepEvery = 30 * time.Second
 )
 
 type fsEvent struct {
@@ -41,6 +42,7 @@ type HostsWatcher struct {
 	stopCh         chan struct{}
 	stopOnce       sync.Once
 	watcher        *fsnotify.Watcher
+	sweepInterval  time.Duration
 	lastSelfWrite  time.Time
 	selfWriteDelay time.Duration
 }
@@ -118,7 +120,8 @@ func (w *HostsWatcher) watchFsEvents() {
 			if !ok {
 				return
 			}
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) ||
+				event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 				// On Windows fsnotify may report the path with different casing than
 				// the HostsPath built from the SystemRoot env var, so compare
 				// case-insensitively to avoid missing (or misfiring on) host edits.
@@ -145,10 +148,19 @@ func (w *HostsWatcher) watchFsEvents() {
 }
 
 func (w *HostsWatcher) eventLoop() {
+	interval := w.sweepInterval
+	if interval <= 0 {
+		interval = defaultSweepEvery
+	}
+	sweep := time.NewTicker(interval)
+	defer sweep.Stop()
+
 	for {
 		select {
 		case <-w.events:
 			w.debounceAndDetect()
+		case <-sweep.C:
+			w.detectTamper()
 		case <-w.stopCh:
 			return
 		}
@@ -179,18 +191,26 @@ func (w *HostsWatcher) detectTamper() {
 	if err != nil || len(blocks) == 0 {
 		return
 	}
+
+	activeBlocks := make(map[string][]string, len(blocks))
+	for _, b := range blocks {
+		activeBlocks[b.Domain] = b.ResolvedIPs
+	}
+
 	data, err := os.ReadFile(w.HostsPath)
 	if err != nil {
+		if !os.IsNotExist(err) {
+			return
+		}
+		// The hosts file was deleted (e.g. by an admin) — recreate it.
+		_ = w.enf.Sync(activeBlocks)
 		return
 	}
+
 	hostsContent := string(data)
 	for _, b := range blocks {
 		marker := fmt.Sprintf("# FOCUSGUARD: %s", b.Domain)
 		if !strings.Contains(hostsContent, marker) {
-			activeBlocks := make(map[string][]string)
-			for _, blk := range blocks {
-				activeBlocks[blk.Domain] = blk.ResolvedIPs
-			}
 			_ = w.enf.Sync(activeBlocks)
 			return
 		}
