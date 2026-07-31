@@ -90,7 +90,6 @@ func installWatchdogWindows(exePath string) error {
 	}
 
 	execCommand("sc", "description", watchdogServiceName, "Monitora o daemon FocusGuard e o reinicia se não responder.").CombinedOutput()
-	execCommand("sc", "config", watchdogServiceName, "depend="+serviceName).CombinedOutput()
 
 	failureArgs := []string{
 		"failure", watchdogServiceName,

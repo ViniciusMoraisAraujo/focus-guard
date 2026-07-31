@@ -13,6 +13,7 @@ import (
 const (
 	checkInterval = 10 * time.Second
 	pingTimeout   = 5 * time.Second
+	startupGrace  = 15 * time.Second
 	daemonProc    = "focusguard-daemon.exe"
 )
 
@@ -32,6 +33,11 @@ func watchLoop() {
 	defer ticker.Stop()
 
 	log.Printf("[FocusGuard Watchdog] Monitorando daemon a cada %v (timeout: %v)...\n", checkInterval, pingTimeout)
+
+	// Sem dependência SCM no daemon, aguarda ele concluir o boot antes do
+	// primeiro check para não matá-lo durante a inicialização.
+	log.Printf("[FocusGuard Watchdog] Aguardando %v para o daemon concluir o boot...\n", startupGrace)
+	time.Sleep(startupGrace)
 
 	checkDaemon()
 

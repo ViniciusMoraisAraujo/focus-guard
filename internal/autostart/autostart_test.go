@@ -586,8 +586,15 @@ func TestInstallWatchdog_CreatesService(t *testing.T) {
 		t.Fatalf("InstallWatchdog returned error: %v", err)
 	}
 
-	if len(captured) != 5 {
-		t.Fatalf("expected 5 sc commands (create, description, config, failure, start), got %d", len(captured))
+	if len(captured) != 4 {
+		t.Fatalf("expected 4 sc commands (create, description, failure, start), got %d", len(captured))
+	}
+
+	for _, c := range captured {
+		joined := strings.Join(c.args, " ")
+		if strings.Contains(joined, "depend=") || strings.Contains(joined, "config") {
+			t.Errorf("BUG REGRESSION: watchdog must NOT depend on the daemon (sc config depend= caused start error 1068), got %v", c.args)
+		}
 	}
 
 	createCmd := captured[0]
@@ -623,28 +630,19 @@ func TestInstallWatchdog_CreatesService(t *testing.T) {
 		t.Errorf("expected watchdog service name in description command, got %v", descCmd.args)
 	}
 
-	configCmd := captured[2]
-	configArgsJoined := strings.Join(configCmd.args, " ")
-	if !strings.Contains(configArgsJoined, "config") {
-		t.Errorf("expected sc config as third command, got %v", configCmd.args)
-	}
-	if !strings.Contains(configArgsJoined, "depend="+serviceName) {
-		t.Errorf("expected depend=%s in config command, got %v", serviceName, configCmd.args)
-	}
-
-	failureCmd := captured[3]
+	failureCmd := captured[2]
 	failureArgsJoined := strings.Join(failureCmd.args, " ")
 	if !strings.Contains(failureArgsJoined, "failure") {
-		t.Errorf("expected sc failure as fourth command, got %v", failureCmd.args)
+		t.Errorf("expected sc failure as third command, got %v", failureCmd.args)
 	}
 	if !strings.Contains(failureArgsJoined, "restart") {
 		t.Errorf("expected restart actions in failure command, got %v", failureCmd.args)
 	}
 
-	startCmd := captured[4]
+	startCmd := captured[3]
 	startArgsJoined := strings.Join(startCmd.args, " ")
 	if !strings.Contains(startArgsJoined, "start") {
-		t.Errorf("expected sc start as fifth command, got %v", startCmd.args)
+		t.Errorf("expected sc start as fourth command, got %v", startCmd.args)
 	}
 	if !strings.Contains(startArgsJoined, watchdogServiceName) {
 		t.Errorf("expected watchdog service name in start command, got %v", startCmd.args)
@@ -656,7 +654,7 @@ func TestInstallWatchdog_DescriptionFailureIsWarning(t *testing.T) {
 	execCommand = func(name string, args ...string) cmdRunner {
 		return &fakeCmd{
 			fn: func() ([]byte, error) {
-				if len(args) > 0 && (args[0] == "description" || args[0] == "config") {
+				if len(args) > 0 && args[0] == "description" {
 					return []byte("FAILED"), errors.New("exit status 1")
 				}
 				return []byte("success"), nil
