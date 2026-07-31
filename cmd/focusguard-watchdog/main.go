@@ -1,9 +1,7 @@
 package main
 
 import (
-	"fmt"
 	"log"
-	"os"
 	"os/exec"
 	"runtime"
 	"strings"
@@ -129,58 +127,4 @@ func tryRunAsService() bool {
 	return true
 }
 
-const ServiceName = "FocusGuardWatchdog"
-const DaemonServiceName = "FocusGuard"
 
-func InstallService(watchdogExe string) error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-
-	if _, err := os.Stat(watchdogExe); os.IsNotExist(err) {
-		return err
-	}
-
-	args := []string{
-		"create", ServiceName,
-		"binpath=", watchdogExe,
-		"start=", "auto",
-		"displayname=", "FocusGuard Watchdog",
-		"description=", "Monitora o daemon FocusGuard e o reinicia se não responder.",
-	}
-	cmd := exec.Command("sc", args...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("sc create falhou: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	_ = exec.Command("sc", "config", ServiceName, "depend="+DaemonServiceName).Run()
-
-	failArgs := []string{
-		"failure", ServiceName,
-		"reset=", "86400",
-		"actions=", "restart/5000/restart/5000/restart/5000",
-	}
-	if out, err := exec.Command("sc", failArgs...).CombinedOutput(); err != nil {
-		log.Printf("[FocusGuard Watchdog] Aviso: não foi configurar recovery: %v (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	if out, err := exec.Command("sc", "start", ServiceName).CombinedOutput(); err != nil {
-		return fmt.Errorf("sc start falhou: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	return nil
-}
-
-func UninstallService() error {
-	if runtime.GOOS != "windows" {
-		return nil
-	}
-
-	_ = exec.Command("sc", "stop", ServiceName).Run()
-	time.Sleep(1 * time.Second)
-
-	if out, err := exec.Command("sc", "delete", ServiceName).CombinedOutput(); err != nil {
-		return fmt.Errorf("sc delete falhou: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-	return nil
-}

@@ -523,3 +523,299 @@ func TestUninstallSvc_RunsSystemctl(t *testing.T) {
 		t.Error("expected systemctl daemon-reload to be called")
 	}
 }
+
+func TestInstallWatchdog_CreatesService(t *testing.T) {
+	var captured []struct {
+		name string
+		args []string
+	}
+
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	exePath := `C:\Program Files\FocusGuard\focusguard-watchdog.exe`
+	err := InstallWatchdog(exePath)
+	if err != nil {
+		t.Fatalf("InstallWatchdog returned error: %v", err)
+	}
+
+	if len(captured) != 5 {
+		t.Fatalf("expected 5 sc commands (create, description, config, failure, start), got %d", len(captured))
+	}
+
+	createCmd := captured[0]
+	if createCmd.name != "sc" {
+		t.Errorf("expected sc, got %q", createCmd.name)
+	}
+	createArgsJoined := strings.Join(createCmd.args, " ")
+	if !strings.Contains(createArgsJoined, "create") {
+		t.Errorf("expected create in args, got %v", createCmd.args)
+	}
+	if !strings.Contains(createArgsJoined, watchdogServiceName) {
+		t.Errorf("expected %q in args, got %v", watchdogServiceName, createCmd.args)
+	}
+	if !strings.Contains(createArgsJoined, exePath) {
+		t.Errorf("expected exePath %q in args, got %v", exePath, createCmd.args)
+	}
+	if !strings.Contains(createArgsJoined, "displayname=") {
+		t.Errorf("expected displayname in args, got %v", createCmd.args)
+	}
+	if !strings.Contains(createArgsJoined, "start=") || !strings.Contains(createArgsJoined, "auto") {
+		t.Errorf("expected start= auto in args, got %v", createCmd.args)
+	}
+	if strings.Contains(createArgsJoined, "description=") {
+		t.Errorf("BUG REGRESSION: 'description=' must NOT be passed to sc create (exit status 1639), got %v", createCmd.args)
+	}
+
+	descCmd := captured[1]
+	descArgsJoined := strings.Join(descCmd.args, " ")
+	if !strings.Contains(descArgsJoined, "description") {
+		t.Errorf("expected sc description as second command, got %v", descCmd.args)
+	}
+	if !strings.Contains(descArgsJoined, watchdogServiceName) {
+		t.Errorf("expected watchdog service name in description command, got %v", descCmd.args)
+	}
+
+	configCmd := captured[2]
+	configArgsJoined := strings.Join(configCmd.args, " ")
+	if !strings.Contains(configArgsJoined, "config") {
+		t.Errorf("expected sc config as third command, got %v", configCmd.args)
+	}
+	if !strings.Contains(configArgsJoined, "depend="+serviceName) {
+		t.Errorf("expected depend=%s in config command, got %v", serviceName, configCmd.args)
+	}
+
+	failureCmd := captured[3]
+	failureArgsJoined := strings.Join(failureCmd.args, " ")
+	if !strings.Contains(failureArgsJoined, "failure") {
+		t.Errorf("expected sc failure as fourth command, got %v", failureCmd.args)
+	}
+	if !strings.Contains(failureArgsJoined, "restart") {
+		t.Errorf("expected restart actions in failure command, got %v", failureCmd.args)
+	}
+
+	startCmd := captured[4]
+	startArgsJoined := strings.Join(startCmd.args, " ")
+	if !strings.Contains(startArgsJoined, "start") {
+		t.Errorf("expected sc start as fifth command, got %v", startCmd.args)
+	}
+	if !strings.Contains(startArgsJoined, watchdogServiceName) {
+		t.Errorf("expected watchdog service name in start command, got %v", startCmd.args)
+	}
+}
+
+func TestInstallWatchdog_DescriptionFailureIsWarning(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				if len(args) > 0 && (args[0] == "description" || args[0] == "config") {
+					return []byte("FAILED"), errors.New("exit status 1")
+				}
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	if err := InstallWatchdog(`C:\focusguard-watchdog.exe`); err != nil {
+		t.Fatalf("InstallWatchdog should succeed even if sc description/config fail (cosmetic, ignored), got: %v", err)
+	}
+}
+
+func TestInstallWatchdog_CreateFails(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				if len(args) > 0 && args[0] == "create" {
+					return []byte("exit status 1639"), errors.New("exit status 1639")
+				}
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := InstallWatchdog(`C:\focusguard-watchdog.exe`)
+	if err == nil {
+		t.Fatal("expected error when sc create fails")
+	}
+	if !strings.Contains(err.Error(), "falha ao criar serviço watchdog") {
+		t.Errorf("expected create failure message, got: %v", err)
+	}
+}
+
+func TestInstallWatchdog_StartFails(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				if len(args) > 0 && args[0] == "start" {
+					return []byte("FAILED 1066"), errors.New("exit status 1066")
+				}
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := InstallWatchdog(`C:\focusguard-watchdog.exe`)
+	if err == nil {
+		t.Fatal("expected error when sc start fails")
+	}
+	if !strings.Contains(err.Error(), "falha ao iniciar watchdog") {
+		t.Errorf("expected start failure message, got: %v", err)
+	}
+}
+
+func TestInstallWatchdog_RecoveryFailureIsWarning(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				if len(args) > 0 && args[0] == "failure" {
+					return []byte("FAILED"), errors.New("exit status 1")
+				}
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	if err := InstallWatchdog(`C:\focusguard-watchdog.exe`); err != nil {
+		t.Fatalf("InstallWatchdog should succeed even if sc failure fails (warning only), got: %v", err)
+	}
+}
+
+func TestInstallWatchdog_InvalidPath(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := InstallWatchdog("")
+	if err == nil {
+		t.Fatal("expected error for empty path")
+	}
+}
+
+func TestInstallWatchdog_UnsupportedPlatform(t *testing.T) {
+	origGoos := goos
+	goos = "linux"
+	defer func() { goos = origGoos }()
+
+	err := InstallWatchdog("/usr/local/bin/focusguard-watchdog")
+	if err == nil || !strings.Contains(err.Error(), "exclusivo do Windows") {
+		t.Fatalf("expected unsupported platform error on linux, got: %v", err)
+	}
+}
+
+func TestUninstallWatchdog_CorrectCommands(t *testing.T) {
+	var captured []struct {
+		name string
+		args []string
+	}
+
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := UninstallWatchdog()
+	if err != nil {
+		t.Fatalf("UninstallWatchdog returned error: %v", err)
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("expected 2 sc commands (stop, delete), got %d", len(captured))
+	}
+
+	stopArgs := strings.Join(captured[0].args, " ")
+	if !strings.Contains(stopArgs, "stop") || !strings.Contains(stopArgs, watchdogServiceName) {
+		t.Errorf("expected sc stop %s first, got %v", watchdogServiceName, captured[0].args)
+	}
+
+	deleteArgs := strings.Join(captured[1].args, " ")
+	if !strings.Contains(deleteArgs, "delete") || !strings.Contains(deleteArgs, watchdogServiceName) {
+		t.Errorf("expected sc delete %s second, got %v", watchdogServiceName, captured[1].args)
+	}
+}
+
+func TestUninstallWatchdog_DeleteFails(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("FAILED 1060"), errors.New("exit status 1060")
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := UninstallWatchdog()
+	if err == nil {
+		t.Fatal("expected error when sc delete fails")
+	}
+	if !strings.Contains(err.Error(), "falha ao remover watchdog") {
+		t.Errorf("expected delete failure message, got: %v", err)
+	}
+}
+
+func TestUninstallWatchdog_UnsupportedPlatform(t *testing.T) {
+	origGoos := goos
+	goos = "darwin"
+	defer func() { goos = origGoos }()
+
+	err := UninstallWatchdog()
+	if err == nil || !strings.Contains(err.Error(), "exclusivo do Windows") {
+		t.Fatalf("expected unsupported platform error on darwin, got: %v", err)
+	}
+}

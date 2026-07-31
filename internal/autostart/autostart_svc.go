@@ -73,13 +73,13 @@ func installWatchdogWindows(exePath string) error {
 		"binPath=", exePath,
 		"start=", "auto",
 		"displayname=", "FocusGuard Watchdog",
-		"description=", "Monitora o daemon FocusGuard e o reinicia se não responder.",
 	}
 	out, err := execCommand("sc", args...).CombinedOutput()
 	if err != nil {
 		return fmt.Errorf("autostart: falha ao criar serviço watchdog: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
+	execCommand("sc", "description", watchdogServiceName, "Monitora o daemon FocusGuard e o reinicia se não responder.").CombinedOutput()
 	execCommand("sc", "config", watchdogServiceName, "depend="+serviceName).CombinedOutput()
 
 	failureArgs := []string{
