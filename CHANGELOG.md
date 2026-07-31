@@ -5,6 +5,22 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.2.2] - 2026-07-31
+
+### ⚡ Otimização de processamento (continuação)
+
+- **Sem DNS duplicado (G2)**: o enforcer não resolve mais IPs por conta própria —
+  o scheduler resolve `domínio` e `www.domínio` uma única vez no bloqueio,
+  mantendo a cobertura de firewall do `www.` sem trabalho repetido.
+- **Sem eventos próprios (G6)**: gravações do próprio daemon no arquivo `hosts`
+  e no state são marcadas, então o hostswatch/statewatch ignoram os eventos de
+  `fsnotify` gerados por elas — sem ciclos redundantes de Sync/Reconcile.
+- **Sync mais eficiente (G7)**: o `Sync` consulta as regras de firewall existentes
+  uma única vez por chamada, em vez de uma vez por regra.
+- **Status focado (G3)**: no Windows, o status consulta apenas as regras
+  `FocusGuard*` (PowerShell), sem despejar todas as regras do firewall.
+- **Cache no TUI (G9)**: `r` repetido em menos de 2s não re-consulta o daemon.
+
 ## [0.2.1] - 2026-07-31
 
 ### ⚡ Otimização de processamento
