@@ -89,12 +89,42 @@ builds:
     ldflags:
       - -s -w
 
+  - id: tray-linux
+    main: ./cmd/focusguard-tray
+    binary: focusguard-tray
+    goos:
+      - linux
+    goarch:
+      - amd64
+    env:
+      - CGO_ENABLED=1
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: tray-windows
+    main: ./cmd/focusguard-tray
+    binary: focusguard-tray
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -H windowsgui
+
 archives:
   - id: windows
     ids:
       - cli-windows
       - daemon-windows
       - watchdog-windows
+      - tray-windows
     formats:
       - zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_windows_{{ .Arch }}'
@@ -105,6 +135,7 @@ archives:
       - cli-linux
       - daemon-linux
       - watchdog-linux
+      - tray-linux
     formats:
       - tar.gz
     name_template: '{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}'

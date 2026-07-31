@@ -37,6 +37,24 @@ install_binaries() {
   install -m 0755 "${dir}/focusguard" "${BIN_DIR}/focusguard"
   install -m 0755 "${dir}/focusguard-daemon" "${BIN_DIR}/focusguard-daemon"
   install -m 0755 "${dir}/focusguard-watchdog" "${BIN_DIR}/focusguard-watchdog"
+  if [[ -f "${dir}/focusguard-tray" ]]; then
+    install -m 0755 "${dir}/focusguard-tray" "${BIN_DIR}/focusguard-tray"
+    install_tray_deps
+  fi
+}
+
+install_tray_deps() {
+  if ldconfig -p 2>/dev/null | grep -q 'libayatana-appindicator3.so'; then
+    return 0
+  fi
+  if ! cmd_exists apt-get; then
+    echo "[FocusGuard] Aviso: libayatana-appindicator3 não encontrada. O focusguard-tray precisa dela para rodar." >&2
+    return 0
+  fi
+  echo "[FocusGuard] Instalando dependências do tray (libayatana-appindicator3)..."
+  apt-get update -qq >/dev/null 2>&1 || true
+  apt-get install -y libayatana-appindicator3-1 libgtk-3-0 \
+    || echo "[FocusGuard] Aviso: não foi possível instalar as dependências do tray." >&2
 }
 
 install_service() {
@@ -74,7 +92,7 @@ do_uninstall() {
   systemctl daemon-reload
   rm -f "${SERVICE_FILE}"
   echo "[FocusGuard] Removendo binários..."
-  rm -f "${BIN_DIR}/focusguard" "${BIN_DIR}/focusguard-daemon" "${BIN_DIR}/focusguard-watchdog"
+  rm -f "${BIN_DIR}/focusguard" "${BIN_DIR}/focusguard-daemon" "${BIN_DIR}/focusguard-watchdog" "${BIN_DIR}/focusguard-tray"
   echo "[FocusGuard] ✔ FocusGuard removido. Estado preservado em ${STATE_DIR}"
 }
 
