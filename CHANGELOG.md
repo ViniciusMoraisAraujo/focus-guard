@@ -5,6 +5,19 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.2.1] - 2026-07-31
+
+### ⚡ Otimização de processamento
+
+- **Watchdog externo**: intervalo de verificação do daemon reduzido de 10s para
+  30s, com ping sem goroutine por tentativa (menos alocação e lixo para o GC).
+- **Windows**: o resultado de `checkAdmin` é cacheado com
+  `sync.Once`, eliminando o spawn de `net session` em toda operação de firewall.
+- **Refresh de IPs inteligente**: quando não há bloqueios ativos, o refresh
+  periódico (a cada 15min) é pulado — sem leitura do store nem resolução de DNS.
+- **Novo `DialTimeout`/`SendWithTimeout`** no IPC para controle de timeout no
+  dial e na leitura/escrita.
+
 ## [0.2.0] - 2026-07-31
 
 ### ✨ Auto-Update (destaque)
