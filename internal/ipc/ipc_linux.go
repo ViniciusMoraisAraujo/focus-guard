@@ -5,6 +5,7 @@ package ipc
 import (
 	"net"
 	"os"
+	"time"
 )
 
 const SocketPath = "/run/focusguard.sock"
@@ -29,4 +30,12 @@ func Dial() (net.Conn, error) {
 		path = TestSocketPath
 	}
 	return net.Dial("unix", path)
+}
+
+func DialTimeout(timeout time.Duration) (net.Conn, error) {
+	path := SocketPath
+	if TestSocketPath != "" {
+		path = TestSocketPath
+	}
+	return net.DialTimeout("unix", path, timeout)
 }

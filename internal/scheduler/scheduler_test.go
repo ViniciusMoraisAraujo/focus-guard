@@ -4,6 +4,7 @@ import (
 	"errors"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -474,6 +475,25 @@ func TestScheduler_Reconcile_MixedBlocks(t *testing.T) {
 	}
 }
 
+func TestScheduler_PeriodicIPRefresh_SkipsWithoutBlocks(t *testing.T) {
+	sched, _, _ := setupTestScheduler(t)
+
+	var resolveCalls int32
+	origResolve := resolveFunc
+	resolveFunc = func(domain string) ([]string, error) {
+		atomic.AddInt32(&resolveCalls, 1)
+		return nil, nil
+	}
+	defer func() { resolveFunc = origResolve }()
+
+	go sched.startPeriodicIPRefresh(20 * time.Millisecond)
+	time.Sleep(120 * time.Millisecond)
+
+	if got := atomic.LoadInt32(&resolveCalls); got != 0 {
+		t.Errorf("expected 0 DNS resolutions with no active blocks, got %d", got)
+	}
+}
+
 func TestScheduler_PeriodicIPRefresh(t *testing.T) {
 	sched, enf, st := setupTestScheduler(t)
 
@@ -493,6 +513,10 @@ func TestScheduler_PeriodicIPRefresh(t *testing.T) {
 
 	if err := st.Save(initialState); err != nil {
 		t.Fatalf("Failed to prepare test state: %v", err)
+	}
+	// Reconcile popula o contador interno activeBlocks, como no boot real do daemon.
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
 	}
 
 	go sched.startPeriodicIPRefresh(20 * time.Millisecond)

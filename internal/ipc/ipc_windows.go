@@ -5,6 +5,7 @@ package ipc
 import (
 	"fmt"
 	"net"
+	"time"
 )
 
 const WindowsPort = 48901
@@ -23,4 +24,12 @@ func Dial() (net.Conn, error) {
 		addr = TestDialAddr
 	}
 	return net.Dial("tcp", addr)
+}
+
+func DialTimeout(timeout time.Duration) (net.Conn, error) {
+	addr := fmt.Sprintf("127.0.0.1:%d", WindowsPort)
+	if TestDialAddr != "" {
+		addr = TestDialAddr
+	}
+	return net.DialTimeout("tcp", addr, timeout)
 }

@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	checkInterval = 10 * time.Second
+	checkInterval = 30 * time.Second
 	pingTimeout   = 5 * time.Second
 	startupGrace  = 15 * time.Second
 	daemonProc    = "focusguard-daemon.exe"
@@ -99,23 +99,8 @@ func waitForDaemon() {
 
 func daemonResponds() bool {
 	client := ipc.NewClient()
-
-	done := make(chan bool, 1)
-	go func() {
-		resp, err := client.Send(ipc.Request{Action: "ping"})
-		if err == nil && resp.Success {
-			done <- true
-			return
-		}
-		done <- false
-	}()
-
-	select {
-	case alive := <-done:
-		return alive
-	case <-time.After(pingTimeout):
-		return false
-	}
+	resp, err := client.SendWithTimeout(ipc.Request{Action: "ping"}, pingTimeout)
+	return err == nil && resp.Success
 }
 
 func tryRunAsService() bool {

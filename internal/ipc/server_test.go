@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"focusguard/internal/enforcer"
 	"focusguard/internal/scheduler"
@@ -83,6 +84,49 @@ func TestClientSend_DialError(t *testing.T) {
 
 	c := NewClient()
 	_, err := c.Send(Request{Action: "ping"})
+	if err == nil {
+		t.Fatal("expected dial error when no server is running")
+	}
+	if !strings.Contains(err.Error(), "error connecting to ipc") {
+		t.Errorf("expected connection error message, got: %v", err)
+	}
+}
+
+func TestClientSendWithTimeout_Success(t *testing.T) {
+	server := setupTestServer(t)
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	origDialAddr := TestDialAddr
+	TestDialAddr = ln.Addr().String()
+	defer func() { TestDialAddr = origDialAddr }()
+
+	go func() {
+		conn, _ := ln.Accept()
+		if conn != nil {
+			server.handleConnection(conn)
+		}
+	}()
+
+	c := NewClient()
+	resp, err := c.SendWithTimeout(Request{Action: "ping"}, 2*time.Second)
+	if err != nil {
+		t.Fatalf("SendWithTimeout failed: %v", err)
+	}
+	if !resp.Success {
+		t.Errorf("expected success, got: %s", resp.Message)
+	}
+}
+
+func TestClientSendWithTimeout_DialError(t *testing.T) {
+	setTestEndpoint(t)
+
+	c := NewClient()
+	_, err := c.SendWithTimeout(Request{Action: "ping"}, 500*time.Millisecond)
 	if err == nil {
 		t.Fatal("expected dial error when no server is running")
 	}

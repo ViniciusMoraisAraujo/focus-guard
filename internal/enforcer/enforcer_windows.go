@@ -17,6 +17,8 @@ import (
 type windowsEnforcer struct {
 	mu        sync.Mutex
 	hostsPath string
+	adminOnce sync.Once
+	adminErr  error
 }
 
 func NewEnforcer() Enforcer {
@@ -25,13 +27,16 @@ func NewEnforcer() Enforcer {
 	}
 }
 
-func checkAdmin() error {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+func (e *windowsEnforcer) checkAdmin() error {
+	e.adminOnce.Do(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 
-	cmd := exec.CommandContext(ctx, "net", "session")
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("checkAdmin: %w", err)
+		cmd := exec.CommandContext(ctx, "net", "session")
+		e.adminErr = cmd.Run()
+	})
+	if e.adminErr != nil {
+		return fmt.Errorf("checkAdmin: %w", e.adminErr)
 	}
 	return nil
 }
@@ -40,7 +45,7 @@ func (e *windowsEnforcer) BlockDomain(domain string, ips []string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := checkAdmin(); err != nil {
+	if err := e.checkAdmin(); err != nil {
 		return err
 	}
 
@@ -65,7 +70,7 @@ func (e *windowsEnforcer) UnblockDomain(domain string, ips []string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := checkAdmin(); err != nil {
+	if err := e.checkAdmin(); err != nil {
 		return err
 	}
 
@@ -91,7 +96,7 @@ func (e *windowsEnforcer) Sync(activeBlocks map[string][]string) error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := checkAdmin(); err != nil {
+	if err := e.checkAdmin(); err != nil {
 		return err
 	}
 
@@ -262,7 +267,7 @@ func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := checkAdmin(); err != nil {
+	if err := e.checkAdmin(); err != nil {
 		return EnforcerStatus{}, err
 	}
 
@@ -334,7 +339,7 @@ func (e *windowsEnforcer) BlockDoH() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := checkAdmin(); err != nil {
+	if err := e.checkAdmin(); err != nil {
 		return err
 	}
 
@@ -350,7 +355,7 @@ func (e *windowsEnforcer) UnblockDoH() error {
 	e.mu.Lock()
 	defer e.mu.Unlock()
 
-	if err := checkAdmin(); err != nil {
+	if err := e.checkAdmin(); err != nil {
 		return err
 	}
 

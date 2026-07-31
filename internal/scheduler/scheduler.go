@@ -3,6 +3,7 @@ package scheduler
 import (
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"focusguard/internal/enforcer"
@@ -13,10 +14,11 @@ import (
 var resolveFunc = enforcer.ResolveIPs
 
 type Scheduler struct {
-	mu       sync.Mutex
-	store    *store.Store
-	enforcer enforcer.Enforcer
-	timers   map[string]*time.Timer
+	mu           sync.Mutex
+	store        *store.Store
+	enforcer     enforcer.Enforcer
+	timers       map[string]*time.Timer
+	activeBlocks atomic.Int32
 }
 
 func NewScheduler(st *store.Store, enf enforcer.Enforcer) *Scheduler {
@@ -70,6 +72,7 @@ func (s *Scheduler) Reconcile() error {
 			s.setupTimerLocked(block)
 		}
 	}
+	s.activeBlocks.Store(int32(len(activeIPs)))
 
 	if updated {
 		if err := s.store.Save(state); err != nil {
@@ -99,6 +102,10 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 	defer ticker.Stop()
 
 	for range ticker.C {
+		if s.activeBlocks.Load() == 0 {
+			continue
+		}
+
 		var entries []refreshEntry
 		s.mu.Lock()
 		state, err := s.store.Load()
@@ -196,6 +203,7 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
 	}
+	s.activeBlocks.Store(int32(len(state.Blocks)))
 	s.mu.Unlock()
 
 	if err := s.enforcer.BlockDomain(domain, ips); err != nil {
@@ -257,6 +265,7 @@ func (s *Scheduler) onExpire(domain string) {
 	ips := block.ResolvedIPs
 	delete(state.Blocks, domain)
 	remaining := len(state.Blocks)
+	s.activeBlocks.Store(int32(remaining))
 	_ = s.store.Save(state)
 	delete(s.timers, domain)
 	s.mu.Unlock()
