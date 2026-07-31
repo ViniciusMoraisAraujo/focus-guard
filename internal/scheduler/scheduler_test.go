@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
 	"sync"
 	"sync/atomic"
@@ -18,6 +19,7 @@ type mockEnforcer struct {
 	blockedDomains   map[string][]string
 	unblockedDomains map[string][]string
 	syncedBlocks     map[string][]string
+	syncCalls        int
 }
 
 func newMockEnforcer() *mockEnforcer {
@@ -45,6 +47,7 @@ func (m *mockEnforcer) UnblockDomain(domain string, ips []string) error {
 func (m *mockEnforcer) Sync(activeBlocks map[string][]string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.syncCalls++
 	m.syncedBlocks = make(map[string][]string)
 	for k, v := range activeBlocks {
 		m.syncedBlocks[k] = v
@@ -362,6 +365,12 @@ func TestScheduler_ProtectionStatus(t *testing.T) {
 		t.Fatalf("save state: %v", err)
 	}
 
+	// A RAM é a fonte da verdade: o estado persistido no disco precisa ser
+	// carregado por uma reconciliação (boot) para refletir na RAM.
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile(): %v", err)
+	}
+
 	ps, err = sched.ProtectionStatus()
 	if err != nil {
 		t.Fatalf("ProtectionStatus() erro: %v", err)
@@ -487,6 +496,7 @@ func TestScheduler_PeriodicIPRefresh_SkipsWithoutBlocks(t *testing.T) {
 	defer func() { resolveFunc = origResolve }()
 
 	go sched.startPeriodicIPRefresh(20 * time.Millisecond)
+	defer close(sched.refreshStop)
 	time.Sleep(120 * time.Millisecond)
 
 	if got := atomic.LoadInt32(&resolveCalls); got != 0 {
@@ -514,12 +524,13 @@ func TestScheduler_PeriodicIPRefresh(t *testing.T) {
 	if err := st.Save(initialState); err != nil {
 		t.Fatalf("Failed to prepare test state: %v", err)
 	}
-	// Reconcile popula o contador interno activeBlocks, como no boot real do daemon.
+	// Reconcile carrega o estado do disco para a RAM, como no boot real do daemon.
 	if err := sched.Reconcile(); err != nil {
 		t.Fatalf("Reconcile: %v", err)
 	}
 
 	go sched.startPeriodicIPRefresh(20 * time.Millisecond)
+	defer close(sched.refreshStop)
 
 	updated := waitForCondition(2*time.Second, func() bool {
 		state, err := st.Load()
@@ -540,5 +551,230 @@ func TestScheduler_PeriodicIPRefresh(t *testing.T) {
 
 	if !exists || len(ips) <= 1 {
 		t.Errorf("Expected enforcer to receive refreshed IPs for %s", domain)
+	}
+}
+
+type failingBlockEnforcer struct {
+	*mockEnforcer
+}
+
+func (e *failingBlockEnforcer) BlockDomain(_ string, _ []string) error {
+	return errors.New("block failed: permission denied")
+}
+
+func TestScheduler_Block_EnforcerErrorRollsBackRAM(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	enf := &failingBlockEnforcer{mockEnforcer: newMockEnforcer()}
+	sched := NewScheduler(st, enf)
+
+	if _, err := sched.Block("localhost", time.Hour); err == nil {
+		t.Fatal("expected Block() to fail when enforcer.BlockDomain fails")
+	}
+
+	blocks, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Errorf("expected RAM blocks to be rolled back after failed block, got %d: %v", len(blocks), blocks)
+	}
+
+	if sched.HasActiveBlocks() {
+		t.Error("expected HasActiveBlocks to be false after failed block")
+	}
+
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(state.Blocks) != 0 {
+		t.Errorf("expected state file to be rolled back after failed block, got %d blocks", len(state.Blocks))
+	}
+}
+
+func TestScheduler_Reconcile_TamperExpiryToPast(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+	active := policy.Block{
+		Domain:      "active.com",
+		StartedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+		ResolvedIPs: []string{"1.2.3.4"},
+	}
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{"active.com": active}}); err != nil {
+		t.Fatalf("prepare state: %v", err)
+	}
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile(): %v", err)
+	}
+	if !sched.HasActiveBlocks() {
+		t.Fatal("expected active block after bootstrap")
+	}
+
+	// Adulteração: mover a expiração para o passado, como um admin faria no editor.
+	tampered := active
+	tampered.ExpiresAt = now.Add(-1 * time.Hour)
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{"active.com": tampered}}); err != nil {
+		t.Fatalf("tamper state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() após adulteração: %v", err)
+	}
+
+	// O disco deve ter sido restaurado a partir da RAM (data original).
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	restored, ok := loaded.Blocks["active.com"]
+	if !ok {
+		t.Fatal("expected active.com to remain in state")
+	}
+	if !restored.ExpiresAt.Equal(active.ExpiresAt) {
+		t.Errorf("expected disk expiry restored to %v, got %v", active.ExpiresAt, restored.ExpiresAt)
+	}
+
+	// O domínio não deve ter sido desbloqueado pelo arquivo adulterado.
+	enf.mu.Lock()
+	_, unblocked := enf.unblockedDomains["active.com"]
+	enf.mu.Unlock()
+	if unblocked {
+		t.Error("expected active.com NOT to be unblocked by tampered state")
+	}
+	if !sched.HasActiveBlocks() {
+		t.Error("expected block to remain active in RAM")
+	}
+}
+
+func TestScheduler_Reconcile_TamperRemovedBlock(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+	active := policy.Block{
+		Domain:      "active.com",
+		StartedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+		ResolvedIPs: []string{"1.2.3.4"},
+	}
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{"active.com": active}}); err != nil {
+		t.Fatalf("prepare state: %v", err)
+	}
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile(): %v", err)
+	}
+
+	// Adulteração: remover o domínio do disco.
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{}}); err != nil {
+		t.Fatalf("tamper state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() após adulteração: %v", err)
+	}
+
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if _, ok := loaded.Blocks["active.com"]; !ok {
+		t.Error("expected removed block to be restored to disk")
+	}
+
+	enf.mu.Lock()
+	_, unblocked := enf.unblockedDomains["active.com"]
+	enf.mu.Unlock()
+	if unblocked {
+		t.Error("expected active.com NOT to be unblocked by tampered state")
+	}
+}
+
+func TestScheduler_Reconcile_TamperDeletedFile(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	enf := newMockEnforcer()
+	sched := NewScheduler(st, enf)
+
+	now := time.Now().UTC().Round(time.Second)
+	active := policy.Block{
+		Domain:      "active.com",
+		StartedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+		ResolvedIPs: []string{"1.2.3.4"},
+	}
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{"active.com": active}}); err != nil {
+		t.Fatalf("prepare state: %v", err)
+	}
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile(): %v", err)
+	}
+
+	// Adulteração: excluir o arquivo de estado inteiro.
+	if err := os.Remove(dbPath); err != nil {
+		t.Fatalf("remove state file: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() após exclusão: %v", err)
+	}
+
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if _, ok := loaded.Blocks["active.com"]; !ok {
+		t.Error("expected state file to be recreated from RAM after deletion")
+	}
+
+	enf.mu.Lock()
+	_, unblocked := enf.unblockedDomains["active.com"]
+	enf.mu.Unlock()
+	if unblocked {
+		t.Error("expected active.com NOT to be unblocked after file deletion")
+	}
+}
+
+func TestScheduler_Reconcile_MatchNoOp(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{
+		"active.com": {
+			Domain:      "active.com",
+			StartedAt:   now,
+			ExpiresAt:   now.Add(24 * time.Hour),
+			ResolvedIPs: []string{"1.2.3.4"},
+		},
+	}}); err != nil {
+		t.Fatalf("prepare state: %v", err)
+	}
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("bootstrap Reconcile: %v", err)
+	}
+
+	enf.mu.Lock()
+	callsAfterBootstrap := enf.syncCalls
+	enf.mu.Unlock()
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("second Reconcile: %v", err)
+	}
+
+	enf.mu.Lock()
+	defer enf.mu.Unlock()
+	if enf.syncCalls != callsAfterBootstrap {
+		t.Errorf("expected no enforcer re-sync when disk matches RAM, got %d -> %d calls",
+			callsAfterBootstrap, enf.syncCalls)
 	}
 }

@@ -297,3 +297,56 @@ func TestStop_NoStart(t *testing.T) {
 
 	w.Stop()
 }
+
+func TestWatchFsEvents_RemoveTriggersReconcile(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	writeStateFile(t, statePath, `{"version":1,"blocks":{"test.com":{"domain":"test.com"}}}`)
+
+	rec := &mockReconciler{}
+
+	w := &StateWatcher{
+		StatePath:  statePath,
+		reconciler: rec,
+		debounce:   10 * time.Millisecond,
+		events:     make(chan fsEvent, 10),
+		stopCh:     make(chan struct{}),
+	}
+
+	watcher, err := fsnotify.NewWatcher()
+	if err != nil {
+		t.Fatalf("fsnotify.NewWatcher: %v", err)
+	}
+	w.watcher = watcher
+
+	if err := watcher.Add(dir); err != nil {
+		t.Fatalf("watcher.Add: %v", err)
+	}
+
+	done := make(chan struct{})
+	go func() {
+		w.eventLoop()
+		close(done)
+	}()
+
+	doneFs := make(chan struct{})
+	go func() {
+		w.watchFsEvents()
+		close(doneFs)
+	}()
+
+	if err := os.Remove(statePath); err != nil {
+		t.Fatalf("os.Remove: %v", err)
+	}
+
+	time.Sleep(100 * time.Millisecond)
+
+	close(w.stopCh)
+	<-done
+	<-doneFs
+
+	calls := atomic.LoadInt32(&rec.reconcileCalls)
+	if calls != 1 {
+		t.Errorf("expected 1 Reconcile call after state file deletion, got %d", calls)
+	}
+}

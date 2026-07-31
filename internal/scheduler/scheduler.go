@@ -2,8 +2,8 @@ package scheduler
 
 import (
 	"fmt"
+	"slices"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"focusguard/internal/enforcer"
@@ -41,19 +41,28 @@ func resolveBlockIPs(domain string) ([]string, error) {
 	return ips, nil
 }
 
+// Scheduler treats the in-memory blocks map as the source of truth. The
+// state.json file on disk is only a mirror: it is read once at bootstrap to
+// restore the RAM after a daemon restart, and afterwards any divergence from
+// the in-memory state is treated as external tampering and the disk copy is
+// overwritten to match the RAM.
 type Scheduler struct {
 	mu           sync.Mutex
 	store        *store.Store
 	enforcer     enforcer.Enforcer
+	blocks       map[string]policy.Block
 	timers       map[string]*time.Timer
-	activeBlocks atomic.Int32
+	bootstrapped bool
+	refreshStop  chan struct{}
 }
 
 func NewScheduler(st *store.Store, enf enforcer.Enforcer) *Scheduler {
 	return &Scheduler{
-		store:    st,
-		enforcer: enf,
-		timers:   make(map[string]*time.Timer),
+		store:       st,
+		enforcer:    enf,
+		blocks:      make(map[string]policy.Block),
+		timers:      make(map[string]*time.Timer),
+		refreshStop: make(chan struct{}),
 	}
 }
 
@@ -77,38 +86,92 @@ type refreshEntry struct {
 	ips    []string
 }
 
+// statesEqual reports whether two states are semantically identical. Any
+// difference (missing/extra domain, altered timestamps or IPs) means the disk
+// copy no longer mirrors the in-memory state and must be restored.
+func statesEqual(a, b *store.State) bool {
+	if len(a.Blocks) != len(b.Blocks) {
+		return false
+	}
+	for domain, ab := range a.Blocks {
+		bb, ok := b.Blocks[domain]
+		if !ok {
+			return false
+		}
+		if ab.Domain != bb.Domain || !ab.StartedAt.Equal(bb.StartedAt) || !ab.ExpiresAt.Equal(bb.ExpiresAt) {
+			return false
+		}
+		if !slices.Equal(ab.ResolvedIPs, bb.ResolvedIPs) {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Scheduler) ramState() *store.State {
+	blocks := make(map[string]policy.Block, len(s.blocks))
+	for domain, block := range s.blocks {
+		blocks[domain] = block
+	}
+	return &store.State{Version: 1, Blocks: blocks}
+}
+
+// Reconcile loads the persisted state into RAM on the first call (bootstrap)
+// and, on every subsequent call, restores any disk tampering from the in-memory
+// state. Expired blocks are cleaned up and the enforcer is re-applied only when
+// something actually changed.
 func (s *Scheduler) Reconcile() error {
 	s.mu.Lock()
 
-	state, err := s.store.Load()
-	if err != nil {
-		s.mu.Unlock()
-		return fmt.Errorf("scheduler: erro ao carregar estado: %w", err)
+	changed := false
+
+	if !s.bootstrapped {
+		state, err := s.store.Load()
+		if err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("scheduler: erro ao carregar estado: %w", err)
+		}
+		for domain, block := range state.Blocks {
+			s.blocks[domain] = block
+		}
+		s.bootstrapped = true
+		changed = true
+	}
+
+	// The disk is only a mirror: if it diverges from RAM (edited, emptied,
+	// deleted or corrupted), it is overwritten with the in-memory state.
+	if disk, err := s.store.Load(); err != nil || !statesEqual(disk, s.ramState()) {
+		changed = true
 	}
 
 	var toUnblock []unblockEntry
-	activeIPs := make(map[string][]string)
-	updated := false
-
-	for domain, block := range state.Blocks {
+	activeIPs := make(map[string][]string, len(s.blocks))
+	for domain, block := range s.blocks {
 		if block.CanUnblock() {
 			toUnblock = append(toUnblock, unblockEntry{domain, block.ResolvedIPs})
-			delete(state.Blocks, domain)
-			updated = true
+			delete(s.blocks, domain)
+			if t, ok := s.timers[domain]; ok {
+				t.Stop()
+				delete(s.timers, domain)
+			}
+			changed = true
 		} else {
 			activeIPs[domain] = block.ResolvedIPs
 			s.setupTimerLocked(block)
 		}
 	}
-	s.activeBlocks.Store(int32(len(activeIPs)))
 
-	if updated {
-		if err := s.store.Save(state); err != nil {
+	if changed {
+		if err := s.store.Save(s.ramState()); err != nil {
 			s.mu.Unlock()
-			return fmt.Errorf("scheduler: erro ao atualizar estado pós-reconciliação: %w", err)
+			return fmt.Errorf("scheduler: erro ao restaurar/salvar estado: %w", err)
 		}
 	}
 	s.mu.Unlock()
+
+	if !changed {
+		return nil
+	}
 
 	for _, e := range toUnblock {
 		_ = s.enforcer.UnblockDomain(e.domain, e.ips)
@@ -129,19 +192,21 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	for range ticker.C {
-		if s.activeBlocks.Load() == 0 {
+	for {
+		select {
+		case <-s.refreshStop:
+			return
+		case <-ticker.C:
+		}
+
+		s.mu.Lock()
+		if len(s.blocks) == 0 {
+			s.mu.Unlock()
 			continue
 		}
 
 		var entries []refreshEntry
-		s.mu.Lock()
-		state, err := s.store.Load()
-		if err != nil {
-			s.mu.Unlock()
-			continue
-		}
-		for domain, block := range state.Blocks {
+		for domain, block := range s.blocks {
 			if block.IsActive() {
 				entries = append(entries, refreshEntry{domain: domain, ips: block.ResolvedIPs})
 			}
@@ -159,7 +224,7 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 				continue
 			}
 
-			ipMap := make(map[string]bool)
+			ipMap := make(map[string]bool, len(entry.ips)+len(newIPs))
 			for _, ip := range entry.ips {
 				ipMap[ip] = true
 			}
@@ -182,21 +247,18 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 			continue
 		}
 
-		s.mu.Lock()
-		state, err = s.store.Load()
-		if err != nil {
-			s.mu.Unlock()
-			continue
-		}
 		var toRefresh []refreshEntry
+		s.mu.Lock()
 		for domain, ips := range refreshed {
-			if block, exists := state.Blocks[domain]; exists && block.IsActive() {
+			if block, exists := s.blocks[domain]; exists && block.IsActive() {
 				block.ResolvedIPs = ips
-				state.Blocks[domain] = block
+				s.blocks[domain] = block
 				toRefresh = append(toRefresh, refreshEntry{domain, ips})
 			}
 		}
-		_ = s.store.Save(state)
+		if len(toRefresh) > 0 {
+			_ = s.store.Save(s.ramState())
+		}
 		s.mu.Unlock()
 
 		for _, e := range toRefresh {
@@ -220,21 +282,21 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	}
 
 	s.mu.Lock()
-	state, err := s.store.Load()
-	if err != nil {
-		s.mu.Unlock()
-		return nil, fmt.Errorf("scheduler: erro ao carregar estado: %w", err)
-	}
-	wasEmpty := len(state.Blocks) == 0
-	state.Blocks[domain] = block
-	if err := s.store.Save(state); err != nil {
+	wasEmpty := len(s.blocks) == 0
+	s.blocks[domain] = block
+	if err := s.store.Save(s.ramState()); err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
 	}
-	s.activeBlocks.Store(int32(len(state.Blocks)))
 	s.mu.Unlock()
 
 	if err := s.enforcer.BlockDomain(domain, ips); err != nil {
+		// Reverte a RAM e o disco: um bloqueio que falhou não pode deixar o
+		// domínio ativo sem timer (estado zumbi).
+		s.mu.Lock()
+		delete(s.blocks, domain)
+		_ = s.store.Save(s.ramState())
+		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueio: %w", err)
 	}
 
@@ -253,13 +315,8 @@ func (s *Scheduler) ListBlocks() ([]policy.Block, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	state, err := s.store.Load()
-	if err != nil {
-		return nil, err
-	}
-
-	var list []policy.Block
-	for _, b := range state.Blocks {
+	list := make([]policy.Block, 0, len(s.blocks))
+	for _, b := range s.blocks {
 		list = append(list, b)
 	}
 	return list, nil
@@ -278,24 +335,17 @@ func (s *Scheduler) setupTimerLocked(block policy.Block) {
 
 func (s *Scheduler) onExpire(domain string) {
 	s.mu.Lock()
-	state, err := s.store.Load()
-	if err != nil {
-		s.mu.Unlock()
-		return
-	}
-
-	block, exists := state.Blocks[domain]
+	block, exists := s.blocks[domain]
 	if !exists || !block.CanUnblock() {
 		s.mu.Unlock()
 		return
 	}
 
 	ips := block.ResolvedIPs
-	delete(state.Blocks, domain)
-	remaining := len(state.Blocks)
-	s.activeBlocks.Store(int32(remaining))
-	_ = s.store.Save(state)
+	delete(s.blocks, domain)
 	delete(s.timers, domain)
+	remaining := len(s.blocks)
+	_ = s.store.Save(s.ramState())
 	s.mu.Unlock()
 
 	_ = s.enforcer.UnblockDomain(domain, ips)
@@ -309,12 +359,7 @@ func (s *Scheduler) HasActiveBlocks() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	state, err := s.store.Load()
-	if err != nil {
-		return false
-	}
-
-	for _, block := range state.Blocks {
+	for _, block := range s.blocks {
 		if block.IsActive() {
 			return true
 		}

@@ -107,7 +107,7 @@ func (w *StateWatcher) watchFsEvents() {
 			if !ok {
 				return
 			}
-			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) || event.Has(fsnotify.Remove) || event.Has(fsnotify.Rename) {
 				if event.Name == w.StatePath || filepath.Base(event.Name) == filepath.Base(w.StatePath) {
 					if w.isSelfWrite() {
 						continue
