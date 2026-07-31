@@ -209,11 +209,15 @@ func runDaemon() bool {
 	hw := startHostswatch(enf, sched)
 	if hw != nil {
 		defer hw.Stop()
+		if notifier, ok := enf.(interface{ SetOnHostsWrite(func()) }); ok {
+			notifier.SetOnHostsWrite(hw.MarkSelfWrite)
+		}
 	}
 
 	sw := startStatewatch(sched, statePath)
 	if sw != nil {
 		defer sw.Stop()
+		st.SetOnSave(sw.MarkSelfWrite)
 	}
 
 	server := ipc.NewServer(sched)

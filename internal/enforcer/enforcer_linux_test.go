@@ -64,33 +64,31 @@ func TestIptablesBinFor(t *testing.T) {
 	}
 }
 
-func TestCollectAllIPs(t *testing.T) {
-	enf := &linuxEnforcer{}
+func TestParseIptablesBlockedIPs(t *testing.T) {
+	output := `-P OUTPUT ACCEPT
+-A OUTPUT -d 1.1.1.1/32 -j DROP
+-A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
+-A OUTPUT -d 2001:db8::1/128 -j DROP
+-A OUTPUT -p tcp --dport 853 -j DROP
+-A OUTPUT -d 10.0.0.1/32 -j ACCEPT
+`
 
-	extraIPs := []string{
-		"1.1.1.1",
-		"1.1.1.1",
-		"",
-		"8.8.8.8",
+	blocked := parseIptablesBlockedIPs(output)
+
+	if !blocked["1.1.1.1"] {
+		t.Error("expected 1.1.1.1 to be parsed as blocked")
 	}
-
-	ips := enf.collectAllIPs("domain.local.invalid", extraIPs)
-
-	seen := make(map[string]int)
-	for _, ip := range ips {
-		seen[ip]++
+	if !blocked["2001:db8::1"] {
+		t.Error("expected 2001:db8::1 to be parsed as blocked")
 	}
-
-	if seen["1.1.1.1"] != 1 {
-		t.Errorf("expected exactly 1 occurrence of 1.1.1.1, got: %d", seen["1.1.1.1"])
+	if blocked["8.8.8.8"] {
+		t.Error("DoH rule (--dport) should not be counted as an IP block")
 	}
-
-	if seen["8.8.8.8"] != 1 {
-		t.Errorf("expected exactly 1 occurrence of 8.8.8.8, got: %d", seen["8.8.8.8"])
+	if blocked["10.0.0.1"] {
+		t.Error("ACCEPT rule should not be counted")
 	}
-
-	if _, exists := seen[""]; exists {
-		t.Errorf("empty string should not be present in collectAllIPs result")
+	if len(blocked) != 2 {
+		t.Errorf("expected 2 blocked IPs, got %d: %v", len(blocked), blocked)
 	}
 }
 

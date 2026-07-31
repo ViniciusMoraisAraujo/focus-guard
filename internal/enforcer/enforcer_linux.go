@@ -15,14 +15,21 @@ import (
 )
 
 type linuxEnforcer struct {
-	mu        sync.Mutex
-	hostsPath string
+	mu           sync.Mutex
+	hostsPath    string
+	onHostsWrite func()
 }
 
 func NewEnforcer() Enforcer {
 	return &linuxEnforcer{
 		hostsPath: "/etc/hosts",
 	}
+}
+
+func (e *linuxEnforcer) SetOnHostsWrite(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onHostsWrite = fn
 }
 
 func checkRoot() error {
@@ -44,7 +51,7 @@ func (e *linuxEnforcer) BlockDomain(domain string, ips []string) error {
 		return fmt.Errorf("enforcer: failed to add host entry: %w", err)
 	}
 
-	allIPs := e.collectAllIPs(domain, ips)
+	allIPs := dedupeIPs(ips)
 
 	var firstErr error
 	for _, ip := range allIPs {
@@ -70,7 +77,7 @@ func (e *linuxEnforcer) UnblockDomain(domain string, ips []string) error {
 		return fmt.Errorf("enforcer: failed to remove host entry: %w", err)
 	}
 
-	allIPs := e.collectAllIPs(domain, ips)
+	allIPs := dedupeIPs(ips)
 
 	var firstErr error
 	for _, ip := range allIPs {
@@ -104,14 +111,18 @@ func (e *linuxEnforcer) Sync(activeBlocks map[string][]string) error {
 		}
 	}
 
+	existing := e.existingBlockedIPs()
+
 	for domain, ips := range activeBlocks {
 		if err := e.addHostEntry(domain); err != nil {
 			return fmt.Errorf("enforcer: failed to sync host entry for %s: %w", domain, err)
 		}
 
-		allIPs := e.collectAllIPs(domain, ips)
-		for _, ip := range allIPs {
-			if err := e.addFirewallRule(ip); err != nil {
+		for _, ip := range dedupeIPs(ips) {
+			if existing[ip] {
+				continue
+			}
+			if err := e.addFirewallRuleUnchecked(ip); err != nil {
 				return fmt.Errorf("enforcer: failed to sync firewall rule for %s: %w", ip, err)
 			}
 		}
@@ -120,36 +131,40 @@ func (e *linuxEnforcer) Sync(activeBlocks map[string][]string) error {
 	return nil
 }
 
-func (e *linuxEnforcer) collectAllIPs(domain string, extra []string) []string {
-	seen := make(map[string]struct{})
-	var result []string
-
-	add := func(ip string) {
-		if ip == "" {
-			return
-		}
-		if _, ok := seen[ip]; ok {
-			return
-		}
-		seen[ip] = struct{}{}
-		result = append(result, ip)
-	}
-
-	for _, ip := range extra {
-		add(ip)
-	}
-
-	for _, host := range []string{domain, "www." + domain} {
-		resolved, err := net.LookupIP(host)
+// existingBlockedIPs consults the firewall once and returns the IPs with an
+// existing DROP rule, so Sync can add only the missing ones.
+func (e *linuxEnforcer) existingBlockedIPs() map[string]bool {
+	blocked := make(map[string]bool)
+	for _, bin := range availableDoTBins() {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		out, err := exec.CommandContext(ctx, bin, "-S", "OUTPUT").Output()
+		cancel()
 		if err != nil {
 			continue
 		}
-		for _, ip := range resolved {
-			add(ip.String())
+		for ip := range parseIptablesBlockedIPs(string(out)) {
+			blocked[ip] = true
 		}
 	}
+	return blocked
+}
 
-	return result
+func parseIptablesBlockedIPs(output string) map[string]bool {
+	blocked := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		if !strings.Contains(line, "-j DROP") || strings.Contains(line, "--dport") {
+			continue
+		}
+		fields := strings.Fields(line)
+		for i := 0; i+1 < len(fields); i++ {
+			if fields[i] == "-d" {
+				ip := strings.TrimSuffix(fields[i+1], "/32")
+				ip = strings.TrimSuffix(ip, "/128")
+				blocked[ip] = true
+			}
+		}
+	}
+	return blocked
 }
 
 func (e *linuxEnforcer) addHostEntry(domain string) error {
@@ -210,7 +225,13 @@ func (e *linuxEnforcer) readHostsLines() ([]string, error) {
 
 func (e *linuxEnforcer) writeHostsLines(lines []string) error {
 	content := strings.Join(lines, "\n") + "\n"
-	return os.WriteFile(e.hostsPath, []byte(content), 0644)
+	if err := os.WriteFile(e.hostsPath, []byte(content), 0644); err != nil {
+		return err
+	}
+	if e.onHostsWrite != nil {
+		e.onHostsWrite()
+	}
+	return nil
 }
 
 func iptablesBinFor(ip string) (string, error) {
@@ -238,6 +259,18 @@ func (e *linuxEnforcer) addFirewallRule(ip string) error {
 	if err := checkCmd.Run(); err == nil {
 		return nil
 	}
+
+	return e.addFirewallRuleUnchecked(ip)
+}
+
+func (e *linuxEnforcer) addFirewallRuleUnchecked(ip string) error {
+	bin, err := iptablesBinFor(ip)
+	if err != nil {
+		return err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	addCmd := exec.CommandContext(ctx, bin, "-A", "OUTPUT", "-d", ip, "-j", "DROP")
 	if out, err := addCmd.CombinedOutput(); err != nil {

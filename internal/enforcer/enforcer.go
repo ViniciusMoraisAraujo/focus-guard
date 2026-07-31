@@ -71,3 +71,20 @@ func resolveIPs(domain string, lookup lookupFunc) ([]string, error) {
 
 	return ipStrings, nil
 }
+
+// dedupeIPs removes empty strings and duplicates, preserving order.
+func dedupeIPs(ips []string) []string {
+	seen := make(map[string]struct{}, len(ips))
+	var result []string
+	for _, ip := range ips {
+		if ip == "" {
+			continue
+		}
+		if _, ok := seen[ip]; ok {
+			continue
+		}
+		seen[ip] = struct{}{}
+		result = append(result, ip)
+	}
+	return result
+}

@@ -14,7 +14,10 @@ import (
 	"focusguard/internal/policy"
 )
 
-const defaultDebounce = 200 * time.Millisecond
+const (
+	defaultDebounce  = 200 * time.Millisecond
+	selfWriteWindow = 500 * time.Millisecond
+)
 
 type fsEvent struct {
 	op string
@@ -29,15 +32,35 @@ type Scheduler interface {
 }
 
 type HostsWatcher struct {
-	mu        sync.Mutex
-	HostsPath string
-	enf       Enforcer
-	sched     Scheduler
-	debounce  time.Duration
-	events    chan fsEvent
-	stopCh    chan struct{}
-	stopOnce  sync.Once
-	watcher   *fsnotify.Watcher
+	mu             sync.Mutex
+	HostsPath      string
+	enf            Enforcer
+	sched          Scheduler
+	debounce       time.Duration
+	events         chan fsEvent
+	stopCh         chan struct{}
+	stopOnce       sync.Once
+	watcher        *fsnotify.Watcher
+	lastSelfWrite  time.Time
+	selfWriteDelay time.Duration
+}
+
+// MarkSelfWrite records that a write to the hosts file was performed by the
+// daemon itself, so the next fsnotify event is ignored (avoids redundant Sync).
+func (w *HostsWatcher) MarkSelfWrite() {
+	delay := w.selfWriteDelay
+	if delay == 0 {
+		delay = selfWriteWindow
+	}
+	w.mu.Lock()
+	w.lastSelfWrite = time.Now().Add(delay)
+	w.mu.Unlock()
+}
+
+func (w *HostsWatcher) isSelfWrite() bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return !w.lastSelfWrite.IsZero() && time.Now().Before(w.lastSelfWrite)
 }
 
 func New(enf Enforcer, sched Scheduler) *HostsWatcher {
@@ -96,6 +119,16 @@ func (w *HostsWatcher) watchFsEvents() {
 				return
 			}
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
+				// On Windows fsnotify may report the path with different casing than
+				// the HostsPath built from the SystemRoot env var, so compare
+				// case-insensitively to avoid missing (or misfiring on) host edits.
+				if !strings.EqualFold(event.Name, w.HostsPath) &&
+					!strings.EqualFold(filepath.Base(event.Name), filepath.Base(w.HostsPath)) {
+					continue
+				}
+				if w.isSelfWrite() {
+					continue
+				}
 				select {
 				case w.events <- fsEvent{op: "write"}:
 				default:

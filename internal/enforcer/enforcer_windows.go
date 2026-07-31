@@ -6,7 +6,6 @@ import (
 	"bufio"
 	"context"
 	"fmt"
-	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -15,10 +14,17 @@ import (
 )
 
 type windowsEnforcer struct {
-	mu        sync.Mutex
-	hostsPath string
-	adminOnce sync.Once
-	adminErr  error
+	mu           sync.Mutex
+	hostsPath    string
+	adminOnce    sync.Once
+	adminErr     error
+	onHostsWrite func()
+}
+
+func (e *windowsEnforcer) SetOnHostsWrite(fn func()) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.onHostsWrite = fn
 }
 
 func NewEnforcer() Enforcer {
@@ -53,7 +59,7 @@ func (e *windowsEnforcer) BlockDomain(domain string, ips []string) error {
 		return fmt.Errorf("enforcer: failed to add host entry: %w", err)
 	}
 
-	allIPs := e.collectAllIPs(domain, ips)
+	allIPs := dedupeIPs(ips)
 
 	var firstErr error
 	for _, ip := range allIPs {
@@ -78,7 +84,7 @@ func (e *windowsEnforcer) UnblockDomain(domain string, ips []string) error {
 		return fmt.Errorf("enforcer: failed to remove host entry: %w", err)
 	}
 
-	allIPs := e.collectAllIPs(domain, ips)
+	allIPs := dedupeIPs(ips)
 
 	var firstErr error
 	for _, ip := range allIPs {
@@ -113,53 +119,53 @@ func (e *windowsEnforcer) Sync(activeBlocks map[string][]string) error {
 		}
 	}
 
+	existing := e.existingFocusGuardRules()
+
 	for domain, ips := range activeBlocks {
 		if err := e.addHostEntry(domain); err != nil {
 			return fmt.Errorf("enforcer: failed to sync host entry for %s: %w", domain, err)
 		}
 
-		allIPs := e.collectAllIPs(domain, ips)
-		for _, ip := range allIPs {
-			if err := e.addFirewallRule(ip); err != nil {
+		for _, ip := range dedupeIPs(ips) {
+			if existing[fmt.Sprintf("FocusGuard_%s", ip)] {
+				continue
+			}
+			if err := e.addFirewallRuleUnchecked(ip); err != nil {
 				return fmt.Errorf("enforcer: failed to sync firewall rule for %s: %w", ip, err)
-
 			}
 		}
 	}
 	return nil
 }
 
-func (e *windowsEnforcer) collectAllIPs(domain string, extra []string) []string {
-	seen := make(map[string]struct{})
-	var result []string
+// existingFocusGuardRules consults the firewall once and returns the names of
+// every FocusGuard rule already present, so Sync can add only the missing ones.
+func (e *windowsEnforcer) existingFocusGuardRules() map[string]bool {
+	names := make(map[string]bool)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
 
-	add := func(ip string) {
-		if ip == "" {
-			return
-		}
-		if _, ok := seen[ip]; ok {
-			return
-		}
-		seen[ip] = struct{}{}
-		result = append(result, ip)
+	cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	out, err := cmd.Output()
+	if err != nil {
+		return names
 	}
+	return parseFocusGuardRuleNames(string(out))
+}
 
-	for _, ip := range extra {
-		add(ip)
-	}
-
-	for _, host := range []string{domain, "www." + domain} {
-		resolved, err := net.LookupIP(host)
-		if err != nil {
+func parseFocusGuardRuleNames(output string) map[string]bool {
+	names := make(map[string]bool)
+	for _, line := range strings.Split(output, "\n") {
+		idx := strings.Index(line, "FocusGuard")
+		if idx < 0 {
 			continue
 		}
-
-		for _, ip := range resolved {
-			add(ip.String())
+		name := strings.TrimSpace(line[idx:])
+		if name != "" {
+			names[name] = true
 		}
 	}
-
-	return result
+	return names
 }
 
 func (e *windowsEnforcer) addHostEntry(domain string) error {
@@ -220,18 +226,33 @@ func (e *windowsEnforcer) readHostsLines() ([]string, error) {
 
 func (e *windowsEnforcer) writeHostsLines(lines []string) error {
 	content := strings.Join(lines, "\r\n") + "\r\n"
-	return os.WriteFile(e.hostsPath, []byte(content), 0644)
+	if err := os.WriteFile(e.hostsPath, []byte(content), 0644); err != nil {
+		return err
+	}
+	if e.onHostsWrite != nil {
+		e.onHostsWrite()
+	}
+	return nil
 }
 
 func (e *windowsEnforcer) addFirewallRule(ip string) error {
 	ruleName := fmt.Sprintf("FocusGuard_%s", ip)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	checkCmd := exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...)
-	if err := checkCmd.Run(); err == nil {
+	if e.ruleExists(ruleName) {
 		return nil
 	}
+	return e.addFirewallRuleUnchecked(ip)
+}
+
+func (e *windowsEnforcer) ruleExists(ruleName string) bool {
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	return exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...).Run() == nil
+}
+
+func (e *windowsEnforcer) addFirewallRuleUnchecked(ip string) error {
+	ruleName := fmt.Sprintf("FocusGuard_%s", ip)
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	addCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "add", "rule",
 		"name="+ruleName,

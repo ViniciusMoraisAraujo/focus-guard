@@ -177,6 +177,28 @@ func TestResolveIPs_IPv6Result(t *testing.T) {
 	}
 }
 
+func TestDedupeIPs(t *testing.T) {
+	tests := []struct {
+		name string
+		in   []string
+		want []string
+	}{
+		{"dedupes and filters empty", []string{"1.2.3.4", "1.2.3.4", "", "5.6.7.8"}, []string{"1.2.3.4", "5.6.7.8"}},
+		{"empty input", nil, nil},
+		{"only empties", []string{"", ""}, nil},
+		{"preserves order", []string{"b", "a", "b", "c"}, []string{"b", "a", "c"}},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := dedupeIPs(tt.in)
+			if !reflect.DeepEqual(got, tt.want) {
+				t.Errorf("dedupeIPs(%v) = %v, want %v", tt.in, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestHeaderMarker_Value(t *testing.T) {
 	expected := "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
 	if HeaderMarker != expected {

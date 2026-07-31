@@ -124,21 +124,38 @@ func TestRemoveHostEntry_NoOpWhenDomainNotPresent(t *testing.T) {
 	}
 }
 
-func TestCollectAllIPs_DeduplicatesAndIgnoresEmpty(t *testing.T) {
-	e := newTestEnforcer(t)
+func TestParseFocusGuardRuleNames(t *testing.T) {
+	output := `Regra:
+    Nome da regra:    FocusGuard_1.1.1.1
 
-	extra := []string{"1.2.3.4", "1.2.3.4", "", "5.6.7.8"}
+Regra:
+    Nome da regra:    FocusGuard_DoH_8_8_8_8
 
-	got := e.collectAllIPs("invalid.invalid-tld-for-tests", extra)
+Regra:
+    Nome da regra:    Windows Defender Firewall - default
+`
 
-	want := map[string]bool{"1.2.3.4": true, "5.6.7.8": true}
-	if len(got) != len(want) {
-		t.Fatalf("expected %d unique IPs, got %d: %v", len(want), len(got), got)
+	names := parseFocusGuardRuleNames(output)
+
+	if !names["FocusGuard_1.1.1.1"] {
+		t.Error("expected FocusGuard_1.1.1.1 to be parsed")
 	}
-	for _, ip := range got {
-		if !want[ip] {
-			t.Errorf("unexpected IP in result: %q", ip)
-		}
+	if !names["FocusGuard_DoH_8_8_8_8"] {
+		t.Error("expected FocusGuard_DoH_8_8_8_8 to be parsed")
+	}
+	if len(names) != 2 {
+		t.Errorf("expected exactly 2 FocusGuard rules, got %d: %v", len(names), names)
+	}
+}
+
+func TestParseFocusGuardRuleNames_NoRules(t *testing.T) {
+	output := `Regra:
+    Nome da regra:    Windows Defender Firewall - default
+`
+
+	names := parseFocusGuardRuleNames(output)
+	if len(names) != 0 {
+		t.Errorf("expected no FocusGuard rules, got %v", names)
 	}
 }
 

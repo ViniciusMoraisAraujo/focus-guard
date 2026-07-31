@@ -13,6 +13,34 @@ import (
 
 var resolveFunc = enforcer.ResolveIPs
 
+// resolveBlockIPs resolves a domain and its www subdomain, merging both into a
+// single de-duplicated list. This keeps the enforcer free of its own DNS
+// lookups (G2) while preserving firewall coverage for the www addresses that
+// the previous collectAllIPs provided.
+func resolveBlockIPs(domain string) ([]string, error) {
+	ips, err := resolveFunc(domain)
+	if err != nil {
+		return nil, err
+	}
+
+	wwwIPs, wwwErr := resolveFunc("www." + domain)
+	if wwwErr != nil {
+		return ips, nil
+	}
+
+	seen := make(map[string]bool, len(ips)+len(wwwIPs))
+	for _, ip := range ips {
+		seen[ip] = true
+	}
+	for _, ip := range wwwIPs {
+		if !seen[ip] {
+			ips = append(ips, ip)
+			seen[ip] = true
+		}
+	}
+	return ips, nil
+}
+
 type Scheduler struct {
 	mu           sync.Mutex
 	store        *store.Store
@@ -178,7 +206,7 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 }
 
 func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block, error) {
-	ips, err := resolveFunc(domain)
+	ips, err := resolveBlockIPs(domain)
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: %w", err)
 	}

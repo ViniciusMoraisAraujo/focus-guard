@@ -19,6 +19,15 @@ type State struct {
 type Store struct {
 	mu       sync.RWMutex
 	filePath string
+	onSave   func()
+}
+
+// SetOnSave registers a callback invoked before each save, so external watchers
+// (e.g. statewatch) can suppress the fsnotify event caused by the daemon itself.
+func (s *Store) SetOnSave(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onSave = fn
 }
 
 func NewStore(filePath string) (*Store, error) {
@@ -72,6 +81,10 @@ func (s *Store) Save(state *State) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
+	}
+
+	if s.onSave != nil {
+		s.onSave()
 	}
 
 	if state.Version == 0 {
