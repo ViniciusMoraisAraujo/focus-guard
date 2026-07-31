@@ -106,3 +106,6 @@ go.work.sum
 # env file
 .env
 
+# GoReleaser release artifacts
+dist/
+

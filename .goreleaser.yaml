@@ -1,0 +1,84 @@
+# GoReleaser v2 — FocusGuard
+# Referência: https://goreleaser.com
+version: 2
+
+project_name: focusguard
+
+before:
+  hooks:
+    - go mod tidy
+
+env:
+  - CGO_ENABLED=0
+
+builds:
+  - id: cli
+    main: ./cmd/focusguard
+    binary: focusguard
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -trimpath
+
+  - id: daemon
+    main: ./cmd/focusguard-daemon
+    binary: focusguard-daemon
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -trimpath
+
+  - id: watchdog
+    main: ./cmd/focusguard-watchdog
+    binary: focusguard-watchdog
+    goos:
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -s -w -trimpath
+
+archives:
+  - id: default
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    files:
+      - README.md
+      - scripts/focusguard.service
+      - scripts/install-daemon.ps1
+
+checksum:
+  name_template: checksums.txt
+
+snapshot:
+  name_template: '{{ .Version }}-next'
+
+changelog:
+  sort: asc
+  filters:
+    exclude:
+      - '^docs:'
+      - '^test:'
+      - '^chore:'
+
+release:
+  owner: ViniciusMoraisAraujo
+  name: focus-guard
+  draft: false
+  prerelease: auto
