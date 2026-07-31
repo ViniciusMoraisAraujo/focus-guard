@@ -8,9 +8,9 @@ var (
 )
 
 type Request struct {
-	Action   string `json:"action"` // "block" ou "status"
+	Action   string `json:"action"`
 	Domain   string `json:"domain,omitempty"`
-	Duration string `json:"duration,omitempty"` // ex: "4h", "30m"
+	Duration string `json:"duration,omitempty"`
 }
 
 type Response struct {

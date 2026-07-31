@@ -341,7 +341,6 @@ func TestScheduler_Reconcile_CleansExpired(t *testing.T) {
 func TestScheduler_ProtectionStatus(t *testing.T) {
 	sched, _, st := setupTestScheduler(t)
 
-	// Sem bloqueios: proteção esperada = false
 	ps, err := sched.ProtectionStatus()
 	if err != nil {
 		t.Fatalf("ProtectionStatus() erro: %v", err)
@@ -350,7 +349,6 @@ func TestScheduler_ProtectionStatus(t *testing.T) {
 		t.Error("ExpectedDoH deve ser false sem bloqueios ativos")
 	}
 
-	// Com bloqueio ativo: proteção esperada = true
 	now := time.Now().UTC().Round(time.Second)
 	state, _ := st.Load()
 	state.Blocks["active.com"] = policy.Block{
@@ -407,7 +405,6 @@ func TestScheduler_ProtectionStatus_PropagatesEnforcerStatus(t *testing.T) {
 		t.Errorf("FirewallRules = %d, want 7", ps.FirewallRules)
 	}
 
-	// Erro do enforcer deve ser propagado
 	enf.err = errors.New("permission denied")
 	if _, err := sched.ProtectionStatus(); err == nil {
 		t.Error("expected error when enforcer.Status() fails")

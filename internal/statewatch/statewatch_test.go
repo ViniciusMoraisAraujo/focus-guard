@@ -12,7 +12,7 @@ import (
 )
 
 type mockReconciler struct {
-	mu            sync.Mutex
+	mu             sync.Mutex
 	reconcileCalls int32
 }
 
@@ -22,7 +22,7 @@ func (m *mockReconciler) Reconcile() error {
 }
 
 type failingReconciler struct {
-	mu            sync.Mutex
+	mu             sync.Mutex
 	reconcileCalls int32
 }
 
@@ -71,7 +71,6 @@ func TestDetectChange_CallsReconcile(t *testing.T) {
 		stopCh:     make(chan struct{}),
 	}
 
-	// Create a watcher so we can trigger fsnotify events
 	watcher, err := fsnotify.NewWatcher()
 	if err != nil {
 		t.Fatalf("fsnotify.NewWatcher: %v", err)
@@ -89,7 +88,6 @@ func TestDetectChange_CallsReconcile(t *testing.T) {
 		close(done)
 	}()
 
-	// Send a write event (simulating fsnotify notification)
 	select {
 	case w.events <- fsEvent{op: "write"}:
 	case <-time.After(time.Second):
@@ -127,7 +125,6 @@ func TestDetectChange_FileModifiedExternally(t *testing.T) {
 		close(done)
 	}()
 
-	// Simulate multiple external writes
 	for i := 0; i < 3; i++ {
 		select {
 		case w.events <- fsEvent{op: "write"}:
@@ -141,7 +138,6 @@ func TestDetectChange_FileModifiedExternally(t *testing.T) {
 	close(w.stopCh)
 	<-done
 
-	// Should be debounced to 1 call
 	calls := atomic.LoadInt32(&rec.reconcileCalls)
 	if calls != 1 {
 		t.Errorf("expected exactly 1 Reconcile call (debounced), got %d", calls)
@@ -180,7 +176,6 @@ func TestDetectChange_ReconcileError(t *testing.T) {
 	close(w.stopCh)
 	<-done
 
-	// Even with error, the reconciler should have been called
 	if calls := atomic.LoadInt32(&rec.reconcileCalls); calls != 1 {
 		t.Errorf("expected 1 Reconcile call even with error, got %d", calls)
 	}
@@ -199,7 +194,6 @@ func TestStartStop(t *testing.T) {
 		t.Fatalf("Start failed: %v", err)
 	}
 
-	// Verify it's watching by checking the watcher is non-nil
 	w.mu.Lock()
 	hasWatcher := w.watcher != nil
 	w.mu.Unlock()
@@ -210,7 +204,6 @@ func TestStartStop(t *testing.T) {
 
 	w.Stop()
 
-	// Verify stop is idempotent
 	w.Stop()
 }
 
@@ -235,7 +228,6 @@ func TestDebounce_MultipleEvents(t *testing.T) {
 		close(done)
 	}()
 
-	// Send multiple events rapidly
 	for i := 0; i < 5; i++ {
 		w.events <- fsEvent{op: "write"}
 	}
@@ -288,7 +280,6 @@ func TestWatchFsEvents_NotifiesEvents(t *testing.T) {
 		close(doneFs)
 	}()
 
-	// Modify the state file externally
 	writeStateFile(t, statePath, `{"version":1,"blocks":{"test.com":{"domain":"test.com"}}}`)
 
 	time.Sleep(100 * time.Millisecond)
@@ -307,6 +298,5 @@ func TestStop_NoStart(t *testing.T) {
 	rec := &mockReconciler{}
 	w := New(rec, "/tmp/nonexistent.json")
 
-	// Stop should not panic even if Start was never called
 	w.Stop()
 }

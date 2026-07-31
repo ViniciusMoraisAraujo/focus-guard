@@ -1,12 +1,3 @@
-// focusguard-watchdog — Monitor externo do daemon FocusGuard
-//
-// Executa como um processo SEPARADO do daemon principal.
-// Conecta via IPC, envia "ping" e, se o daemon não responder,
-// força o kill do processo — o Service Control Manager (SCM)
-// reinicia automaticamente (recovery configurado no instalador).
-//
-// Uso:
-//   focusguard-watchdog   (modo console / foreground)
 package main
 
 import (
@@ -28,14 +19,12 @@ const (
 )
 
 func main() {
-	// Tentar rodar como serviço Windows primeiro
 	if runtime.GOOS == "windows" {
 		if tryRunAsService() {
 			return
 		}
 	}
 
-	// Modo console / foreground
 	log.Println("[FocusGuard Watchdog] Iniciando em modo console...")
 	watchLoop()
 }
@@ -46,7 +35,6 @@ func watchLoop() {
 
 	log.Printf("[FocusGuard Watchdog] Monitorando daemon a cada %v (timeout: %v)...\n", checkInterval, pingTimeout)
 
-	// Verificação imediata na inicialização
 	checkDaemon()
 
 	for range ticker.C {
@@ -56,7 +44,7 @@ func watchLoop() {
 
 func checkDaemon() {
 	if daemonResponds() {
-		return // saudável
+		return
 	}
 
 	log.Println("[FocusGuard Watchdog] Daemon não respondeu — forçando reinicialização...")
@@ -87,13 +75,9 @@ func killDaemon() {
 		}
 	}
 
-	// Polling progressivo: tenta pingar o daemon a cada 2s até 60s
-	// Assim que ele responder, retorna — sem esperar um tempo fixo.
 	waitForDaemon()
 }
 
-// waitForDaemon faz polling do daemon até ele responder ao ping.
-// Tenta a cada 2 segundos, com timeout total de 60 segundos.
 func waitForDaemon() {
 	log.Println("[FocusGuard Watchdog] Aguardando daemon ficar disponível (polling a cada 2s)...")
 
@@ -109,7 +93,6 @@ func waitForDaemon() {
 	log.Println("[FocusGuard Watchdog] Aviso: daemon não respondeu após 60s de polling. Continuando ciclo normal...")
 }
 
-// daemonResponds tenta um ping no daemon e retorna true se saudável.
 func daemonResponds() bool {
 	client := ipc.NewClient()
 
@@ -131,8 +114,6 @@ func daemonResponds() bool {
 	}
 }
 
-// tryRunAsService tenta rodar como serviço Windows.
-// Retorna true se executou como serviço (a função não retorna até o serviço parar).
 func tryRunAsService() bool {
 	ok, err := isWindowsService()
 	if err != nil {
@@ -148,27 +129,18 @@ func tryRunAsService() bool {
 	return true
 }
 
-// isWindowsService e runAsService são implementadas em:
-//   service_windows.go (Windows — integração SCM)
-//   service_other.go   (outros — no-op)
-
-// ─── Helpers para instalação (usados pelo CLI focusguard install-watchdog) ────
-
 const ServiceName = "FocusGuardWatchdog"
 const DaemonServiceName = "FocusGuard"
 
-// InstallService registra o watchdog como serviço Windows.
-// Chamado pelo CLI via sc create, não diretamente pelo watchdog.
 func InstallService(watchdogExe string) error {
 	if runtime.GOOS != "windows" {
-		return nil // watchdog não é necessário no Linux (systemd já cobre)
+		return nil
 	}
 
 	if _, err := os.Stat(watchdogExe); os.IsNotExist(err) {
 		return err
 	}
 
-	// Cria o serviço
 	args := []string{
 		"create", ServiceName,
 		"binpath=", watchdogExe,
@@ -181,10 +153,8 @@ func InstallService(watchdogExe string) error {
 		return fmt.Errorf("sc create falhou: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// Dependência do daemon principal
 	_ = exec.Command("sc", "config", ServiceName, "depend="+DaemonServiceName).Run()
 
-	// Recovery: restart a cada 5s
 	failArgs := []string{
 		"failure", ServiceName,
 		"reset=", "86400",
@@ -194,7 +164,6 @@ func InstallService(watchdogExe string) error {
 		log.Printf("[FocusGuard Watchdog] Aviso: não foi configurar recovery: %v (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// Inicia o serviço
 	if out, err := exec.Command("sc", "start", ServiceName).CombinedOutput(); err != nil {
 		return fmt.Errorf("sc start falhou: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
@@ -202,7 +171,6 @@ func InstallService(watchdogExe string) error {
 	return nil
 }
 
-// UninstallService remove o serviço watchdog.
 func UninstallService() error {
 	if runtime.GOOS != "windows" {
 		return nil

@@ -169,8 +169,6 @@ func TestHostsFileOperations(t *testing.T) {
 }
 
 func TestBlockDoH_Linux(t *testing.T) {
-	// Com o mock de hosts file, BlockDoH/UnblockDoH testam a interface
-	// sem precisar de privilégios reais (iptables não é chamado).
 	enf := &linuxEnforcer{}
 
 	err := enf.BlockDoH()
@@ -199,7 +197,6 @@ func TestUnblockDoH_Linux(t *testing.T) {
 }
 
 func TestDoTRuleArgs_UsesDport(t *testing.T) {
-	// Em iptables, --dport é a porta de destino; --sport seria a porta local de origem.
 	args := doTRuleArgs("-A", "tcp", 853)
 
 	want := []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "853", "-j", "DROP"}
@@ -232,7 +229,6 @@ func TestDoHRuleArgs(t *testing.T) {
 }
 
 func TestCountIptablesRules(t *testing.T) {
-	// Saída típica de "iptables -S OUTPUT".
 	output := `-P OUTPUT ACCEPT
 -A OUTPUT -d 1.1.1.1/32 -j DROP
 -A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
@@ -266,7 +262,6 @@ func TestCountIptablesRules_NoRules(t *testing.T) {
 }
 
 func TestAvailableDoTBins(t *testing.T) {
-	// availableDoTBins só deve retornar bins realmente presentes no PATH.
 	bins := availableDoTBins()
 
 	known := map[string]bool{"iptables": true, "ip6tables": true}

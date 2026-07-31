@@ -31,7 +31,6 @@ func installWindows(exePath string) error {
 		return fmt.Errorf("autostart: falha ao criar serviço: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// Configure auto-restart on failure (Windows recovery)
 	failureArgs := []string{
 		"failure", serviceName,
 		"reset=", "86400",
@@ -69,7 +68,6 @@ func isInstalledWindows() (bool, error) {
 }
 
 func installWatchdogWindows(exePath string) error {
-	// Cria o serviço watchdog
 	args := []string{
 		"create", watchdogServiceName,
 		"binPath=", exePath,
@@ -82,10 +80,8 @@ func installWatchdogWindows(exePath string) error {
 		return fmt.Errorf("autostart: falha ao criar serviço watchdog: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
-	// Dependência do daemon principal (watchdog só roda se daemon estiver rodando)
 	execCommand("sc", "config", watchdogServiceName, "depend="+serviceName).CombinedOutput()
 
-	// Recovery: restart a cada 5s
 	failureArgs := []string{
 		"failure", watchdogServiceName,
 		"reset=", "86400",
@@ -95,7 +91,6 @@ func installWatchdogWindows(exePath string) error {
 		log.Printf("[FocusGuard Watchdog] Aviso: não foi configurar recovery: %v (%s)", err2, strings.TrimSpace(string(out2)))
 	}
 
-	// Inicia o serviço
 	if out3, err3 := execCommand("sc", "start", watchdogServiceName).CombinedOutput(); err3 != nil {
 		return fmt.Errorf("autostart: falha ao iniciar watchdog: %w (%s)", err3, strings.TrimSpace(string(out3)))
 	}

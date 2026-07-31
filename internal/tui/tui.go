@@ -14,8 +14,6 @@ import (
 	"focusguard/internal/ipc"
 )
 
-// ─── State ───────────────────────────────────────────────────────────────────
-
 type viewState int
 
 const (
@@ -23,38 +21,30 @@ const (
 	viewForm
 )
 
-// ─── Model ───────────────────────────────────────────────────────────────────
-
 type model struct {
 	client *ipc.Client
 	state  viewState
 
-	// table (list view)
 	table  table.Model
 	blocks []BlockInfo
 
-	// form (block view)
 	domainInput   textinput.Model
 	durationInput textinput.Model
-	formFocus     int // 0 = domain, 1 = duration
+	formFocus     int
 
-	// feedback
 	statusMessage string
 	err           error
 	loading       bool
 
-	// DoH/DoT protection status
 	expectedDoH     bool
 	dohActive       bool
 	firewallRules   int
 	protectionError string
 
-	// terminal size
 	width  int
 	height int
 }
 
-// BlockInfo holds display-friendly information about a block.
 type BlockInfo struct {
 	Domain    string
 	StartedAt time.Time
@@ -62,8 +52,6 @@ type BlockInfo struct {
 	Remaining time.Duration
 	IsActive  bool
 }
-
-// ─── Messages ────────────────────────────────────────────────────────────────
 
 type statusFetchedMsg struct {
 	blocks          []BlockInfo
@@ -85,10 +73,7 @@ type blockErrMsg struct {
 	err error
 }
 
-// ─── Styles ──────────────────────────────────────────────────────────────────
-
 var (
-	// Colors
 	primary   = lipgloss.AdaptiveColor{Light: "#0057B7", Dark: "#6EB5FF"}
 	success   = lipgloss.AdaptiveColor{Light: "#008000", Dark: "#4ADE80"}
 	warning   = lipgloss.AdaptiveColor{Light: "#B8860B", Dark: "#FBBF24"}
@@ -96,7 +81,6 @@ var (
 	muted     = lipgloss.AdaptiveColor{Light: "#666666", Dark: "#888888"}
 	highlight = lipgloss.AdaptiveColor{Light: "#0033AA", Dark: "#93C5FD"}
 
-	// Layout
 	appStyle = lipgloss.NewStyle().
 			Padding(1, 2)
 
@@ -141,7 +125,6 @@ var (
 			Italic(true).
 			MarginTop(1)
 
-	// Form
 	formBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
 			BorderForeground(primary).
@@ -154,7 +137,6 @@ var (
 			Bold(true).
 			MarginRight(1)
 
-	// Table
 	tableBaseStyle = lipgloss.NewStyle().
 			Border(lipgloss.NormalBorder()).
 			BorderForeground(muted).
@@ -162,10 +144,7 @@ var (
 			MarginBottom(1)
 )
 
-// ─── Initialisation ─────────────────────────────────────────────────────────
-
 func New(client *ipc.Client) *model {
-	// ── table columns ──
 	cols := []table.Column{
 		{Title: "Dom\u00ednio", Width: 30},
 		{Title: "In\u00edcio", Width: 12},
@@ -196,7 +175,6 @@ func New(client *ipc.Client) *model {
 		table.WithStyles(s),
 	)
 
-	// ── form inputs ──
 	di := textinput.New()
 	di.Placeholder = "ex: twitter.com"
 	di.CharLimit = 80
@@ -210,20 +188,16 @@ func New(client *ipc.Client) *model {
 	return &model{
 		client:        client,
 		state:         viewList,
-		loading:       true, // prevents empty-state flash before first fetch
+		loading:       true,
 		table:         t,
 		domainInput:   di,
 		durationInput: du,
 	}
 }
 
-// ─── Init ────────────────────────────────────────────────────────────────────
-
 func (m *model) Init() tea.Cmd {
 	return m.fetchStatusCmd()
 }
-
-// ─── Commands ────────────────────────────────────────────────────────────────
 
 func (m *model) fetchStatusCmd() tea.Cmd {
 	return func() tea.Msg {
@@ -278,8 +252,6 @@ func (m *model) blockDomainCmd(domain, duration string) tea.Cmd {
 	}
 }
 
-// ─── Update ──────────────────────────────────────────────────────────────────
-
 func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -304,7 +276,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case fetchErrMsg:
 		m.loading = false
 		m.err = msg.err
-		m.statusMessage = "" // clear any stale success message
+		m.statusMessage = ""
 		m.expectedDoH = false
 		m.dohActive = false
 		m.firewallRules = 0
@@ -328,15 +300,12 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.durationInput.Reset()
 		m.formFocus = 0
 		m.statusMessage = ""
-		// Show a clean, user-friendly message instead of raw technical error
 		m.err = fmt.Errorf("não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente.")
 		return m, m.fetchStatusCmd()
 	}
 
 	return m, nil
 }
-
-// ─── Key Handling ────────────────────────────────────────────────────────────
 
 func (m *model) handleKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch m.state {
@@ -372,14 +341,12 @@ func (m *model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, m.fetchStatusCmd()
 	}
 
-	// Table navigation
 	var cmd tea.Cmd
 	m.table, cmd = m.table.Update(msg)
 	return m, cmd
 }
 
 func (m *model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	// Prevent double-submit while loading
 	if m.loading {
 		return m, nil
 	}
@@ -416,7 +383,6 @@ func (m *model) handleFormKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 	}
 
-	// Let the focused input handle the key
 	var cmd tea.Cmd
 	if m.formFocus == 0 {
 		m.domainInput, cmd = m.domainInput.Update(msg)
@@ -452,8 +418,6 @@ func (m *model) updateTableRows() {
 	m.table.SetRows(rows)
 }
 
-// ─── View ────────────────────────────────────────────────────────────────────
-
 func (m *model) View() string {
 	switch m.state {
 	case viewList:
@@ -467,48 +431,40 @@ func (m *model) View() string {
 func (m *model) listView() string {
 	var b strings.Builder
 
-	// Header
 	b.WriteString(titleStyle.Render("\U0001f512 FocusGuard - Modo Interativo"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Gerencie seus bloqueios de forma f\u00e1cil"))
 	b.WriteString("\n")
 
-	// Protection status (não exibir durante loading para evitar flash de zeros)
 	if !m.loading {
 		b.WriteString(m.protectionLine())
 		b.WriteString("\n")
 	}
 
-	// Error message
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("\u2716 %v", m.err)))
 		b.WriteString("\n")
 	}
 
-	// Success message
 	if m.statusMessage != "" {
 		b.WriteString(successStyle.Render(fmt.Sprintf("\u2714 %s", m.statusMessage)))
 		b.WriteString("\n")
 	}
 
-	// Loading
 	if m.loading {
 		b.WriteString(loadingStyle.Render("\u23f3 Carregando..."))
 		b.WriteString("\n")
 	}
 
-	// Empty state
 	if len(m.blocks) == 0 && !m.loading && m.err == nil && m.statusMessage == "" {
 		b.WriteString(emptyStyle.Render("Nenhum bloqueio ativo no momento."))
 		b.WriteString("\n")
 	} else if !m.loading {
-		// Table
 		b.WriteString(tableBaseStyle.Render(m.table.View()))
 	}
 
 	b.WriteString("\n")
 
-	// Footer / key bindings
 	b.WriteString(footerStyle.Render(fmt.Sprintf(
 		"%s  %s  %s",
 		lipgloss.JoinHorizontal(lipgloss.Center,
@@ -556,22 +512,18 @@ func (m *model) protectionLine() string {
 func (m *model) formView() string {
 	var b strings.Builder
 
-	// Header
 	b.WriteString(titleStyle.Render("\U0001f512 FocusGuard - Novo Bloqueio"))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Preencha os campos abaixo para bloquear um dom\u00ednio."))
 	b.WriteString("\n")
 
-	// Error
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("\u2716 %v", m.err)))
 		b.WriteString("\n")
 	}
 
-	// Form box
 	formContent := strings.Builder{}
 
-	// Domain field
 	domainLabel := labelStyle.Render("Dom\u00ednio:")
 	domainField := m.domainInput.View()
 	if m.formFocus == 0 {
@@ -581,7 +533,6 @@ func (m *model) formView() string {
 	}
 	formContent.WriteString(fmt.Sprintf("%s %s\n\n", domainLabel, domainField))
 
-	// Duration field
 	durLabel := labelStyle.Render("Dura\u00e7\u00e3o:")
 	durField := m.durationInput.View()
 	if m.formFocus == 1 {
@@ -594,13 +545,11 @@ func (m *model) formView() string {
 	b.WriteString(formBoxStyle.Render(formContent.String()))
 	b.WriteString("\n")
 
-	// Loading
 	if m.loading {
 		b.WriteString(loadingStyle.Render("\u23f3 Aplicando bloqueio..."))
 		b.WriteString("\n\n")
 	}
 
-	// Form footer
 	b.WriteString(footerStyle.Render(fmt.Sprintf(
 		"%s  %s  %s",
 		lipgloss.JoinHorizontal(lipgloss.Center,
@@ -620,10 +569,6 @@ func (m *model) formView() string {
 	return appStyle.Render(b.String())
 }
 
-// ─── Entrypoint ──────────────────────────────────────────────────────────────
-
-// Run starts the TUI application. It returns when the user quits or an
-// unrecoverable error occurs.
 func Run(client *ipc.Client) error {
 	m := New(client)
 	p := tea.NewProgram(m, tea.WithAltScreen())

@@ -258,8 +258,6 @@ func (e *windowsEnforcer) removeFirewallRule(ip string) error {
 	return nil
 }
 
-// Status consulta o firewall para reportar se a proteção DoH/DoT está ativa
-// e quantas regras do FocusGuard existem.
 func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -280,8 +278,6 @@ func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	return countFocusGuardRules(string(out)), nil
 }
 
-// countFocusGuardRules analisa a saída de "netsh advfirewall firewall show rule
-// name=all" e conta as regras do FocusGuard e quantas delas são DoH/DoT.
 func countFocusGuardRules(output string) EnforcerStatus {
 	status := EnforcerStatus{}
 
@@ -297,21 +293,16 @@ func countFocusGuardRules(output string) EnforcerStatus {
 	return status
 }
 
-// ─── DoH / DoT Blocking ──────────────────────────────────────────────────────
-
-// showRuleArgs monta os argumentos para verificar a existência de uma regra.
 func showRuleArgs(ruleName string) []string {
 	return []string{"advfirewall", "firewall", "show", "rule", "name=" + ruleName}
 }
 
-// doTRuleName devolve o nome estável da regra DoT. Deve permanecer igual ao da versão
-// antiga: é isso que permite à migração (delete-before-add) substituir regras ineficazes
-// (localport) criadas antes da correção.
+// Nome estável — não alterar: a migração (delete-before-add) depende dele para
+// substituir as regras antigas ineficazes (localport).
 func doTRuleName(provider DoHProvider) string {
 	return fmt.Sprintf("FocusGuard_%s", provider.Name)
 }
 
-// addDoTRuleArgs monta os argumentos para bloquear a porta remota 853 (DoT) em saída.
 func addDoTRuleArgs(ruleName, protocol string, port int) []string {
 	return []string{
 		"advfirewall", "firewall", "add", "rule",
@@ -323,7 +314,6 @@ func addDoTRuleArgs(ruleName, protocol string, port int) []string {
 	}
 }
 
-// addDoHRuleArgs monta os argumentos para bloquear IP+porta 443 (DoH) em saída.
 func addDoHRuleArgs(ruleName, ip string, port int) []string {
 	return []string{
 		"advfirewall", "firewall", "add", "rule",
@@ -336,7 +326,6 @@ func addDoHRuleArgs(ruleName, ip string, port int) []string {
 	}
 }
 
-// deleteRuleArgs monta os argumentos para remover uma regra pelo nome.
 func deleteRuleArgs(ruleName string) []string {
 	return []string{"advfirewall", "firewall", "delete", "rule", "name=" + ruleName}
 }
@@ -375,9 +364,8 @@ func (e *windowsEnforcer) UnblockDoH() error {
 
 func (e *windowsEnforcer) addDoHRule(provider DoHProvider) error {
 	if provider.IsDoT {
-		// Bloqueio global da porta remota (DoT) — usa o protocolo explícito do provider.
-		// Remove antes de adicionar: máquinas com a regra antiga (localport, ineficaz) precisam
-		// receber a regra correta (remoteport) — o check de existência as pularia.
+		// delete-before-add: a regra antiga (localport, ineficaz) precisa ser substituída
+		// pela correta (remoteport) — o check de existência pularia a regra antiga.
 		ruleName := doTRuleName(provider)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
@@ -397,7 +385,6 @@ func (e *windowsEnforcer) addDoHRule(provider DoHProvider) error {
 		return nil
 	}
 
-	// Bloqueio de IPs específicos na porta 443 (DoH — DNS-over-HTTPS)
 	for _, ip := range provider.IPs {
 		ruleName := fmt.Sprintf("FocusGuard_DoH_%s", strings.ReplaceAll(ip, ":", "_"))
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)

@@ -11,9 +11,6 @@ import (
 	"time"
 )
 
-// setTestEndpoint redireciona Listen()/Dial() para um socket Unix em diretório
-// temporário, evitando conflitos com o daemon real (/run/focusguard.sock) e
-// dispensando privilégios de root.
 func setTestEndpoint(t *testing.T) {
 	t.Helper()
 

@@ -10,9 +10,6 @@ import (
 	"time"
 )
 
-// setTestEndpoint redireciona Listen()/Dial() para uma porta TCP livre,
-// evitando conflitos com o daemon real (que ocupa a porta fixa 48901) ou
-// com outros testes em execução simultânea.
 func setTestEndpoint(t *testing.T) {
 	t.Helper()
 

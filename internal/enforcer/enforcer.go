@@ -15,26 +15,23 @@ type Enforcer interface {
 	Status() (EnforcerStatus, error)
 }
 
-// EnforcerStatus descreve o estado atual das regras de firewall do FocusGuard.
 type EnforcerStatus struct {
-	DoHActive     bool // true se as regras DoH/DoT existem no firewall
-	FirewallRules int  // total de regras de firewall criadas pelo FocusGuard
+	DoHActive     bool
+	FirewallRules int
 }
 
 const (
 	HeaderMarker = "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
 )
 
-// DoHProvider representa um provedor de DNS criptografado conhecido.
 type DoHProvider struct {
 	Name     string
 	IPs      []string
 	Port     int
-	IsDoT    bool   // true = bloquear a porta globalmente (sem IP específico)
-	Protocol string // "tcp" ou "udp" para DoT; vazio para DoH (usa remoteip:port)
+	IsDoT    bool
+	Protocol string
 }
 
-// DoHProviders é a lista de provedores DoH/DoT conhecidos que serão bloqueados.
 var DoHProviders = []DoHProvider{
 	{Name: "Cloudflare", IPs: []string{"1.1.1.1", "1.0.0.1", "2606:4700:4700::1111", "2606:4700:4700::1001"}, Port: 443},
 	{Name: "Google", IPs: []string{"8.8.8.8", "8.8.4.4", "2001:4860:4860::8888", "2001:4860:4860::8844"}, Port: 443},

@@ -14,7 +14,6 @@ type focusGuardService struct{}
 func (h *focusGuardService) Execute(args []string, r <-chan svc.ChangeRequest, changes chan<- svc.Status) (bool, uint32) {
 	changes <- svc.Status{State: svc.StartPending}
 
-	// Run daemon in a goroutine with restart loop
 	go func() {
 		for {
 			shouldExit := runDaemon()
@@ -36,9 +35,6 @@ func (h *focusGuardService) Execute(args []string, r <-chan svc.ChangeRequest, c
 			changes <- svc.Status{State: svc.StopPending}
 			close(serviceStopCh)
 
-			// Wait up to 30s for the daemon to actually stop.
-			// If there are active blocks, the daemon ignores the stop
-			// and we resume the service after the timeout.
 			select {
 			case <-daemonDoneCh:
 				log.Println("[FocusGuard Daemon] Serviço finalizado após parada limpa.")

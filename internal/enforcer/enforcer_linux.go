@@ -265,8 +265,6 @@ func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 	return nil
 }
 
-// Status consulta o firewall para reportar se a proteção DoH/DoT está ativa
-// e quantas regras do FocusGuard existem na chain OUTPUT.
 func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -297,8 +295,7 @@ func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 		status.DoHActive = status.DoHActive || st.DoHActive
 	}
 
-	// Só reportar erro se nenhuma consulta teve sucesso; uma consulta bem-sucedida
-	// com 0 regras (firewall limpo) é um resultado válido.
+	// Erro apenas se nenhuma consulta teve sucesso; 0 regras de um firewall limpo é válido.
 	if queried == 0 {
 		return EnforcerStatus{}, fmt.Errorf("falha ao consultar as regras de firewall (iptables/ip6tables)")
 	}
@@ -306,10 +303,6 @@ func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 	return status, nil
 }
 
-// countIptablesRules analisa a saída de "iptables -S OUTPUT" (ou ip6tables) e
-// conta regras DROP do FocusGuard e se há bloqueio de porta DoH/DoT.
-// Nota: conta TODAS as regras "-j DROP" da chain, incluindo quaisquer outras
-// regras de terceiros — heurística aceitável para exibição de status.
 func countIptablesRules(output string) EnforcerStatus {
 	status := EnforcerStatus{}
 
@@ -327,16 +320,10 @@ func countIptablesRules(output string) EnforcerStatus {
 	return status
 }
 
-// ─── DoH / DoT Blocking ──────────────────────────────────────────────────────
-
-// doTRuleArgs monta os argumentos para bloquear a porta remota 853 (DoT),
-// aplicável a iptables (IPv4) e ip6tables (IPv6). jump é "-C", "-A" ou "-D".
 func doTRuleArgs(jump, protocol string, port int) []string {
 	return []string{jump, "OUTPUT", "-p", protocol, "--dport", fmt.Sprintf("%d", port), "-j", "DROP"}
 }
 
-// availableDoTBins retorna os binários de firewall disponíveis para bloquear
-// a porta DoT (IPv4 e IPv6). Sistemas sem ip6tables seguem apenas com iptables.
 func availableDoTBins() []string {
 	var bins []string
 	for _, bin := range []string{"iptables", "ip6tables"} {
@@ -347,8 +334,6 @@ func availableDoTBins() []string {
 	return bins
 }
 
-// doHRuleArgs monta os argumentos para bloquear IP+porta 443 (DoH).
-// jump é "-C", "-A" ou "-D".
 func doHRuleArgs(jump, ip string, port int) []string {
 	return []string{jump, "OUTPUT", "-d", ip, "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "DROP"}
 }
@@ -390,11 +375,10 @@ func (e *linuxEnforcer) addIptablesDoHRule(provider DoHProvider) error {
 	defer cancel()
 
 	if provider.IsDoT {
-		// Bloqueio global da porta remota (DoT) — IPv4 (iptables) e IPv6 (ip6tables)
 		for _, bin := range availableDoTBins() {
 			checkCmd := exec.CommandContext(ctx, bin, doTRuleArgs("-C", provider.Protocol, provider.Port)...)
 			if err := checkCmd.Run(); err == nil {
-				continue // já existe
+				continue
 			}
 
 			addCmd := exec.CommandContext(ctx, bin, doTRuleArgs("-A", provider.Protocol, provider.Port)...)
@@ -406,14 +390,12 @@ func (e *linuxEnforcer) addIptablesDoHRule(provider DoHProvider) error {
 		return nil
 	}
 
-	// Bloqueio de IPs específicos na porta 443 (DoH)
 	for _, ip := range provider.IPs {
 		bin, err := iptablesBinFor(ip)
 		if err != nil {
 			continue
 		}
 
-		// Check if rule exists
 		checkCmd := exec.CommandContext(ctx, bin, doHRuleArgs("-C", ip, provider.Port)...)
 		if err := checkCmd.Run(); err == nil {
 			continue
@@ -433,7 +415,6 @@ func (e *linuxEnforcer) removeIptablesDoHRule(provider DoHProvider) error {
 	defer cancel()
 
 	if provider.IsDoT {
-		// Remove o bloqueio da porta remota (DoT) — IPv4 (iptables) e IPv6 (ip6tables)
 		for _, bin := range availableDoTBins() {
 			cmd := exec.CommandContext(ctx, bin, doTRuleArgs("-D", provider.Protocol, provider.Port)...)
 			if out, err := cmd.CombinedOutput(); err != nil {

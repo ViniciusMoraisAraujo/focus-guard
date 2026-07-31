@@ -91,6 +91,7 @@ func TestStartHostswatch_StartFails(t *testing.T) {
 		t.Fatal("expected nil when Start fails, got non-nil")
 	}
 }
+
 type mockStatewatchReconciler struct {
 	reconcileCalls int32
 }
@@ -146,7 +147,6 @@ func TestStartStatewatch_StartFails(t *testing.T) {
 	origNew := newStatewatch
 	newStatewatch = func(rec statewatch.Reconciler, statePath string) *statewatch.StateWatcher {
 		sw := statewatch.New(rec, statePath)
-		// Point to a non-existent directory to make Start fail
 		sw.StatePath = filepath.Join(t.TempDir(), "nonexistent", "subdir", "state.json")
 		return sw
 	}
@@ -212,7 +212,6 @@ func TestStartStatewatch_StopIsIdempotent(t *testing.T) {
 		t.Fatal("expected non-nil statewatch")
 	}
 
-	// Stop should be idempotent and safe to call twice
 	sw.Stop()
 	sw.Stop()
 }
@@ -226,7 +225,7 @@ func TestRunDaemon_StatewatchIntegration(t *testing.T) {
 
 	origNewHostswatch := newHostswatch
 	newHostswatch = func(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hostswatch.HostsWatcher {
-		return nil // skip hostswatch (avoids admin privileges)
+		return nil
 	}
 	defer func() { newHostswatch = origNewHostswatch }()
 
@@ -304,7 +303,6 @@ func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
 		if capturedRec == nil {
 			t.Fatal("expected a reconciler to be passed to newStatewatch")
 		}
-		// Verify reconciler works
 		if err := capturedRec.Reconcile(); err != nil {
 			t.Errorf("Reconcile() returned error: %v", err)
 		}
@@ -450,7 +448,6 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(newStopCh)
 
-	// Without active blocks, daemon should stop cleanly (return true)
 	select {
 	case result := <-done:
 		if !result {
@@ -464,11 +461,9 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 	origGoos := goos
 
-	// Use linux path for state file, but we'll pre-create it
 	goos = "linux"
 	defer func() { goos = origGoos }()
 
-	// Pre-create state file with active blocks before runDaemon starts
 	statePath := "/var/lib/focusguard/state.json"
 	stateDir := filepath.Dir(statePath)
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
@@ -492,7 +487,6 @@ func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 		t.Fatalf("failed to create state file: %v", err)
 	}
 
-	// Clean up state file after test
 	defer os.RemoveAll(stateDir)
 
 	origNewHostswatch := newHostswatch
@@ -521,19 +515,14 @@ func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 	time.Sleep(100 * time.Millisecond)
 	close(newStopCh)
 
-	// With active blocks, daemon should IGNORE the stop and keep running
 	select {
 	case result := <-done:
 		t.Fatalf("daemon should NOT stop with active blocks, but it returned %v", result)
 	case <-time.After(1 * time.Second):
-		// Good: daemon ignored the stop because of active blocks
 	}
 }
 
 func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
-	// This test verifies the service handler's restart loop.
-	// We set up a scenario where runDaemon returns false (unexpected error),
-	// and verify the handler calls runDaemon again.
 	origGoos := goos
 	goos = "linux"
 	defer func() { goos = origGoos }()
@@ -555,14 +544,8 @@ func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
 	serviceStopCh = newStopCh
 	defer func() { serviceStopCh = origServiceStopCh }()
 
-	// Track how many times runDaemon was called via the service handler
 	callCount := 0
 
-	// We need to override runDaemon to control its return value
-	// But runDaemon is not a variable, so we use the service handler directly
-	// Instead, we run the service handler's goroutine logic manually
-
-	// Run daemon and verify it runs at least once
 	done := make(chan bool, 1)
 	go func() {
 		result := runDaemon()
@@ -590,8 +573,6 @@ func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
 }
 
 func TestDaemonDoneCh_NotClosedInRunDaemon(t *testing.T) {
-	// Verify that runDaemon does NOT close daemonDoneCh
-	// (only the service handler should close it)
 	origGoos := goos
 	goos = "linux"
 	defer func() { goos = origGoos }()
@@ -613,7 +594,6 @@ func TestDaemonDoneCh_NotClosedInRunDaemon(t *testing.T) {
 	serviceStopCh = newStopCh
 	defer func() { serviceStopCh = origServiceStopCh }()
 
-	// Create a fresh daemonDoneCh for this test
 	origDaemonDoneCh := daemonDoneCh
 	freshDaemonDoneCh := make(chan struct{})
 	daemonDoneCh = freshDaemonDoneCh
@@ -630,12 +610,10 @@ func TestDaemonDoneCh_NotClosedInRunDaemon(t *testing.T) {
 
 	<-done
 
-	// daemonDoneCh should NOT be closed by runDaemon
 	select {
 	case <-freshDaemonDoneCh:
 		t.Error("daemonDoneCh was closed by runDaemon — only the service handler should close it")
 	default:
-		// Good: channel is still open
 	}
 }
 

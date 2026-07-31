@@ -79,7 +79,6 @@ func (s *Scheduler) Reconcile() error {
 	}
 	s.mu.Unlock()
 
-	// I/O pesado (netsh) FORA do mutex — não trava o scheduler
 	for _, e := range toUnblock {
 		_ = s.enforcer.UnblockDomain(e.domain, e.ips)
 	}
@@ -87,10 +86,8 @@ func (s *Scheduler) Reconcile() error {
 		if err := s.enforcer.Sync(activeIPs); err != nil {
 			return err
 		}
-		// Se há bloqueios ativos, garante proteção DoH/DoT
 		_ = s.enforcer.BlockDoH()
 	} else {
-		// Sem bloqueios ativos, desativa proteção DoH/DoT
 		_ = s.enforcer.UnblockDoH()
 	}
 
@@ -102,7 +99,6 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 	defer ticker.Stop()
 
 	for range ticker.C {
-		// Step 1: collect active domains (lock rápido, sem I/O pesado)
 		var entries []refreshEntry
 		s.mu.Lock()
 		state, err := s.store.Load()
@@ -121,7 +117,6 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 			continue
 		}
 
-		// Step 2: resolver DNS para cada domínio (FORA do lock)
 		refreshed := make(map[string][]string)
 		for _, entry := range entries {
 			newIPs, err := resolveFunc(entry.domain)
@@ -152,7 +147,6 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 			continue
 		}
 
-		// Step 3: persist no store (lock rápido) + aplicar firewall (FORA do lock)
 		s.mu.Lock()
 		state, err = s.store.Load()
 		if err != nil {
@@ -170,7 +164,6 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 		_ = s.store.Save(state)
 		s.mu.Unlock()
 
-		// I/O pesado FORA do mutex
 		for _, e := range toRefresh {
 			_ = s.enforcer.BlockDomain(e.domain, e.ips)
 		}
@@ -191,7 +184,6 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 		ResolvedIPs: ips,
 	}
 
-	// Lock rápido: só para operações de store/memória
 	s.mu.Lock()
 	state, err := s.store.Load()
 	if err != nil {
@@ -206,17 +198,14 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	}
 	s.mu.Unlock()
 
-	// I/O pesado (netsh firewall) FORA do mutex — não bloqueia o scheduler
 	if err := s.enforcer.BlockDomain(domain, ips); err != nil {
 		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueio: %w", err)
 	}
 
-	// Primeiro bloqueio? Ativa proteção DoH/DoT
 	if wasEmpty {
 		_ = s.enforcer.BlockDoH()
 	}
 
-	// Lock rápido para configurar o timer de expiração
 	s.mu.Lock()
 	s.setupTimerLocked(block)
 	s.mu.Unlock()
@@ -252,7 +241,6 @@ func (s *Scheduler) setupTimerLocked(block policy.Block) {
 }
 
 func (s *Scheduler) onExpire(domain string) {
-	// Lock rápido: só para ler/atualizar o store
 	s.mu.Lock()
 	state, err := s.store.Load()
 	if err != nil {
@@ -273,10 +261,8 @@ func (s *Scheduler) onExpire(domain string) {
 	delete(s.timers, domain)
 	s.mu.Unlock()
 
-	// I/O pesado (netsh) FORA do mutex
 	_ = s.enforcer.UnblockDomain(domain, ips)
 
-	// Último bloqueio removido? Desativa proteção DoH/DoT
 	if remaining == 0 {
 		_ = s.enforcer.UnblockDoH()
 	}
@@ -299,12 +285,10 @@ func (s *Scheduler) HasActiveBlocks() bool {
 	return false
 }
 
-// ProtectionStatus agrega o estado esperado da proteção DoH/DoT (há bloqueios
-// ativos?) com o estado real reportado pelo enforcer (regras no firewall).
 type ProtectionStatus struct {
-	ExpectedDoH   bool // deveria haver proteção DoH/DoT (existem bloqueios ativos)
-	DoHActive     bool // regras DoH/DoT realmente presentes no firewall
-	FirewallRules int  // total de regras de firewall do FocusGuard
+	ExpectedDoH   bool
+	DoHActive     bool
+	FirewallRules int
 }
 
 func (s *Scheduler) ProtectionStatus() (ProtectionStatus, error) {

@@ -55,12 +55,10 @@ func TestInstall_CreatesService(t *testing.T) {
 		t.Fatalf("Install returned error: %v", err)
 	}
 
-	// Should have called sc twice: create + failure
 	if len(capturedCmds) < 2 {
 		t.Fatalf("expected at least 2 sc commands, got %d", len(capturedCmds))
 	}
 
-	// Check first command: sc create
 	createCmd := capturedCmds[0]
 	if createCmd.name != "sc" {
 		t.Errorf("expected sc, got %q", createCmd.name)
@@ -79,7 +77,6 @@ func TestInstall_CreatesService(t *testing.T) {
 		t.Errorf("expected auto start in args, got %v", createCmd.args)
 	}
 
-	// Check second command: sc failure (recovery)
 	failureCmd := capturedCmds[1]
 	if failureCmd.name != "sc" {
 		t.Errorf("expected sc for failure command, got %q", failureCmd.name)

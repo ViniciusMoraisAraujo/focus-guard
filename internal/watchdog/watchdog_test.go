@@ -62,7 +62,7 @@ func TestNew_ValidConfig(t *testing.T) {
 			"/tmp/focusguard-watchdog.sock", w.socketPath)
 	}
 
-	expectedInterval := 5 * time.Second // watchdogSec/2 = 10/2 = 5s
+	expectedInterval := 5 * time.Second
 	if w.interval != expectedInterval {
 		t.Errorf("expected interval %v, got %v", expectedInterval, w.interval)
 	}
@@ -158,7 +158,6 @@ func TestSendNotification_MultipleMessages(t *testing.T) {
 
 	w := &Watchdog{socketPath: socketPath}
 
-	// Send multiple messages
 	messages := []string{"MSG_A", "MSG_B", "MSG_C"}
 	for _, msg := range messages {
 		if err := w.sendNotification(msg); err != nil {
@@ -191,7 +190,6 @@ func TestSendNotification_NoListener(t *testing.T) {
 
 func TestStart_NilReceiver(t *testing.T) {
 	var w *Watchdog
-	// Must not panic
 	w.Start()
 }
 
@@ -305,7 +303,7 @@ func TestStart_ReadinessBeforeTicker(t *testing.T) {
 
 	w := &Watchdog{
 		socketPath: socketPath,
-		interval:   1 * time.Hour, // extremely long interval
+		interval:   1 * time.Hour,
 		checker:    &mockHealthChecker{},
 	}
 

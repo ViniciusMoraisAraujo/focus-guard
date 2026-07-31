@@ -168,14 +168,11 @@ func TestWriteReadHostsLines_RoundTrip(t *testing.T) {
 func TestBlockDoH_Windows(t *testing.T) {
 	e := newTestEnforcer(t)
 
-	// BlockDoH chama netsh, que precisa de admin.
-	// Se falhar por falta de privilégio, o teste não deve falhar.
 	err := e.BlockDoH()
 	if err != nil {
 		t.Logf("BlockDoH retornou (esperado se não admin): %v", err)
 	}
 
-	// Idempotente: chamar de novo não deve quebrar
 	err2 := e.BlockDoH()
 	if err2 != nil {
 		t.Logf("BlockDoH (2ª chamada) retornou: %v", err2)
@@ -185,13 +182,11 @@ func TestBlockDoH_Windows(t *testing.T) {
 func TestUnblockDoH_Windows(t *testing.T) {
 	e := newTestEnforcer(t)
 
-	// Desbloqueio não deve falhar mesmo se as regras não existirem
 	err := e.UnblockDoH()
 	if err != nil {
 		t.Logf("UnblockDoH retornou (esperado se não admin): %v", err)
 	}
 
-	// Idempotente
 	err2 := e.UnblockDoH()
 	if err2 != nil {
 		t.Logf("UnblockDoH (2ª chamada) retornou: %v", err2)
@@ -213,7 +208,6 @@ func TestAddDoTRuleArgs_UsesRemotePort(t *testing.T) {
 		t.Errorf("addDoTRuleArgs() = %v, want %v", args, want)
 	}
 
-	// Em regras de saída, localport = porta local de origem; bloquear DoT exige remoteport.
 	for _, a := range args {
 		if strings.HasPrefix(a, "localport=") {
 			t.Errorf("DoT rule must use remoteport, not localport: got %q", a)
@@ -222,7 +216,6 @@ func TestAddDoTRuleArgs_UsesRemotePort(t *testing.T) {
 }
 
 func TestAddDoTRuleArgs_UDP(t *testing.T) {
-	// UDP (DoT/UDP) e porta por provider
 	args := addDoTRuleArgs("FocusGuard_DoT_UDP", "udp", 853)
 	want := []string{
 		"advfirewall", "firewall", "add", "rule",
@@ -238,8 +231,6 @@ func TestAddDoTRuleArgs_UDP(t *testing.T) {
 }
 
 func TestDoTRuleName_MigrationStable(t *testing.T) {
-	// Nome deve permanecer estável: a migração (delete-before-add) só substitui a
-	// regra antiga ineficaz (localport) porque mantém o MESMO nome das versões anteriores.
 	want := map[string]string{
 		"DoT_TCP": "FocusGuard_DoT_TCP",
 		"DoT_UDP": "FocusGuard_DoT_UDP",
@@ -301,7 +292,6 @@ func TestShowAndDeleteRuleArgs(t *testing.T) {
 }
 
 func TestCountFocusGuardRules(t *testing.T) {
-	// Saída típica de "netsh advfirewall firewall show rule name=all".
 	output := `
 Regra:
     Nome da regra:    FocusGuard_1.1.1.1

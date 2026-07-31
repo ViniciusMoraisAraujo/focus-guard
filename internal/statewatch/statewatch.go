@@ -83,7 +83,6 @@ func (w *StateWatcher) watchFsEvents() {
 			if !ok {
 				return
 			}
-			// Only care about Write events on the state file itself
 			if event.Has(fsnotify.Write) || event.Has(fsnotify.Create) {
 				if event.Name == w.StatePath || filepath.Base(event.Name) == filepath.Base(w.StatePath) {
 					select {
