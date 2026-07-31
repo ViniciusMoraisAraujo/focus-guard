@@ -300,7 +300,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.durationInput.Reset()
 		m.formFocus = 0
 		m.statusMessage = ""
-		m.err = fmt.Errorf("não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente.")
+		m.err = fmt.Errorf("não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente")
 		return m, m.fetchStatusCmd()
 	}
 

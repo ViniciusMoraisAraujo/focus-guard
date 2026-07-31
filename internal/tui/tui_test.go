@@ -336,7 +336,7 @@ func TestMessage_BlockErr(t *testing.T) {
 	if m.err == nil {
 		t.Fatal("error should be set")
 	}
-	if m.err.Error() != "não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente." {
+	if m.err.Error() != "não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente" {
 		t.Errorf("expected user-friendly error message, got %v", m.err)
 	}
 	if m.statusMessage != "" {

@@ -94,12 +94,6 @@ func runWithExitMock(fn func()) (caught bool, exitCode int) {
 	return false, 0
 }
 
-type testIPCServer struct {
-	t       *testing.T
-	ln      net.Listener
-	handler func(ipc.Request) ipc.Response
-}
-
 func startTestIPCServer(t *testing.T, handler func(ipc.Request) ipc.Response) {
 	t.Helper()
 

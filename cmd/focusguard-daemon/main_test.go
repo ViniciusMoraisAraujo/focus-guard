@@ -92,9 +92,7 @@ func TestStartHostswatch_StartFails(t *testing.T) {
 	}
 }
 
-type mockStatewatchReconciler struct {
-	reconcileCalls int32
-}
+type mockStatewatchReconciler struct{}
 
 func (m *mockStatewatchReconciler) Reconcile() error {
 	return nil

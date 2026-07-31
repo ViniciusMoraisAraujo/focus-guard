@@ -3,7 +3,6 @@ package statewatch
 import (
 	"os"
 	"path/filepath"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -12,7 +11,6 @@ import (
 )
 
 type mockReconciler struct {
-	mu             sync.Mutex
 	reconcileCalls int32
 }
 
@@ -22,7 +20,6 @@ func (m *mockReconciler) Reconcile() error {
 }
 
 type failingReconciler struct {
-	mu             sync.Mutex
 	reconcileCalls int32
 }
 
