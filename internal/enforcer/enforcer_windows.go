@@ -295,13 +295,38 @@ func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
-	out, err := cmd.Output()
+	// G3: consulta focada — apenas as regras FocusGuard*, em vez de despejar
+	// todas as regras do firewall e filtrar o dump inteiro em Go.
+	ps := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
+		"Get-NetFirewallRule -Name 'FocusGuard*' | Select-Object -ExpandProperty Name")
+	if out, err := ps.Output(); err == nil {
+		return countFocusGuardNames(string(out)), nil
+	}
+
+	// Fallback para ambientes sem PowerShell: dump completo via netsh.
+	fallback := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	out, err := fallback.Output()
 	if err != nil {
 		return EnforcerStatus{}, fmt.Errorf("netsh show rules falhou: %w", err)
 	}
-
 	return countFocusGuardRules(string(out)), nil
+}
+
+// countFocusGuardNames conta as regras FocusGuard a partir da saída do
+// PowerShell (um nome por linha).
+func countFocusGuardNames(output string) EnforcerStatus {
+	status := EnforcerStatus{}
+	for _, line := range strings.Split(output, "\n") {
+		name := strings.TrimSpace(line)
+		if !strings.HasPrefix(name, "FocusGuard_") {
+			continue
+		}
+		status.FirewallRules++
+		if strings.Contains(name, "FocusGuard_DoH_") || strings.Contains(name, "FocusGuard_DoT_") {
+			status.DoHActive = true
+		}
+	}
+	return status
 }
 
 func countFocusGuardRules(output string) EnforcerStatus {

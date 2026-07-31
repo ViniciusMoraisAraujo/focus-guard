@@ -351,3 +351,29 @@ Regra:
 		t.Error("DoHActive deve ser false sem regras DoH/DoT")
 	}
 }
+
+func TestCountFocusGuardNames(t *testing.T) {
+	output := "FocusGuard_1.1.1.1\nFocusGuard_DoH_8_8_8_8\nFocusGuard_DoT_TCP\nWindows Defender Firewall - default\n"
+
+	status := countFocusGuardNames(output)
+
+	if status.FirewallRules != 3 {
+		t.Errorf("FirewallRules = %d, want 3", status.FirewallRules)
+	}
+	if !status.DoHActive {
+		t.Error("DoHActive deve ser true quando existem regras DoH/DoT")
+	}
+}
+
+func TestCountFocusGuardNames_NoRules(t *testing.T) {
+	output := "Windows Defender Firewall - default\nOutra regra qualquer\n"
+
+	status := countFocusGuardNames(output)
+
+	if status.FirewallRules != 0 {
+		t.Errorf("FirewallRules = %d, want 0", status.FirewallRules)
+	}
+	if status.DoHActive {
+		t.Error("DoHActive deve ser false sem regras FocusGuard")
+	}
+}

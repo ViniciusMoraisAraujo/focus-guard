@@ -21,6 +21,10 @@ const (
 	viewForm
 )
 
+// statusCacheTTL evita re-consultar o status (e, por consequência, o firewall)
+// quando o usuário pressiona "r" repetidamente em um curto intervalo (G9).
+const statusCacheTTL = 2 * time.Second
+
 type model struct {
 	client *ipc.Client
 	state  viewState
@@ -40,6 +44,8 @@ type model struct {
 	dohActive       bool
 	firewallRules   int
 	protectionError string
+
+	lastStatusFetch time.Time
 
 	width  int
 	height int
@@ -270,6 +276,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dohActive = msg.dohActive
 		m.firewallRules = msg.firewallRules
 		m.protectionError = msg.protectionError
+		m.lastStatusFetch = time.Now()
 		m.updateTableRows()
 		return m, nil
 
@@ -334,6 +341,9 @@ func (m *model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case "r":
 		if m.loading {
+			return m, nil
+		}
+		if time.Since(m.lastStatusFetch) < statusCacheTTL {
 			return m, nil
 		}
 		m.loading = true

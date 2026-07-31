@@ -365,6 +365,29 @@ func TestKey_R_NoRefreshWhileLoading(t *testing.T) {
 	}
 }
 
+func TestKey_R_CachedWithinTTL(t *testing.T) {
+	m := newTestModel(nil)
+	m.loading = false
+	m.lastStatusFetch = time.Now()
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd != nil {
+		t.Error("pressing 'r' within the status cache TTL should not re-fetch")
+	}
+}
+
+func TestKey_R_RefetchesAfterTTL(t *testing.T) {
+	m := newTestModel(nil)
+	m.loading = false
+	m.lastStatusFetch = time.Now().Add(-statusCacheTTL - time.Second)
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	if cmd == nil {
+		t.Error("pressing 'r' after the status cache TTL should re-fetch")
+	}
+	if !m.loading {
+		t.Error("loading should be true after a refresh past the TTL")
+	}
+}
+
 func TestKey_FormTabup_NavigatesFields(t *testing.T) {
 	m := newTestModel(nil)
 	m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
