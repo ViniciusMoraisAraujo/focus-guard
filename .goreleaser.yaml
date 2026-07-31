@@ -138,6 +138,7 @@ archives:
       - tray-linux
     formats:
       - tar.gz
+    allow_different_binary_count: true
     name_template: '{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}'
     files:
       - src: README.md
