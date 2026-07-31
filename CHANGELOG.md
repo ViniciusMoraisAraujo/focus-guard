@@ -5,6 +5,24 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.2.3] - 2026-07-31
+
+### 🆕 System Tray App
+
+- **Novo binário `focusguard-tray`** — ícone na bandeja do sistema com menu de
+  ações rápidas: `Status`, `Bloco rápido` (domínios comuns por 4h),
+  `Verificar atualização`, `Abrir TUI` e `Sair` (o daemon continua rodando).
+- **Tooltip dinâmico** — mostra o estado da proteção
+  (`DoH/DoT ATIVA · N regras`) e avisa quando há nova versão disponível.
+- **Ícone gerado em runtime** — sem assets binários no repositório.
+- **Autostart no login (Windows)** — novos comandos `focusguard install-tray` e
+  `focusguard uninstall-tray` registram/removem o tray na chave
+  `HKCU\...\CurrentVersion\Run`, sem necessidade de elevação.
+- **Pipeline de release** — as releases agora incluem o `focusguard-tray`
+  (Windows amd64/arm64; Linux amd64 — requer `libayatana-appindicator3`,
+  instalada automaticamente pelo `install-linux.sh` quando o tray estiver
+  presente no pacote).
+
 ## [0.2.2] - 2026-07-31
 
 ### ⚡ Otimização de processamento (continuação)
