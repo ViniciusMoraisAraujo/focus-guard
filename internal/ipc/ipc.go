@@ -1,6 +1,8 @@
 package ipc
 
-import "focusguard/internal/policy"
+import (
+	"focusguard/internal/policy"
+)
 
 var (
 	TestSocketPath string
@@ -21,4 +23,7 @@ type Response struct {
 	DoHActive       bool           `json:"doh_active,omitempty"`
 	FirewallRules   int            `json:"firewall_rules,omitempty"`
 	ProtectionError string         `json:"protection_error,omitempty"`
+	UpdateAvailable bool           `json:"update_available,omitempty"`
+	UpdateVersion   string         `json:"update_version,omitempty"`
+	CurrentVersion  string         `json:"current_version,omitempty"`
 }

@@ -19,6 +19,8 @@ import (
 	"focusguard/internal/watchdog"
 )
 
+var daemonVersion = "0.0.0-dev"
+
 var goos = runtime.GOOS
 var newHostswatch = hostswatch.New
 var newStatewatch = statewatch.New
