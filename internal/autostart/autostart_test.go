@@ -869,3 +869,213 @@ func TestUninstallWatchdog_UnsupportedPlatform(t *testing.T) {
 		t.Fatalf("expected unsupported platform error on darwin, got: %v", err)
 	}
 }
+
+func TestInstallTray_CreatesRunKey(t *testing.T) {
+	var captured []struct {
+		name string
+		args []string
+	}
+
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	exePath := `C:\Program Files\FocusGuard\focusguard-tray.exe`
+	err := InstallTray(exePath)
+	if err != nil {
+		t.Fatalf("InstallTray returned error: %v", err)
+	}
+
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 reg command, got %d", len(captured))
+	}
+	cmd := captured[0]
+	if cmd.name != "reg" {
+		t.Errorf("expected reg, got %q", cmd.name)
+	}
+	joined := strings.Join(cmd.args, " ")
+	for _, want := range []string{
+		"add",
+		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
+		"/v", "FocusGuardTray",
+		"/t", "REG_SZ",
+		"/d", exePath,
+		"/f",
+	} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("expected %q in args, got %v", want, cmd.args)
+		}
+	}
+}
+
+func TestInstallTray_InvalidPath(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := InstallTray("")
+	if err == nil {
+		t.Fatal("expected error for empty path")
+	}
+}
+
+func TestInstallTray_UnsupportedPlatform(t *testing.T) {
+	origGoos := goos
+	goos = "linux"
+	defer func() { goos = origGoos }()
+
+	err := InstallTray("/usr/local/bin/focusguard-tray")
+	if err == nil || !strings.Contains(err.Error(), "exclusivo do Windows") {
+		t.Fatalf("expected unsupported platform error on linux, got: %v", err)
+	}
+}
+
+func TestUninstallTray_RemovesRunKey(t *testing.T) {
+	var captured []struct {
+		name string
+		args []string
+	}
+
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("success"), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	if err := UninstallTray(); err != nil {
+		t.Fatalf("UninstallTray returned error: %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 reg command, got %d", len(captured))
+	}
+	joined := strings.Join(captured[0].args, " ")
+	if captured[0].name != "reg" || !strings.Contains(joined, "delete") || !strings.Contains(joined, "FocusGuardTray") {
+		t.Errorf("expected reg delete of FocusGuardTray, got %v", captured[0].args)
+	}
+}
+
+func TestUninstallTray_NotInstalledIsIdempotent(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("ERROR: The system was unable to find the specified registry key or value."), errors.New("exit status 1")
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	if err := UninstallTray(); err != nil {
+		t.Fatalf("uninstall should be idempotent when value is missing (exit 1), got: %v", err)
+	}
+}
+
+func TestUninstallTray_UnsupportedPlatform(t *testing.T) {
+	origGoos := goos
+	goos = "darwin"
+	defer func() { goos = origGoos }()
+
+	err := UninstallTray()
+	if err == nil || !strings.Contains(err.Error(), "exclusivo do Windows") {
+		t.Fatalf("expected unsupported platform error on darwin, got: %v", err)
+	}
+}
+
+func TestIsTrayInstalled_DetectsExisting(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte(`    FocusGuardTray    REG_SZ    C:\focusguard-tray.exe`), nil
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	installed, err := IsTrayInstalled()
+	if err != nil {
+		t.Fatalf("IsTrayInstalled returned error: %v", err)
+	}
+	if !installed {
+		t.Error("expected installed=true when reg query succeeds")
+	}
+}
+
+func TestIsTrayInstalled_NotInstalled(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("ERROR: The system was unable to find the specified registry key or value."), errors.New("exit status 1")
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	installed, err := IsTrayInstalled()
+	if err != nil {
+		t.Fatalf("IsTrayInstalled returned error: %v", err)
+	}
+	if installed {
+		t.Error("expected installed=false when value is missing")
+	}
+}
+
+func TestIsTrayInstalled_OtherError(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("ERROR: Access denied"), errors.New("exit status 5")
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	_, err := IsTrayInstalled()
+	if err == nil {
+		t.Fatal("expected error when reg query fails with access denied")
+	}
+}

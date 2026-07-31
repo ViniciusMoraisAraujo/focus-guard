@@ -89,3 +89,27 @@ func UninstallWatchdog() error {
 	}
 	return uninstallWatchdogWindows()
 }
+
+func InstallTray(exePath string) error {
+	if exePath == "" {
+		return fmt.Errorf("autostart: caminho do executável não pode ser vazio")
+	}
+	if goos != "windows" {
+		return fmt.Errorf("autostart: autostart do tray é exclusivo do Windows (chave Run)")
+	}
+	return installTrayWindows(exePath)
+}
+
+func UninstallTray() error {
+	if goos != "windows" {
+		return fmt.Errorf("autostart: autostart do tray é exclusivo do Windows (chave Run)")
+	}
+	return uninstallTrayWindows()
+}
+
+func IsTrayInstalled() (bool, error) {
+	if goos != "windows" {
+		return false, nil
+	}
+	return isTrayInstalledWindows()
+}

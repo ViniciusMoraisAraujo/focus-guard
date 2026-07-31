@@ -41,6 +41,10 @@ func main() {
 		handleInstallWatchdogCommand()
 	case "uninstall-watchdog":
 		handleUninstallWatchdogCommand()
+	case "install-tray":
+		handleInstallTrayCommand()
+	case "uninstall-tray":
+		handleUninstallTrayCommand()
 	case "interactive", "i":
 		runInteractive()
 	case "help", "-h", "--help":
@@ -155,6 +159,57 @@ func handleUninstallWatchdogCommand() {
 		osExit(1)
 	}
 	fmt.Println("✔ Watchdog removido.")
+}
+
+func trayExePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	ext := filepath.Ext(exe)
+	base := "focusguard-tray"
+	if ext != "" {
+		base += ext
+	}
+	return filepath.Join(dir, base)
+}
+
+func handleInstallTrayCommand() {
+	if runtime.GOOS != "windows" {
+		fmt.Println("Autostart do tray é exclusivo do Windows (chave Run HKCU).")
+		return
+	}
+
+	path := trayExePath()
+	if path == "" {
+		fmt.Println("Erro: Não foi possível determinar o caminho do tray.")
+		osExit(1)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("Erro: Tray não encontrado em %s\n", path)
+		fmt.Println("Compile o tray primeiro: go build ./cmd/focusguard-tray")
+		osExit(1)
+	}
+
+	if err := autostart.InstallTray(path); err != nil {
+		fmt.Printf("Falha ao registrar tray: %v\n", err)
+		osExit(1)
+	}
+	fmt.Println("✔ Tray registrado para iniciar com o Windows (HKCU Run).")
+}
+
+func handleUninstallTrayCommand() {
+	if runtime.GOOS != "windows" {
+		fmt.Println("Autostart do tray é exclusivo do Windows.")
+		return
+	}
+
+	if err := autostart.UninstallTray(); err != nil {
+		fmt.Printf("Falha ao remover registro do tray: %v\n", err)
+		osExit(1)
+	}
+	fmt.Println("✔ Tray removido da inicialização do Windows.")
 }
 
 func runInteractive() {
@@ -321,6 +376,8 @@ func printUsage() {
 	fmt.Println("  focusguard interactive             Modo interativo (TUI)")
 	fmt.Println("  focusguard install-watchdog         Instalar watchdog externo (Windows)")
 	fmt.Println("  focusguard uninstall-watchdog       Remover watchdog externo")
+	fmt.Println("  focusguard install-tray             Iniciar o tray com o Windows (HKCU Run)")
+	fmt.Println("  focusguard uninstall-tray           Remover o tray da inicialização")
 	fmt.Println("\nExemplos:")
 	fmt.Println("  focusguard install")
 	fmt.Println("  focusguard install-watchdog")
