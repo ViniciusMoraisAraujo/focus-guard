@@ -5,11 +5,32 @@ package ipc
 import (
 	"bytes"
 	"io"
+	"net"
 	"testing"
 	"time"
 )
 
+// setTestEndpoint redireciona Listen()/Dial() para uma porta TCP livre,
+// evitando conflitos com o daemon real (que ocupa a porta fixa 48901) ou
+// com outros testes em execução simultânea.
+func setTestEndpoint(t *testing.T) {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("find free port: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	orig := TestDialAddr
+	TestDialAddr = addr
+	t.Cleanup(func() { TestDialAddr = orig })
+}
+
 func TestListenAndDial(t *testing.T) {
+	setTestEndpoint(t)
+
 	listener, err := Listen()
 	if err != nil {
 		t.Fatalf("Listen() failed: %v", err)
@@ -77,6 +98,8 @@ func TestListenAndDial(t *testing.T) {
 }
 
 func TestDial_NoServer(t *testing.T) {
+	setTestEndpoint(t)
+
 	conn, err := Dial()
 	if err == nil {
 		conn.Close()
@@ -85,6 +108,8 @@ func TestDial_NoServer(t *testing.T) {
 }
 
 func TestListen_CleanupExistingSocket(t *testing.T) {
+	setTestEndpoint(t)
+
 	listener, err := Listen()
 	if err != nil {
 		t.Fatalf("Listen() failed: %v", err)

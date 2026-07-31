@@ -6,16 +6,26 @@ import (
 	"bytes"
 	"io"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
 
-func TestListenAndDial(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("Skipping test: root privileges (sudo) are required to create socket in /run")
-	}
+// setTestEndpoint redireciona Listen()/Dial() para um socket Unix em diretório
+// temporário, evitando conflitos com o daemon real (/run/focusguard.sock) e
+// dispensando privilégios de root.
+func setTestEndpoint(t *testing.T) {
+	t.Helper()
 
-	defer os.Remove(SocketPath)
+	orig := TestSocketPath
+	TestSocketPath = filepath.Join(t.TempDir(), "focusguard-test.sock")
+	t.Cleanup(func() { TestSocketPath = orig })
+}
+
+func TestListenAndDial(t *testing.T) {
+	setTestEndpoint(t)
+
+	defer os.Remove(TestSocketPath)
 
 	listener, err := Listen()
 	if err != nil {
@@ -23,7 +33,7 @@ func TestListenAndDial(t *testing.T) {
 	}
 	defer listener.Close()
 
-	info, err := os.Stat(SocketPath)
+	info, err := os.Stat(TestSocketPath)
 	if err != nil {
 		t.Fatalf("Failed to stat socket file: %v", err)
 	}
@@ -92,11 +102,9 @@ func TestListenAndDial(t *testing.T) {
 }
 
 func TestDial_NoServer(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("Skipping test: root privileges (sudo) are required to access /run")
-	}
+	setTestEndpoint(t)
 
-	_ = os.Remove(SocketPath)
+	_ = os.Remove(TestSocketPath)
 
 	conn, err := Dial()
 	if err == nil {
@@ -106,13 +114,11 @@ func TestDial_NoServer(t *testing.T) {
 }
 
 func TestListen_CleanupExistingSocket(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("Skipping test: root privileges (sudo) are required to create files in /run")
-	}
+	setTestEndpoint(t)
 
-	defer os.Remove(SocketPath)
+	defer os.Remove(TestSocketPath)
 
-	if err := os.WriteFile(SocketPath, []byte("stale socket"), 0600); err != nil {
+	if err := os.WriteFile(TestSocketPath, []byte("stale socket"), 0600); err != nil {
 		t.Fatalf("Failed to create residual socket file: %v", err)
 	}
 
