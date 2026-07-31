@@ -1,22 +1,53 @@
 package ipc
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
+	"sync"
 	"time"
 
 	"focusguard/internal/scheduler"
 )
 
 type Server struct {
-	scheduler *scheduler.Scheduler
-	listener  net.Listener
+	scheduler     *scheduler.Scheduler
+	listener      net.Listener
+	updateChecker UpdateChecker
+
+	mu           sync.RWMutex
+	updateStatus UpdateStatus
 }
 
 func NewServer(sched *scheduler.Scheduler) *Server {
 	return &Server{scheduler: sched}
+}
+
+func (s *Server) SetUpdateChecker(c UpdateChecker) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateChecker = c
+}
+
+// RefreshUpdateStatus runs a check-only update check (no apply) and caches the
+// result so it can be surfaced by the status action.
+func (s *Server) RefreshUpdateStatus(ctx context.Context) (UpdateStatus, error) {
+	s.mu.RLock()
+	c := s.updateChecker
+	s.mu.RUnlock()
+	if c == nil {
+		return UpdateStatus{}, nil
+	}
+	st, err := c.Check(ctx, false)
+	if err != nil {
+		return st, err
+	}
+	s.mu.Lock()
+	s.updateStatus = st
+	s.mu.Unlock()
+	return st, nil
 }
 
 func (s *Server) Start() error {
@@ -93,12 +124,48 @@ func (s *Server) handleConnection(conn net.Conn) {
 		} else {
 			resp.ProtectionError = err.Error()
 		}
+		s.mu.RLock()
+		us := s.updateStatus
+		s.mu.RUnlock()
+		resp.UpdateAvailable = us.Available
+		resp.UpdateVersion = us.NewVersion
+		resp.CurrentVersion = us.CurrentVersion
 
 	case "ping":
 		if err := s.scheduler.Ping(); err != nil {
 			resp = Response{Success: false, Message: err.Error()}
 		} else {
 			resp = Response{Success: true, Message: "pong"}
+		}
+
+	case "update":
+		s.mu.RLock()
+		c := s.updateChecker
+		s.mu.RUnlock()
+		if c == nil {
+			resp = Response{Success: false, Message: "auto-update não configurado"}
+			break
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		st, err := c.Check(ctx, true)
+		cancel()
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		s.mu.Lock()
+		s.updateStatus = st
+		s.mu.Unlock()
+		resp = Response{
+			Success:         true,
+			UpdateAvailable: st.Available,
+			UpdateVersion:   st.NewVersion,
+			CurrentVersion:  st.CurrentVersion,
+		}
+		if st.Available {
+			resp.Message = fmt.Sprintf("Atualização aplicada: %s → %s", st.CurrentVersion, st.NewVersion)
+		} else {
+			resp.Message = "Nenhuma atualização disponível."
 		}
 
 	default:

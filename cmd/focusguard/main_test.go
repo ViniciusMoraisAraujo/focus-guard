@@ -399,6 +399,107 @@ func TestMain_BlockWithServer(t *testing.T) {
 	}
 }
 
+func TestHandleUpdateCommand_Applied(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		if req.Action != "update" {
+			t.Errorf("expected action update, got %q", req.Action)
+		}
+		return ipc.Response{
+			Success:         true,
+			UpdateAvailable: true,
+			UpdateVersion:   "1.1.0",
+			CurrentVersion:  "1.0.0",
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleUpdateCommand(client) })
+
+	for _, c := range []string{"✔", "1.1.0", "próxima reinicialização"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("output should contain %q, got: %s", c, output)
+		}
+	}
+}
+
+func TestHandleUpdateCommand_UpToDate(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, CurrentVersion: "1.0.0"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleUpdateCommand(client) })
+
+	if !strings.Contains(output, "versão mais recente") {
+		t.Errorf("expected up-to-date message, got: %s", output)
+	}
+	if !strings.Contains(output, "1.0.0") {
+		t.Errorf("expected current version in output, got: %s", output)
+	}
+}
+
+func TestHandleUpdateCommand_FailureResponse(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: false, Message: "auto-update não configurado"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleUpdateCommand(client)
+	})
+
+	if !caught {
+		t.Fatal("expected osExit to be called")
+	}
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestHandleStatusCommand_ShowsUpdateHint(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{
+			Success:         true,
+			Blocks:          []policy.Block{},
+			UpdateAvailable: true,
+			UpdateVersion:   "1.1.0",
+			CurrentVersion:  "1.0.0",
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleStatusCommand(client) })
+
+	if !strings.Contains(output, "Nova versão disponível") {
+		t.Errorf("expected update hint in status, got: %s", output)
+	}
+	if !strings.Contains(output, "1.1.0") {
+		t.Errorf("expected new version in status, got: %s", output)
+	}
+}
+
+func TestMain_UpdateCommand(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, CurrentVersion: "1.0.0"}
+	})
+
+	origArgs := os.Args
+	os.Args = []string{"focusguard", "update"}
+	defer func() { os.Args = origArgs }()
+
+	output := captureStdout(t, main)
+	if !strings.Contains(output, "versão mais recente") {
+		t.Errorf("output should contain up-to-date message, got: %s", output)
+	}
+}
+
+func TestPrintUsage_IncludesUpdate(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	if !strings.Contains(output, "focusguard update") {
+		t.Errorf("usage should mention focusguard update, got: %s", output)
+	}
+}
+
 func TestRunInteractive_MockedTUI(t *testing.T) {
 	origRunTUI := runTUI
 	runTUI = func(client *ipc.Client) error {

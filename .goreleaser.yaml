@@ -48,7 +48,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X main.daemonVersion={{ .Version }}
 
   - id: daemon-windows
     main: ./cmd/focusguard-daemon
@@ -61,7 +61,7 @@ builds:
     flags:
       - -trimpath
     ldflags:
-      - -s -w
+      - -s -w -X main.daemonVersion={{ .Version }}
 
   - id: watchdog-linux
     main: ./cmd/focusguard-watchdog

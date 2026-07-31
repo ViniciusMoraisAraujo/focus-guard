@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,8 +12,10 @@ import (
 	"time"
 
 	"focusguard/internal/hostswatch"
+	"focusguard/internal/ipc"
 	"focusguard/internal/policy"
 	"focusguard/internal/statewatch"
+	"focusguard/internal/update"
 )
 
 type mockHostswatchEnforcer struct {
@@ -662,4 +666,186 @@ func TestGetWatchdog_Invalid(t *testing.T) {
 	if got := getWatchdogSec(); got != 0 {
 		t.Errorf("expected 0 for invalid text, got %d", got)
 	}
+}
+
+type fakeUpdaterAPI struct {
+	result   *update.UpdateResult
+	checkErr error
+	applyErr error
+	applyCalls int32
+}
+
+func (f *fakeUpdaterAPI) CheckForUpdate(_ context.Context) (*update.UpdateResult, error) {
+	return f.result, f.checkErr
+}
+
+func (f *fakeUpdaterAPI) UpdateTo(_ context.Context, _ *update.UpdateResult, _ string) (string, error) {
+	atomic.AddInt32(&f.applyCalls, 1)
+	if f.applyErr != nil {
+		return "", f.applyErr
+	}
+	return "backup.bak", nil
+}
+
+func TestDaemonUpdater_Check_NoUpdate(t *testing.T) {
+	d := &daemonUpdater{u: &fakeUpdaterAPI{}, binary: "/tmp/focusguard-daemon"}
+
+	st, err := d.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if st.Available {
+		t.Error("expected no update available")
+	}
+	if st.CurrentVersion != daemonVersion {
+		t.Errorf("expected CurrentVersion %q, got %q", daemonVersion, st.CurrentVersion)
+	}
+}
+
+func TestDaemonUpdater_Check_UpdateAvailable(t *testing.T) {
+	d := &daemonUpdater{
+		u:      &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}},
+		binary: "/tmp/focusguard-daemon",
+	}
+
+	st, err := d.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !st.Available {
+		t.Error("expected update available")
+	}
+	if st.NewVersion != "1.1.0" {
+		t.Errorf("expected NewVersion 1.1.0, got %q", st.NewVersion)
+	}
+	if st.Applied {
+		t.Error("expected Applied=false when apply is false")
+	}
+}
+
+func TestDaemonUpdater_Check_Error(t *testing.T) {
+	d := &daemonUpdater{
+		u:      &fakeUpdaterAPI{checkErr: errors.New("network down")},
+		binary: "/tmp/focusguard-daemon",
+	}
+
+	_, err := d.Check(context.Background(), false)
+	if err == nil || !strings.Contains(err.Error(), "network down") {
+		t.Fatalf("expected network error, got %v", err)
+	}
+}
+
+func TestDaemonUpdater_Check_Apply(t *testing.T) {
+	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
+	d := &daemonUpdater{u: fake, binary: "/tmp/focusguard-daemon"}
+
+	st, err := d.Check(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !st.Applied {
+		t.Error("expected Applied=true when apply is true")
+	}
+	if atomic.LoadInt32(&fake.applyCalls) != 1 {
+		t.Errorf("expected 1 UpdateTo call, got %d", fake.applyCalls)
+	}
+}
+
+func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
+	d := &daemonUpdater{
+		u:      &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("file locked")},
+		binary: "/tmp/focusguard-daemon",
+	}
+
+	_, err := d.Check(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "file locked") {
+		t.Fatalf("expected apply error, got %v", err)
+	}
+}
+
+func TestDaemonUpdater_Check_NilUpdater(t *testing.T) {
+	d := &daemonUpdater{u: nil, binary: "/tmp/focusguard-daemon"}
+
+	st, err := d.Check(context.Background(), false)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if st.Available {
+		t.Error("expected no update when updater is nil")
+	}
+}
+
+func TestSetupUpdateIntegration_DevVersionDisabled(t *testing.T) {
+	orig := daemonVersion
+	daemonVersion = "0.0.0-dev"
+	defer func() { daemonVersion = orig }()
+
+	server := ipc.NewServer(nil)
+	stop := setupUpdateIntegration(server)
+	if stop != nil {
+		stop()
+		t.Error("expected nil stop func for dev version (integration disabled)")
+	}
+
+	st, err := server.RefreshUpdateStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshUpdateStatus: %v", err)
+	}
+	if st.Available {
+		t.Error("expected no update status when integration is disabled")
+	}
+}
+
+func TestSetupUpdateIntegration_Enabled(t *testing.T) {
+	origVersion := daemonVersion
+	daemonVersion = "1.0.0"
+	defer func() { daemonVersion = origVersion }()
+
+	origUpdater := newUpdater
+	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
+	newUpdater = func(owner, repo string) updaterAPI {
+		return fake
+	}
+	defer func() { newUpdater = origUpdater }()
+
+	origInterval := updateCheckInterval
+	updateCheckInterval = 0
+	defer func() { updateCheckInterval = origInterval }()
+
+	server := ipc.NewServer(nil)
+	stop := setupUpdateIntegration(server)
+	if stop == nil {
+		t.Fatal("expected non-nil stop func for release version")
+	}
+	defer stop()
+
+	st, err := server.RefreshUpdateStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshUpdateStatus: %v", err)
+	}
+	if !st.Available || st.NewVersion != "1.1.0" {
+		t.Errorf("expected update 1.1.0 available, got %+v", st)
+	}
+}
+
+func TestStartPeriodicUpdateCheck_Stops(t *testing.T) {
+	server := ipc.NewServer(nil)
+	fake := &fakeUpdateChecker{}
+	server.SetUpdateChecker(fake)
+
+	stop := startPeriodicUpdateCheck(server, time.Hour)
+	if stop == nil {
+		t.Fatal("expected non-nil stop func")
+	}
+	stop()
+	stop()
+}
+
+type fakeUpdateChecker struct {
+	calls int32
+}
+
+func (f *fakeUpdateChecker) Check(_ context.Context, apply bool) (ipc.UpdateStatus, error) {
+	atomic.AddInt32(&f.calls, 1)
+	return ipc.UpdateStatus{CurrentVersion: "1.0.0"}, nil
 }

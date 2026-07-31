@@ -1,7 +1,9 @@
 package ipc
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"path/filepath"
 	"strings"
@@ -11,6 +13,17 @@ import (
 	"focusguard/internal/scheduler"
 	"focusguard/internal/store"
 )
+
+type fakeUpdateChecker struct {
+	status UpdateStatus
+	err    error
+	apply  bool
+}
+
+func (f *fakeUpdateChecker) Check(_ context.Context, apply bool) (UpdateStatus, error) {
+	f.apply = apply
+	return f.status, f.err
+}
 
 type mockEnforcer struct{}
 
@@ -283,6 +296,143 @@ func TestServer_HandleConnection_Status_IncludesProtection(t *testing.T) {
 	}
 	if resp.FirewallRules != 5 {
 		t.Errorf("expected FirewallRules=5, got %d", resp.FirewallRules)
+	}
+}
+
+func TestServer_Update_NotConfigured(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "update"})
+
+	if resp.Success {
+		t.Error("expected failure when no update checker is configured")
+	}
+	if !strings.Contains(resp.Message, "não configurado") {
+		t.Errorf("expected 'não configurado' message, got %q", resp.Message)
+	}
+}
+
+func TestServer_Update_NoUpdate(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update"})
+
+	if !resp.Success {
+		t.Fatalf("expected success, got: %s", resp.Message)
+	}
+	if resp.UpdateAvailable {
+		t.Error("expected UpdateAvailable=false when no update exists")
+	}
+	if resp.CurrentVersion != "1.0.0" {
+		t.Errorf("expected CurrentVersion 1.0.0, got %q", resp.CurrentVersion)
+	}
+	if !strings.Contains(resp.Message, "Nenhuma atualização disponível") {
+		t.Errorf("expected up-to-date message, got %q", resp.Message)
+	}
+}
+
+func TestServer_Update_Applied(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{
+			CurrentVersion: "1.0.0",
+			NewVersion:     "1.1.0",
+			Available:      true,
+			Applied:        true,
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update"})
+
+	if !resp.Success {
+		t.Fatalf("expected success, got: %s", resp.Message)
+	}
+	if !resp.UpdateAvailable {
+		t.Error("expected UpdateAvailable=true")
+	}
+	if resp.UpdateVersion != "1.1.0" {
+		t.Errorf("expected UpdateVersion 1.1.0, got %q", resp.UpdateVersion)
+	}
+	if resp.CurrentVersion != "1.0.0" {
+		t.Errorf("expected CurrentVersion 1.0.0, got %q", resp.CurrentVersion)
+	}
+	if !strings.Contains(resp.Message, "Atualização aplicada") {
+		t.Errorf("expected applied message, got %q", resp.Message)
+	}
+}
+
+func TestServer_Update_CheckerError(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		err: errors.New("github api unreachable"),
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update"})
+
+	if resp.Success {
+		t.Error("expected failure when checker returns error")
+	}
+	if !strings.Contains(resp.Message, "github api unreachable") {
+		t.Errorf("expected error message, got %q", resp.Message)
+	}
+}
+
+func TestServer_Update_PassesApplyFlag(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	}
+	server.SetUpdateChecker(fake)
+
+	executeRequest(t, server, Request{Action: "update"})
+
+	if !fake.apply {
+		t.Error("expected checker.Check to be called with apply=true")
+	}
+}
+
+func TestServer_RefreshUpdateStatus_CachesResult(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{
+			CurrentVersion: "1.0.0",
+			NewVersion:     "1.2.0",
+			Available:      true,
+		},
+	})
+
+	st, err := server.RefreshUpdateStatus(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshUpdateStatus: %v", err)
+	}
+	if !st.Available || st.NewVersion != "1.2.0" {
+		t.Errorf("unexpected status: %+v", st)
+	}
+
+	resp := executeRequest(t, server, Request{Action: "status"})
+	if !resp.Success {
+		t.Fatalf("status failed: %s", resp.Message)
+	}
+	if !resp.UpdateAvailable {
+		t.Error("expected cached UpdateAvailable in status response")
+	}
+	if resp.UpdateVersion != "1.2.0" {
+		t.Errorf("expected cached UpdateVersion 1.2.0, got %q", resp.UpdateVersion)
+	}
+}
+
+func TestServer_RefreshUpdateStatus_NoChecker(t *testing.T) {
+	server := setupTestServer(t)
+
+	st, err := server.RefreshUpdateStatus(context.Background())
+	if err != nil {
+		t.Fatalf("expected no error without checker, got %v", err)
+	}
+	if st.Available {
+		t.Error("expected no update when checker is nil")
 	}
 }
 

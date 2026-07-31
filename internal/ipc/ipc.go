@@ -1,6 +1,8 @@
 package ipc
 
 import (
+	"context"
+
 	"focusguard/internal/policy"
 )
 
@@ -26,4 +28,18 @@ type Response struct {
 	UpdateAvailable bool           `json:"update_available,omitempty"`
 	UpdateVersion   string         `json:"update_version,omitempty"`
 	CurrentVersion  string         `json:"current_version,omitempty"`
+}
+
+// UpdateStatus holds the outcome of an auto-update check.
+type UpdateStatus struct {
+	CurrentVersion string
+	NewVersion     string
+	Available      bool
+	Applied        bool
+}
+
+// UpdateChecker performs an auto-update check. When apply is true the checker
+// also applies the update to the daemon binary.
+type UpdateChecker interface {
+	Check(ctx context.Context, apply bool) (UpdateStatus, error)
 }

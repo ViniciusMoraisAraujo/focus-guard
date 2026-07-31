@@ -1,12 +1,16 @@
 package main
 
 import (
+	"context"
+	"fmt"
 	"log"
 	"os"
 	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,14 +20,25 @@ import (
 	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
 	"focusguard/internal/store"
+	"focusguard/internal/update"
 	"focusguard/internal/watchdog"
 )
 
 var daemonVersion = "0.0.0-dev"
 
+const (
+	updateOwner = "ViniciusMoraisAraujo"
+	updateRepo  = "focus-guard"
+)
+
+var updateCheckInterval = 24 * time.Hour
+
 var goos = runtime.GOOS
 var newHostswatch = hostswatch.New
 var newStatewatch = statewatch.New
+var newUpdater = func(owner, repo string) updaterAPI {
+	return update.NewUpdater(owner, repo, update.WithVersion(daemonVersion))
+}
 
 var serviceStopCh = make(chan struct{})
 var daemonDoneCh = make(chan struct{})
@@ -53,6 +68,91 @@ func startStatewatch(rec statewatch.Reconciler, statePath string) *statewatch.St
 	}
 	log.Println("[FocusGuard Daemon] State watcher ativo.")
 	return sw
+}
+
+type updaterAPI interface {
+	CheckForUpdate(ctx context.Context) (*update.UpdateResult, error)
+	UpdateTo(ctx context.Context, result *update.UpdateResult, binaryPath string) (string, error)
+}
+
+type daemonUpdater struct {
+	u      updaterAPI
+	binary string
+}
+
+func (d *daemonUpdater) Check(ctx context.Context, apply bool) (ipc.UpdateStatus, error) {
+	st := ipc.UpdateStatus{CurrentVersion: daemonVersion}
+	if d == nil || d.u == nil {
+		return st, nil
+	}
+
+	res, err := d.u.CheckForUpdate(ctx)
+	if err != nil {
+		return st, err
+	}
+	if res == nil {
+		return st, nil
+	}
+
+	st.Available = true
+	st.NewVersion = res.Version
+	if apply {
+		if _, err := d.u.UpdateTo(ctx, res, d.binary); err != nil {
+			return st, fmt.Errorf("falha ao aplicar atualização: %w", err)
+		}
+		st.Applied = true
+	}
+	return st, nil
+}
+
+func setupUpdateIntegration(server *ipc.Server) func() {
+	if daemonVersion == "" || strings.HasSuffix(daemonVersion, "-dev") {
+		log.Println("[FocusGuard Daemon] Auto-update desativado (versão de desenvolvimento).")
+		return nil
+	}
+
+	binaryPath, err := os.Executable()
+	if err != nil {
+		log.Printf("[FocusGuard Daemon] Auto-update desativado: %v", err)
+		return nil
+	}
+
+	server.SetUpdateChecker(&daemonUpdater{u: newUpdater(updateOwner, updateRepo), binary: binaryPath})
+	return startPeriodicUpdateCheck(server, updateCheckInterval)
+}
+
+func startPeriodicUpdateCheck(server *ipc.Server, interval time.Duration) func() {
+	stop := make(chan struct{})
+	go func() {
+		if interval <= 0 {
+			return
+		}
+		check := func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			st, err := server.RefreshUpdateStatus(ctx)
+			if err != nil {
+				log.Printf("[FocusGuard Daemon] Verificação de atualização falhou: %v", err)
+				return
+			}
+			if st.Available {
+				log.Printf("[FocusGuard Daemon] Nova versão disponível: %s", st.NewVersion)
+			}
+		}
+		check()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				check()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
 }
 
 func getWatchdogSec() int {
@@ -117,6 +217,9 @@ func runDaemon() bool {
 	}
 
 	server := ipc.NewServer(sched)
+	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
+		defer stopUpdate()
+	}
 
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)

@@ -31,6 +31,8 @@ func main() {
 		handleBlockCommand(client, os.Args[2:])
 	case "status":
 		handleStatusCommand(client)
+	case "update":
+		handleUpdateCommand(client)
 	case "install":
 		handleInstallCommand()
 	case "uninstall":
@@ -229,6 +231,10 @@ func handleStatusCommand(client *ipc.Client) {
 
 	printProtectionStatus(resp)
 
+	if resp.UpdateAvailable {
+		fmt.Printf("🔄 Nova versão disponível: %s → %s (rode 'focusguard update')\n", resp.CurrentVersion, resp.UpdateVersion)
+	}
+
 	if len(resp.Blocks) == 0 {
 		fmt.Println("Nenhum bloqueio ativo no momento.")
 		return
@@ -253,6 +259,31 @@ func handleStatusCommand(client *ipc.Client) {
 	}
 	w.Flush()
 	fmt.Println()
+}
+
+func handleUpdateCommand(client *ipc.Client) {
+	req := ipc.Request{
+		Action: "update",
+	}
+
+	resp, err := client.Send(req)
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+
+	if !resp.Success {
+		fmt.Printf("Falha ao atualizar: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	if resp.UpdateAvailable {
+		fmt.Printf("✔ Atualização aplicada: %s → %s\n", resp.CurrentVersion, resp.UpdateVersion)
+		fmt.Println("  A nova versão será usada na próxima reinicialização do daemon.")
+		return
+	}
+
+	fmt.Printf("✔ Você já está na versão mais recente (%s).\n", resp.CurrentVersion)
 }
 
 func printProtectionStatus(resp *ipc.Response) {
@@ -284,6 +315,7 @@ func printUsage() {
 	fmt.Println("  focusguard                        Modo interativo (TUI)")
 	fmt.Println("  focusguard block <dominio> --duration <tempo>")
 	fmt.Println("  focusguard status")
+	fmt.Println("  focusguard update                  Verificar e aplicar atualizações do daemon")
 	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
 	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")
 	fmt.Println("  focusguard interactive             Modo interativo (TUI)")
