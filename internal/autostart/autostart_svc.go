@@ -43,11 +43,22 @@ func installWindows(exePath string) error {
 	return nil
 }
 
-func uninstallWindows() error {
-	args := []string{"delete", serviceName}
+func isServiceMissing(err error) bool {
+	if err == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(err.Error()), "exit status 1060")
+}
 
+func uninstallWindows() error {
+	execCommand("sc", "stop", serviceName).CombinedOutput()
+
+	args := []string{"delete", serviceName}
 	out, err := execCommand("sc", args...).CombinedOutput()
 	if err != nil {
+		if isServiceMissing(err) {
+			return nil
+		}
 		return fmt.Errorf("autostart: falha ao remover serviço: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil
@@ -58,8 +69,7 @@ func isInstalledWindows() (bool, error) {
 
 	out, err := execCommand("sc", args...).CombinedOutput()
 	if err != nil {
-		errMsg := strings.ToLower(string(out))
-		if strings.Contains(errMsg, "does not exist") || strings.Contains(errMsg, "não existe") || strings.Contains(errMsg, "failed 1060") {
+		if isServiceMissing(err) {
 			return false, nil
 		}
 		return false, fmt.Errorf("autostart: falha ao consultar serviço: %w (%s)", err, strings.TrimSpace(string(out)))
@@ -104,6 +114,9 @@ func uninstallWatchdogWindows() error {
 	args := []string{"delete", watchdogServiceName}
 	out, err := execCommand("sc", args...).CombinedOutput()
 	if err != nil {
+		if isServiceMissing(err) {
+			return nil
+		}
 		return fmt.Errorf("autostart: falha ao remover watchdog: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	return nil

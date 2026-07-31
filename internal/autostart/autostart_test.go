@@ -117,13 +117,17 @@ func TestInstall_UnsupportedPlatform(t *testing.T) {
 }
 
 func TestUninstall_CorrectCommand(t *testing.T) {
-	var capturedName string
-	var capturedArgs []string
+	var captured []struct {
+		name string
+		args []string
+	}
 
 	origCmd := execCommand
 	execCommand = func(name string, args ...string) cmdRunner {
-		capturedName = name
-		capturedArgs = args
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
 		return &fakeCmd{
 			fn: func() ([]byte, error) {
 				return []byte("success"), nil
@@ -141,16 +145,44 @@ func TestUninstall_CorrectCommand(t *testing.T) {
 		t.Fatalf("Uninstall returned error: %v", err)
 	}
 
-	if capturedName != "sc" {
-		t.Errorf("expected sc, got %q", capturedName)
+	if len(captured) != 2 {
+		t.Fatalf("expected 2 sc commands (stop, delete), got %d", len(captured))
 	}
 
-	argsJoined := strings.Join(capturedArgs, " ")
-	if !strings.Contains(argsJoined, "delete") {
-		t.Errorf("expected delete in args, got %v", capturedArgs)
+	for _, c := range captured {
+		if c.name != "sc" {
+			t.Errorf("expected sc, got %q", c.name)
+		}
 	}
-	if !strings.Contains(argsJoined, "FocusGuard") {
-		t.Errorf("expected FocusGuard in args, got %v", capturedArgs)
+
+	stopArgs := strings.Join(captured[0].args, " ")
+	if !strings.Contains(stopArgs, "stop") || !strings.Contains(stopArgs, serviceName) {
+		t.Errorf("expected sc stop %s first, got %v", serviceName, captured[0].args)
+	}
+
+	deleteArgs := strings.Join(captured[1].args, " ")
+	if !strings.Contains(deleteArgs, "delete") || !strings.Contains(deleteArgs, serviceName) {
+		t.Errorf("expected sc delete %s second, got %v", serviceName, captured[1].args)
+	}
+}
+
+func TestUninstall_NotInstalledIsIdempotent(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("FALHA 1060: O serviço especificado não existe"), errors.New("exit status 1060")
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	if err := Uninstall(); err != nil {
+		t.Fatalf("uninstall should be idempotent when daemon service is not installed (exit 1060), got: %v", err)
 	}
 }
 
@@ -790,7 +822,7 @@ func TestUninstallWatchdog_DeleteFails(t *testing.T) {
 	execCommand = func(name string, args ...string) cmdRunner {
 		return &fakeCmd{
 			fn: func() ([]byte, error) {
-				return []byte("FAILED 1060"), errors.New("exit status 1060")
+				return []byte("FAILED 5: Acesso negado"), errors.New("exit status 5")
 			},
 		}
 	}
@@ -806,6 +838,26 @@ func TestUninstallWatchdog_DeleteFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "falha ao remover watchdog") {
 		t.Errorf("expected delete failure message, got: %v", err)
+	}
+}
+
+func TestUninstallWatchdog_NotInstalledIsIdempotent(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{
+			fn: func() ([]byte, error) {
+				return []byte("FAILED 1060: The specified service does not exist"), errors.New("exit status 1060")
+			},
+		}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	if err := UninstallWatchdog(); err != nil {
+		t.Fatalf("uninstall should be idempotent when service is not installed (exit 1060), got: %v", err)
 	}
 }
 
