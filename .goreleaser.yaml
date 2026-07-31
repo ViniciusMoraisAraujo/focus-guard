@@ -110,6 +110,7 @@ archives:
     name_template: '{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}'
     files:
       - src: README.md
+      - src: CHANGELOG.md
       - src: scripts/focusguard.service
         dst: focusguard.service
       - src: scripts/install-linux.sh
@@ -132,3 +133,7 @@ changelog:
 release:
   draft: false
   prerelease: auto
+  header: |
+    Veja as novidades desta versão no [CHANGELOG](CHANGELOG.md).
+
+    ---

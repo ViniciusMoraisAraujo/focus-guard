@@ -121,6 +121,8 @@ sudo systemctl start focusguard
 
 ## Release (Download)
 
+> 📋 Veja o [CHANGELOG](CHANGELOG.md) para o histórico completo de versões.
+
 Cada release publicada no GitHub contém apenas os arquivos essenciais por plataforma:
 
 | Plataforma | Arquivo | Conteúdo |
