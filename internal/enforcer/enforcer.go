@@ -12,6 +12,13 @@ type Enforcer interface {
 	Sync(activeBlocks map[string][]string) error
 	BlockDoH() error
 	UnblockDoH() error
+	Status() (EnforcerStatus, error)
+}
+
+// EnforcerStatus descreve o estado atual das regras de firewall do FocusGuard.
+type EnforcerStatus struct {
+	DoHActive     bool // true se as regras DoH/DoT existem no firewall
+	FirewallRules int  // total de regras de firewall criadas pelo FocusGuard
 }
 
 const (

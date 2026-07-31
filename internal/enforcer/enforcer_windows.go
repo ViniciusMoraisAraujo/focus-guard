@@ -223,7 +223,7 @@ func (e *windowsEnforcer) addFirewallRule(ip string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	checkCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name="+ruleName)
+	checkCmd := exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...)
 	if err := checkCmd.Run(); err == nil {
 		return nil
 	}
@@ -246,7 +246,7 @@ func (e *windowsEnforcer) removeFirewallRule(ip string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+ruleName)
+	cmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		outStr := string(out)
 		if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
@@ -258,7 +258,88 @@ func (e *windowsEnforcer) removeFirewallRule(ip string) error {
 	return nil
 }
 
+// Status consulta o firewall para reportar se a proteção DoH/DoT está ativa
+// e quantas regras do FocusGuard existem.
+func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := checkAdmin(); err != nil {
+		return EnforcerStatus{}, err
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	out, err := cmd.Output()
+	if err != nil {
+		return EnforcerStatus{}, fmt.Errorf("netsh show rules falhou: %w", err)
+	}
+
+	return countFocusGuardRules(string(out)), nil
+}
+
+// countFocusGuardRules analisa a saída de "netsh advfirewall firewall show rule
+// name=all" e conta as regras do FocusGuard e quantas delas são DoH/DoT.
+func countFocusGuardRules(output string) EnforcerStatus {
+	status := EnforcerStatus{}
+
+	for _, line := range strings.Split(output, "\n") {
+		if strings.Contains(line, "FocusGuard") {
+			status.FirewallRules++
+			if strings.Contains(line, "FocusGuard_DoH_") || strings.Contains(line, "FocusGuard_DoT_") {
+				status.DoHActive = true
+			}
+		}
+	}
+
+	return status
+}
+
 // ─── DoH / DoT Blocking ──────────────────────────────────────────────────────
+
+// showRuleArgs monta os argumentos para verificar a existência de uma regra.
+func showRuleArgs(ruleName string) []string {
+	return []string{"advfirewall", "firewall", "show", "rule", "name=" + ruleName}
+}
+
+// doTRuleName devolve o nome estável da regra DoT. Deve permanecer igual ao da versão
+// antiga: é isso que permite à migração (delete-before-add) substituir regras ineficazes
+// (localport) criadas antes da correção.
+func doTRuleName(provider DoHProvider) string {
+	return fmt.Sprintf("FocusGuard_%s", provider.Name)
+}
+
+// addDoTRuleArgs monta os argumentos para bloquear a porta remota 853 (DoT) em saída.
+func addDoTRuleArgs(ruleName, protocol string, port int) []string {
+	return []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=" + ruleName,
+		"dir=out",
+		"action=block",
+		"protocol=" + protocol,
+		fmt.Sprintf("remoteport=%d", port),
+	}
+}
+
+// addDoHRuleArgs monta os argumentos para bloquear IP+porta 443 (DoH) em saída.
+func addDoHRuleArgs(ruleName, ip string, port int) []string {
+	return []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=" + ruleName,
+		"dir=out",
+		"action=block",
+		"remoteip=" + ip,
+		fmt.Sprintf("remoteport=%d", port),
+		"protocol=tcp",
+	}
+}
+
+// deleteRuleArgs monta os argumentos para remover uma regra pelo nome.
+func deleteRuleArgs(ruleName string) []string {
+	return []string{"advfirewall", "firewall", "delete", "rule", "name=" + ruleName}
+}
 
 func (e *windowsEnforcer) BlockDoH() error {
 	e.mu.Lock()
@@ -294,23 +375,22 @@ func (e *windowsEnforcer) UnblockDoH() error {
 
 func (e *windowsEnforcer) addDoHRule(provider DoHProvider) error {
 	if provider.IsDoT {
-		// Bloqueio global da porta (DoT) — usa o protocolo explícito do provider
-		ruleName := fmt.Sprintf("FocusGuard_%s", provider.Name)
+		// Bloqueio global da porta remota (DoT) — usa o protocolo explícito do provider.
+		// Remove antes de adicionar: máquinas com a regra antiga (localport, ineficaz) precisam
+		// receber a regra correta (remoteport) — o check de existência as pularia.
+		ruleName := doTRuleName(provider)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		checkCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name="+ruleName)
-		if err := checkCmd.Run(); err == nil {
-			return nil // já existe
+		delCmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
+		if out, err := delCmd.CombinedOutput(); err != nil {
+			outStr := string(out)
+			if !strings.Contains(outStr, "No rules match") && !strings.Contains(outStr, "Nenhuma regra") {
+				return fmt.Errorf("netsh DoT remove prévio falhou para %s: %w (%s)", provider.Name, err, strings.TrimSpace(outStr))
+			}
 		}
 
-		addCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "add", "rule",
-			"name="+ruleName,
-			"dir=out",
-			"action=block",
-			"protocol="+provider.Protocol,
-			fmt.Sprintf("localport=%d", provider.Port))
-
+		addCmd := exec.CommandContext(ctx, "netsh", addDoTRuleArgs(ruleName, provider.Protocol, provider.Port)...)
 		if out, err := addCmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("netsh DoT block falhou para %s: %w (%s)", provider.Name, err, strings.TrimSpace(string(out)))
 		}
@@ -323,19 +403,12 @@ func (e *windowsEnforcer) addDoHRule(provider DoHProvider) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		checkCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name="+ruleName)
+		checkCmd := exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...)
 		if err := checkCmd.Run(); err == nil {
 			continue
 		}
 
-		addCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "add", "rule",
-			"name="+ruleName,
-			"dir=out",
-			"action=block",
-			"remoteip="+ip,
-			fmt.Sprintf("remoteport=%d", provider.Port),
-			"protocol=tcp")
-
+		addCmd := exec.CommandContext(ctx, "netsh", addDoHRuleArgs(ruleName, ip, provider.Port)...)
 		if out, err := addCmd.CombinedOutput(); err != nil {
 			return fmt.Errorf("netsh DoH block falhou para %s (%s): %w (%s)", provider.Name, ip, err, strings.TrimSpace(string(out)))
 		}
@@ -345,11 +418,11 @@ func (e *windowsEnforcer) addDoHRule(provider DoHProvider) error {
 
 func (e *windowsEnforcer) removeDoHRule(provider DoHProvider) error {
 	if provider.IsDoT {
-		ruleName := fmt.Sprintf("FocusGuard_%s", provider.Name)
+		ruleName := doTRuleName(provider)
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+ruleName)
+		cmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			outStr := string(out)
 			if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
@@ -365,7 +438,7 @@ func (e *windowsEnforcer) removeDoHRule(provider DoHProvider) error {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "delete", "rule", "name="+ruleName)
+		cmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
 		if out, err := cmd.CombinedOutput(); err != nil {
 			outStr := string(out)
 			if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {

@@ -4,7 +4,9 @@ package enforcer
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -193,6 +195,92 @@ func TestUnblockDoH_Linux(t *testing.T) {
 	err2 := enf.UnblockDoH()
 	if err2 != nil {
 		t.Logf("UnblockDoH (2ª chamada) retornou: %v", err2)
+	}
+}
+
+func TestDoTRuleArgs_UsesDport(t *testing.T) {
+	// Em iptables, --dport é a porta de destino; --sport seria a porta local de origem.
+	args := doTRuleArgs("-A", "tcp", 853)
+
+	want := []string{"-A", "OUTPUT", "-p", "tcp", "--dport", "853", "-j", "DROP"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("doTRuleArgs() = %v, want %v", args, want)
+	}
+
+	for _, a := range args {
+		if strings.HasPrefix(a, "--sport") {
+			t.Errorf("DoT rule must use --dport, not --sport: got %q", a)
+		}
+	}
+}
+
+func TestDoTRuleArgs_UDP(t *testing.T) {
+	args := doTRuleArgs("-A", "udp", 853)
+	want := []string{"-A", "OUTPUT", "-p", "udp", "--dport", "853", "-j", "DROP"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("doTRuleArgs(udp) = %v, want %v", args, want)
+	}
+}
+
+func TestDoHRuleArgs(t *testing.T) {
+	args := doHRuleArgs("-A", "1.1.1.1", 443)
+
+	want := []string{"-A", "OUTPUT", "-d", "1.1.1.1", "-p", "tcp", "--dport", "443", "-j", "DROP"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("doHRuleArgs() = %v, want %v", args, want)
+	}
+}
+
+func TestCountIptablesRules(t *testing.T) {
+	// Saída típica de "iptables -S OUTPUT".
+	output := `-P OUTPUT ACCEPT
+-A OUTPUT -d 1.1.1.1/32 -j DROP
+-A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
+-A OUTPUT -p tcp --dport 853 -j DROP
+-A OUTPUT -d 10.0.0.1/32 -j ACCEPT
+`
+
+	status := countIptablesRules(output)
+
+	if status.FirewallRules != 3 {
+		t.Errorf("FirewallRules = %d, want 3", status.FirewallRules)
+	}
+	if !status.DoHActive {
+		t.Error("DoHActive deve ser true com regras de porta 443/853")
+	}
+}
+
+func TestCountIptablesRules_NoRules(t *testing.T) {
+	output := `-P OUTPUT ACCEPT
+-A OUTPUT -d 10.0.0.1/32 -j ACCEPT
+`
+
+	status := countIptablesRules(output)
+
+	if status.FirewallRules != 0 {
+		t.Errorf("FirewallRules = %d, want 0", status.FirewallRules)
+	}
+	if status.DoHActive {
+		t.Error("DoHActive deve ser false sem regras DROP")
+	}
+}
+
+func TestAvailableDoTBins(t *testing.T) {
+	// availableDoTBins só deve retornar bins realmente presentes no PATH.
+	bins := availableDoTBins()
+
+	known := map[string]bool{"iptables": true, "ip6tables": true}
+	if len(bins) == 0 {
+		t.Skip("iptables/ip6tables não disponíveis neste ambiente; nada a verificar")
+	}
+
+	for _, bin := range bins {
+		if !known[bin] {
+			t.Errorf("availableDoTBins() retornou binário inesperado %q", bin)
+		}
+		if _, err := exec.LookPath(bin); err != nil {
+			t.Errorf("availableDoTBins() retornou %q, mas LookPath falha: %v", bin, err)
+		}
 	}
 }
 

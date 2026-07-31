@@ -5,6 +5,7 @@ package enforcer
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -194,5 +195,152 @@ func TestUnblockDoH_Windows(t *testing.T) {
 	err2 := e.UnblockDoH()
 	if err2 != nil {
 		t.Logf("UnblockDoH (2ª chamada) retornou: %v", err2)
+	}
+}
+
+func TestAddDoTRuleArgs_UsesRemotePort(t *testing.T) {
+	args := addDoTRuleArgs("FocusGuard_DoT_TCP", "tcp", 853)
+
+	want := []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=FocusGuard_DoT_TCP",
+		"dir=out",
+		"action=block",
+		"protocol=tcp",
+		"remoteport=853",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("addDoTRuleArgs() = %v, want %v", args, want)
+	}
+
+	// Em regras de saída, localport = porta local de origem; bloquear DoT exige remoteport.
+	for _, a := range args {
+		if strings.HasPrefix(a, "localport=") {
+			t.Errorf("DoT rule must use remoteport, not localport: got %q", a)
+		}
+	}
+}
+
+func TestAddDoTRuleArgs_UDP(t *testing.T) {
+	// UDP (DoT/UDP) e porta por provider
+	args := addDoTRuleArgs("FocusGuard_DoT_UDP", "udp", 853)
+	want := []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=FocusGuard_DoT_UDP",
+		"dir=out",
+		"action=block",
+		"protocol=udp",
+		"remoteport=853",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("addDoTRuleArgs(udp) = %v, want %v", args, want)
+	}
+}
+
+func TestDoTRuleName_MigrationStable(t *testing.T) {
+	// Nome deve permanecer estável: a migração (delete-before-add) só substitui a
+	// regra antiga ineficaz (localport) porque mantém o MESMO nome das versões anteriores.
+	want := map[string]string{
+		"DoT_TCP": "FocusGuard_DoT_TCP",
+		"DoT_UDP": "FocusGuard_DoT_UDP",
+	}
+
+	for _, p := range DoHProviders {
+		if !p.IsDoT {
+			continue
+		}
+		wantName, ok := want[p.Name]
+		if !ok {
+			t.Errorf("provedor DoT inesperado %q na lista", p.Name)
+			continue
+		}
+		if got := doTRuleName(p); got != wantName {
+			t.Errorf("doTRuleName(%s) = %q, want %q (migração quebraria)", p.Name, got, wantName)
+		}
+	}
+
+	for name := range want {
+		found := false
+		for _, p := range DoHProviders {
+			if p.IsDoT && p.Name == name {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("provedor DoT %q ausente da lista", name)
+		}
+	}
+}
+
+func TestAddDoHRuleArgs(t *testing.T) {
+	args := addDoHRuleArgs("FocusGuard_DoH_1_1_1_1", "1.1.1.1", 443)
+
+	want := []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=FocusGuard_DoH_1_1_1_1",
+		"dir=out",
+		"action=block",
+		"remoteip=1.1.1.1",
+		"remoteport=443",
+		"protocol=tcp",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("addDoHRuleArgs() = %v, want %v", args, want)
+	}
+}
+
+func TestShowAndDeleteRuleArgs(t *testing.T) {
+	if got, want := showRuleArgs("FocusGuard_X"), []string{"advfirewall", "firewall", "show", "rule", "name=FocusGuard_X"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("showRuleArgs() = %v, want %v", got, want)
+	}
+
+	if got, want := deleteRuleArgs("FocusGuard_X"), []string{"advfirewall", "firewall", "delete", "rule", "name=FocusGuard_X"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("deleteRuleArgs() = %v, want %v", got, want)
+	}
+}
+
+func TestCountFocusGuardRules(t *testing.T) {
+	// Saída típica de "netsh advfirewall firewall show rule name=all".
+	output := `
+Regra:
+    Nome da regra:    FocusGuard_1.1.1.1
+
+Regra:
+    Nome da regra:    FocusGuard_DoH_8_8_8_8
+
+Regra:
+    Nome da regra:    FocusGuard_DoT_TCP
+
+Regra:
+    Nome da regra:    Windows Defender Firewall - xxx
+`
+
+	status := countFocusGuardRules(output)
+
+	if status.FirewallRules != 3 {
+		t.Errorf("FirewallRules = %d, want 3", status.FirewallRules)
+	}
+	if !status.DoHActive {
+		t.Error("DoHActive deve ser true quando existem regras DoH/DoT")
+	}
+}
+
+func TestCountFocusGuardRules_NoRules(t *testing.T) {
+	output := `
+Regra:
+    Nome da regra:    Windows Defender Firewall - foo
+
+Regra:
+    Nome da regra:    Outra regra qualquer
+`
+
+	status := countFocusGuardRules(output)
+
+	if status.FirewallRules != 0 {
+		t.Errorf("FirewallRules = %d, want 0", status.FirewallRules)
+	}
+	if status.DoHActive {
+		t.Error("DoHActive deve ser false sem regras DoH/DoT")
 	}
 }
