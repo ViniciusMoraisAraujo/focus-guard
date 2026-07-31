@@ -418,6 +418,98 @@ func TestView_WithStatusMessage(t *testing.T) {
 	}
 }
 
+func TestProtectionLine_Active(t *testing.T) {
+	m := newTestModel(nil)
+	m.dohActive = true
+	m.firewallRules = 9
+
+	line := m.protectionLine()
+	if !strings.Contains(line, "ATIVA") {
+		t.Errorf("protection line should show ATIVA, got: %s", line)
+	}
+	if !strings.Contains(line, "9 regra(s)") {
+		t.Errorf("protection line should show rule count, got: %s", line)
+	}
+}
+
+func TestProtectionLine_Inactive(t *testing.T) {
+	m := newTestModel(nil)
+	m.dohActive = false
+	m.firewallRules = 0
+
+	line := m.protectionLine()
+	if !strings.Contains(line, "inativa") {
+		t.Errorf("protection line should show inativa, got: %s", line)
+	}
+}
+
+func TestProtectionLine_ExpectedButMissing(t *testing.T) {
+	m := newTestModel(nil)
+	m.expectedDoH = true
+	m.dohActive = false
+
+	line := m.protectionLine()
+	if !strings.Contains(line, "esperada") {
+		t.Errorf("protection line should warn when expected but missing, got: %s", line)
+	}
+}
+
+func TestProtectionLine_ActiveWithoutBlocks(t *testing.T) {
+	m := newTestModel(nil)
+	m.expectedDoH = false
+	m.dohActive = true
+
+	line := m.protectionLine()
+	if !strings.Contains(line, "sem bloqueios ativos") {
+		t.Errorf("protection line should note no active blocks, got: %s", line)
+	}
+}
+
+func TestProtectionLine_Error(t *testing.T) {
+	m := newTestModel(nil)
+	m.protectionError = "netsh: permission denied"
+
+	line := m.protectionLine()
+	if !strings.Contains(line, "erro ao consultar") {
+		t.Errorf("protection line should show error state, got: %s", line)
+	}
+	if !strings.Contains(line, "netsh: permission denied") {
+		t.Errorf("protection line should include error detail, got: %s", line)
+	}
+}
+
+func TestMessage_FetchErr_ResetsProtection(t *testing.T) {
+	m := newTestModel(nil)
+	m.dohActive = true
+	m.firewallRules = 5
+	m.protectionError = "old error"
+
+	_, cmd := m.Update(fetchErrMsg{err: errors.New("connection refused")})
+	if cmd != nil {
+		t.Error("fetchErrMsg should return nil command")
+	}
+	if m.dohActive {
+		t.Error("dohActive should be reset on fetch error")
+	}
+	if m.firewallRules != 0 {
+		t.Errorf("firewallRules should be reset on fetch error, got %d", m.firewallRules)
+	}
+	if m.protectionError != "" {
+		t.Errorf("protectionError should be reset on fetch error, got %q", m.protectionError)
+	}
+}
+
+func TestView_ShowsProtectionLine(t *testing.T) {
+	m := newTestModel(nil)
+	m.dohActive = true
+	m.firewallRules = 4
+
+	view := m.View()
+	if !strings.Contains(view, "DoH/DoT:") {
+		t.Error("list view should include the protection status line")
+	}
+}
+
 func TestView_KeybindFooter(t *testing.T) {
 	m := newTestModel(nil)
 	view := m.View()

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"focusguard/internal/enforcer"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/store"
 )
@@ -18,6 +19,9 @@ func (m *mockEnforcer) UnblockDomain(_ string, _ []string) error { return nil }
 func (m *mockEnforcer) Sync(_ map[string][]string) error         { return nil }
 func (m *mockEnforcer) BlockDoH() error                          { return nil }
 func (m *mockEnforcer) UnblockDoH() error                        { return nil }
+func (m *mockEnforcer) Status() (enforcer.EnforcerStatus, error) {
+	return enforcer.EnforcerStatus{}, nil
+}
 
 func setupTestServer(t *testing.T) *Server {
 	t.Helper()
@@ -62,6 +66,8 @@ func TestNewClient(t *testing.T) {
 }
 
 func TestClientSend_DialError(t *testing.T) {
+	setTestEndpoint(t)
+
 	c := NewClient()
 	_, err := c.Send(Request{Action: "ping"})
 	if err == nil {
@@ -243,6 +249,40 @@ func TestServer_HandleConnection_Block_Success(t *testing.T) {
 
 	if !strings.Contains(resp.Message, "Domain example.com blocked") {
 		t.Errorf("expected success message containing domain confirmation, got %q", resp.Message)
+	}
+}
+
+type statusEnforcer struct {
+	*mockEnforcer
+	st enforcer.EnforcerStatus
+}
+
+func (e *statusEnforcer) Status() (enforcer.EnforcerStatus, error) { return e.st, nil }
+
+func TestServer_HandleConnection_Status_IncludesProtection(t *testing.T) {
+	tmpDir := t.TempDir()
+	st, err := store.NewStore(filepath.Join(tmpDir, "state.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	enf := &statusEnforcer{
+		mockEnforcer: &mockEnforcer{},
+		st:           enforcer.EnforcerStatus{DoHActive: true, FirewallRules: 5},
+	}
+	sched := scheduler.NewScheduler(st, enf)
+	server := NewServer(sched)
+
+	resp := executeRequest(t, server, Request{Action: "status"})
+
+	if !resp.Success {
+		t.Fatalf("expected status to succeed, got: %s", resp.Message)
+	}
+	if !resp.DoHActive {
+		t.Error("expected DoHActive=true in status response")
+	}
+	if resp.FirewallRules != 5 {
+		t.Errorf("expected FirewallRules=5, got %d", resp.FirewallRules)
 	}
 }
 

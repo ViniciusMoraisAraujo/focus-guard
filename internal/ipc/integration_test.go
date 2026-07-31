@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/enforcer"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/store"
 )
@@ -36,6 +37,9 @@ func (m *integrationMockEnforcer) UnblockDomain(_ string, _ []string) error {
 func (m *integrationMockEnforcer) Sync(_ map[string][]string) error { return nil }
 func (m *integrationMockEnforcer) BlockDoH() error                  { return nil }
 func (m *integrationMockEnforcer) UnblockDoH() error                { return nil }
+func (m *integrationMockEnforcer) Status() (enforcer.EnforcerStatus, error) {
+	return enforcer.EnforcerStatus{}, nil
+}
 
 func startIntegrationServer(t *testing.T) string {
 	t.Helper()
@@ -431,9 +435,9 @@ func TestIntegration_DomainSanitization(t *testing.T) {
 	client := NewClient()
 
 	for _, tc := range []struct {
-		name        string
-		raw         string
-		inMessage   string
+		name      string
+		raw       string
+		inMessage string
 	}{
 		{name: "http prefix", raw: "http://localhost", inMessage: "localhost"},
 		{name: "https prefix", raw: "https://127.0.0.1", inMessage: "127.0.0.1"},

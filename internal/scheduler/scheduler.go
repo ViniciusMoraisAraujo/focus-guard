@@ -299,6 +299,29 @@ func (s *Scheduler) HasActiveBlocks() bool {
 	return false
 }
 
+// ProtectionStatus agrega o estado esperado da proteção DoH/DoT (há bloqueios
+// ativos?) com o estado real reportado pelo enforcer (regras no firewall).
+type ProtectionStatus struct {
+	ExpectedDoH   bool // deveria haver proteção DoH/DoT (existem bloqueios ativos)
+	DoHActive     bool // regras DoH/DoT realmente presentes no firewall
+	FirewallRules int  // total de regras de firewall do FocusGuard
+}
+
+func (s *Scheduler) ProtectionStatus() (ProtectionStatus, error) {
+	expected := s.HasActiveBlocks()
+
+	st, err := s.enforcer.Status()
+	if err != nil {
+		return ProtectionStatus{}, err
+	}
+
+	return ProtectionStatus{
+		ExpectedDoH:   expected,
+		DoHActive:     st.DoHActive,
+		FirewallRules: st.FirewallRules,
+	}, nil
+}
+
 func (s *Scheduler) Ping() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()

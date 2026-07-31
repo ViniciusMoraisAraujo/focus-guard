@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/enforcer"
 	"focusguard/internal/policy"
 	"focusguard/internal/store"
 )
@@ -52,6 +53,10 @@ func (m *mockEnforcer) Sync(activeBlocks map[string][]string) error {
 
 func (m *mockEnforcer) BlockDoH() error   { return nil }
 func (m *mockEnforcer) UnblockDoH() error { return nil }
+
+func (m *mockEnforcer) Status() (enforcer.EnforcerStatus, error) {
+	return enforcer.EnforcerStatus{}, nil
+}
 
 func setupTestScheduler(t *testing.T) (*Scheduler, *mockEnforcer, *store.Store) {
 	t.Helper()
@@ -330,6 +335,82 @@ func TestScheduler_Reconcile_CleansExpired(t *testing.T) {
 
 	if _, exists := state.Blocks["expired.com"]; exists {
 		t.Errorf("Expected expired.com to be removed from state after Reconcile")
+	}
+}
+
+func TestScheduler_ProtectionStatus(t *testing.T) {
+	sched, _, st := setupTestScheduler(t)
+
+	// Sem bloqueios: proteção esperada = false
+	ps, err := sched.ProtectionStatus()
+	if err != nil {
+		t.Fatalf("ProtectionStatus() erro: %v", err)
+	}
+	if ps.ExpectedDoH {
+		t.Error("ExpectedDoH deve ser false sem bloqueios ativos")
+	}
+
+	// Com bloqueio ativo: proteção esperada = true
+	now := time.Now().UTC().Round(time.Second)
+	state, _ := st.Load()
+	state.Blocks["active.com"] = policy.Block{
+		Domain:      "active.com",
+		StartedAt:   now,
+		ExpiresAt:   now.Add(24 * time.Hour),
+		ResolvedIPs: []string{"1.2.3.4"},
+	}
+	if err := st.Save(state); err != nil {
+		t.Fatalf("save state: %v", err)
+	}
+
+	ps, err = sched.ProtectionStatus()
+	if err != nil {
+		t.Fatalf("ProtectionStatus() erro: %v", err)
+	}
+	if !ps.ExpectedDoH {
+		t.Error("ExpectedDoH deve ser true com bloqueio ativo")
+	}
+}
+
+type statusEnforcer struct {
+	*mockEnforcer
+	st  enforcer.EnforcerStatus
+	err error
+}
+
+func (e *statusEnforcer) Status() (enforcer.EnforcerStatus, error) {
+	return e.st, e.err
+}
+
+func TestScheduler_ProtectionStatus_PropagatesEnforcerStatus(t *testing.T) {
+	tmpDir := t.TempDir()
+	dbPath := filepath.Join(tmpDir, "state.json")
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	enf := &statusEnforcer{
+		mockEnforcer: newMockEnforcer(),
+		st:           enforcer.EnforcerStatus{DoHActive: true, FirewallRules: 7},
+	}
+	sched := NewScheduler(st, enf)
+
+	ps, err := sched.ProtectionStatus()
+	if err != nil {
+		t.Fatalf("ProtectionStatus() erro: %v", err)
+	}
+	if !ps.DoHActive {
+		t.Error("DoHActive deve refletir o status do enforcer")
+	}
+	if ps.FirewallRules != 7 {
+		t.Errorf("FirewallRules = %d, want 7", ps.FirewallRules)
+	}
+
+	// Erro do enforcer deve ser propagado
+	enf.err = errors.New("permission denied")
+	if _, err := sched.ProtectionStatus(); err == nil {
+		t.Error("expected error when enforcer.Status() fails")
 	}
 }
 

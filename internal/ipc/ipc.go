@@ -14,7 +14,11 @@ type Request struct {
 }
 
 type Response struct {
-	Success bool           `json:"success"`
-	Message string         `json:"message,omitempty"`
-	Blocks  []policy.Block `json:"blocks,omitempty"`
+	Success         bool           `json:"success"`
+	Message         string         `json:"message,omitempty"`
+	Blocks          []policy.Block `json:"blocks,omitempty"`
+	ExpectedDoH     bool           `json:"expected_doh,omitempty"`
+	DoHActive       bool           `json:"doh_active,omitempty"`
+	FirewallRules   int            `json:"firewall_rules,omitempty"`
+	ProtectionError string         `json:"protection_error,omitempty"`
 }

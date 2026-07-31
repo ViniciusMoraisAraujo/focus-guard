@@ -43,6 +43,12 @@ type model struct {
 	err           error
 	loading       bool
 
+	// DoH/DoT protection status
+	expectedDoH     bool
+	dohActive       bool
+	firewallRules   int
+	protectionError string
+
 	// terminal size
 	width  int
 	height int
@@ -60,7 +66,11 @@ type BlockInfo struct {
 // ─── Messages ────────────────────────────────────────────────────────────────
 
 type statusFetchedMsg struct {
-	blocks []BlockInfo
+	blocks          []BlockInfo
+	expectedDoH     bool
+	dohActive       bool
+	firewallRules   int
+	protectionError string
 }
 
 type fetchErrMsg struct {
@@ -240,7 +250,13 @@ func (m *model) fetchStatusCmd() tea.Cmd {
 				IsActive:  b.IsActive(),
 			})
 		}
-		return statusFetchedMsg{blocks: blocks}
+		return statusFetchedMsg{
+			blocks:          blocks,
+			expectedDoH:     resp.ExpectedDoH,
+			dohActive:       resp.DoHActive,
+			firewallRules:   resp.FirewallRules,
+			protectionError: resp.ProtectionError,
+		}
 	}
 }
 
@@ -278,6 +294,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.blocks = msg.blocks
 		m.err = nil
+		m.expectedDoH = msg.expectedDoH
+		m.dohActive = msg.dohActive
+		m.firewallRules = msg.firewallRules
+		m.protectionError = msg.protectionError
 		m.updateTableRows()
 		return m, nil
 
@@ -285,6 +305,10 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.loading = false
 		m.err = msg.err
 		m.statusMessage = "" // clear any stale success message
+		m.expectedDoH = false
+		m.dohActive = false
+		m.firewallRules = 0
+		m.protectionError = ""
 		return m, nil
 
 	case blockAppliedMsg:
@@ -449,6 +473,12 @@ func (m *model) listView() string {
 	b.WriteString(subtitleStyle.Render("Gerencie seus bloqueios de forma f\u00e1cil"))
 	b.WriteString("\n")
 
+	// Protection status (não exibir durante loading para evitar flash de zeros)
+	if !m.loading {
+		b.WriteString(m.protectionLine())
+		b.WriteString("\n")
+	}
+
 	// Error message
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("\u2716 %v", m.err)))
@@ -496,6 +526,31 @@ func (m *model) listView() string {
 	)))
 
 	return appStyle.Render(b.String())
+}
+
+func (m *model) protectionLine() string {
+	if m.protectionError != "" {
+		return "🛡 DoH/DoT: " + lipgloss.NewStyle().Foreground(warning).Bold(true).Render("erro ao consultar") +
+			lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf(" · %s", m.protectionError))
+	}
+
+	state := "🛡 DoH/DoT: "
+
+	if m.dohActive {
+		state += lipgloss.NewStyle().Foreground(success).Bold(true).Render("ATIVA")
+	} else {
+		state += lipgloss.NewStyle().Foreground(muted).Render("inativa")
+	}
+
+	state += lipgloss.NewStyle().Foreground(muted).Render(fmt.Sprintf(" · %d regra(s) de firewall", m.firewallRules))
+
+	if m.expectedDoH && !m.dohActive {
+		state += " " + lipgloss.NewStyle().Foreground(warning).Bold(true).Render("(esperada, não encontrada!)")
+	} else if !m.expectedDoH && m.dohActive {
+		state += " " + lipgloss.NewStyle().Foreground(muted).Render("(sem bloqueios ativos)")
+	}
+
+	return state
 }
 
 func (m *model) formView() string {

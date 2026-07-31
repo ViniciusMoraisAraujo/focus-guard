@@ -227,6 +227,8 @@ func handleStatusCommand(client *ipc.Client) {
 		osExit(1)
 	}
 
+	printProtectionStatus(resp)
+
 	if len(resp.Blocks) == 0 {
 		fmt.Println("Nenhum bloqueio ativo no momento.")
 		return
@@ -251,6 +253,29 @@ func handleStatusCommand(client *ipc.Client) {
 	}
 	w.Flush()
 	fmt.Println()
+}
+
+func printProtectionStatus(resp *ipc.Response) {
+	fmt.Println("🛡 Proteção DoH/DoT:")
+
+	if resp.ProtectionError != "" {
+		fmt.Printf("  ⚠ Não foi possível consultar o firewall: %s\n", resp.ProtectionError)
+		return
+	}
+
+	status := "inativa"
+	if resp.DoHActive {
+		status = "ATIVA"
+	}
+	fmt.Printf("  Estado: %s\n", status)
+	fmt.Printf("  Regras de firewall (FocusGuard): %d\n", resp.FirewallRules)
+
+	switch {
+	case resp.ExpectedDoH && !resp.DoHActive:
+		fmt.Println("  ⚠ Atenção: há bloqueios ativos, mas as regras DoH/DoT não foram encontradas.")
+	case !resp.ExpectedDoH && resp.DoHActive:
+		fmt.Println("  ℹ As regras DoH/DoT estão presentes, mas não há bloqueios ativos.")
+	}
 }
 
 func printUsage() {

@@ -86,6 +86,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		} else {
 			resp = Response{Success: true, Blocks: blocks}
 		}
+		if ps, err := s.scheduler.ProtectionStatus(); err == nil {
+			resp.ExpectedDoH = ps.ExpectedDoH
+			resp.DoHActive = ps.DoHActive
+			resp.FirewallRules = ps.FirewallRules
+		} else {
+			resp.ProtectionError = err.Error()
+		}
 
 	case "ping":
 		if err := s.scheduler.Ping(); err != nil {

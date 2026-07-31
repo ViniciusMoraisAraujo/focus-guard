@@ -227,6 +227,70 @@ func TestHandleStatusCommand_Empty(t *testing.T) {
 	}
 }
 
+func TestPrintProtectionStatus_Active(t *testing.T) {
+	resp := &ipc.Response{
+		Success:       true,
+		DoHActive:     true,
+		ExpectedDoH:   true,
+		FirewallRules: 6,
+	}
+
+	output := captureStdout(t, func() { printProtectionStatus(resp) })
+
+	for _, c := range []string{"Proteção DoH/DoT", "ATIVA", "6"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("output should contain %q, got: %s", c, output)
+		}
+	}
+}
+
+func TestPrintProtectionStatus_InactiveWithActiveBlocks(t *testing.T) {
+	resp := &ipc.Response{
+		Success:       true,
+		ExpectedDoH:   true,
+		DoHActive:     false,
+		FirewallRules: 0,
+	}
+
+	output := captureStdout(t, func() { printProtectionStatus(resp) })
+
+	if !strings.Contains(output, "inativa") {
+		t.Errorf("expected 'inativa' status, got: %s", output)
+	}
+	if !strings.Contains(output, "Atenção") {
+		t.Errorf("expected warning when blocks active but rules missing, got: %s", output)
+	}
+}
+
+func TestPrintProtectionStatus_Error(t *testing.T) {
+	resp := &ipc.Response{
+		Success:         true,
+		ProtectionError: "netsh: permission denied",
+	}
+
+	output := captureStdout(t, func() { printProtectionStatus(resp) })
+
+	if !strings.Contains(output, "Não foi possível consultar") {
+		t.Errorf("expected consultation error message, got: %s", output)
+	}
+	if !strings.Contains(output, "netsh: permission denied") {
+		t.Errorf("expected error detail in output, got: %s", output)
+	}
+}
+
+func TestHandleStatusCommand_ProtectionError(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Blocks: []policy.Block{}, ProtectionError: "checkAdmin: permission denied"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleStatusCommand(client) })
+
+	if !strings.Contains(output, "Não foi possível consultar") {
+		t.Errorf("expected consultation error message, got: %s", output)
+	}
+}
+
 func TestHandleStatusCommand_WithBlocks(t *testing.T) {
 	now := time.Now()
 	block := policy.Block{
