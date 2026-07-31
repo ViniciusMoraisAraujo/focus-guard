@@ -166,6 +166,51 @@ func TestHostsFileOperations(t *testing.T) {
 	})
 }
 
+func TestHostsFile_RecreatedWhenMissing(t *testing.T) {
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	if err := enf.addHostEntry("example.com"); err != nil {
+		t.Fatalf("addHostEntry on missing hosts file failed: %v", err)
+	}
+
+	data, err := os.ReadFile(tempHostsPath)
+	if err != nil {
+		t.Fatalf("hosts file was not recreated: %v", err)
+	}
+	content := string(data)
+
+	if !strings.Contains(content, "127.0.0.1 localhost") {
+		t.Errorf("expected localhost baseline in recreated hosts, got:\n%s", content)
+	}
+	if !strings.Contains(content, "# FOCUSGUARD: example.com") {
+		t.Errorf("expected block marker in recreated hosts, got:\n%s", content)
+	}
+}
+
+func TestReadHostsLines_RecreatesMissingHostsFile(t *testing.T) {
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	lines, err := enf.readHostsLines()
+	if err != nil {
+		t.Fatalf("readHostsLines on missing file returned error: %v", err)
+	}
+
+	if _, err := os.Stat(tempHostsPath); err != nil {
+		t.Fatalf("expected hosts file to be recreated on disk: %v", err)
+	}
+
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "127.0.0.1 localhost") {
+		t.Errorf("expected localhost baseline to be written, got:\n%s", joined)
+	}
+}
+
 func TestBlockDoH_Linux(t *testing.T) {
 	enf := &linuxEnforcer{}
 
@@ -297,5 +342,36 @@ func TestUnprivilegedCheck(t *testing.T) {
 	errSync := enf.Sync(map[string][]string{"example.com": {"1.1.1.1"}})
 	if errSync == nil {
 		t.Error("expected error due to lack of root privileges in Sync, got nil")
+	}
+}
+
+func TestBlockDomainLocked_RollbackCleansHosts(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("Skipping: running as root, firewall rules may succeed")
+	}
+
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+	initial := "127.0.0.1 localhost\n::1 localhost\n"
+	if err := os.WriteFile(tempHostsPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	err := enf.blockDomainLocked("example.com", []string{"1.1.1.1", "2.2.2.2"})
+	if err == nil {
+		t.Fatal("expected blockDomainLocked to fail without root privileges")
+	}
+
+	data, err := os.ReadFile(tempHostsPath)
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	if strings.Contains(string(data), "FOCUSGUARD") {
+		t.Errorf("expected hosts file to be rolled back (no FOCUSGUARD markers), got:\n%s", data)
+	}
+	if !strings.Contains(string(data), "127.0.0.1 localhost") {
+		t.Errorf("expected original hosts content to be preserved, got:\n%s", data)
 	}
 }

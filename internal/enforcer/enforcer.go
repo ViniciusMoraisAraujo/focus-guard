@@ -88,3 +88,21 @@ func dedupeIPs(ips []string) []string {
 	}
 	return result
 }
+
+// applyBlockRules applies addRule to each IP, tracking the ones already applied.
+// On the first failure it best-effort removes every rule applied so far and
+// returns the error, so a partially failed block never leaves zombie firewall
+// rules behind.
+func applyBlockRules(ips []string, addRule, removeRule func(string) error) error {
+	added := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if err := addRule(ip); err != nil {
+			for _, done := range added {
+				_ = removeRule(done)
+			}
+			return err
+		}
+		added = append(added, ip)
+	}
+	return nil
+}

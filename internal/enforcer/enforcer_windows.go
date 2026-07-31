@@ -55,21 +55,23 @@ func (e *windowsEnforcer) BlockDomain(domain string, ips []string) error {
 		return err
 	}
 
+	return e.blockDomainLocked(domain, ips)
+}
+
+// blockDomainLocked applies a block while holding the lock. If any firewall
+// rule fails, the whole operation is rolled back (host entry plus the rules
+// already applied) so the system never keeps a partial/zombie block.
+func (e *windowsEnforcer) blockDomainLocked(domain string, ips []string) error {
 	if err := e.addHostEntry(domain); err != nil {
 		return fmt.Errorf("enforcer: failed to add host entry: %w", err)
 	}
 
 	allIPs := dedupeIPs(ips)
-
-	var firstErr error
-	for _, ip := range allIPs {
-		if err := e.addFirewallRule(ip); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("enforcer: failed to add firewall rule for %s: %w", ip, err)
-			}
-		}
+	if err := applyBlockRules(allIPs, e.addFirewallRule, e.removeFirewallRule); err != nil {
+		_ = e.removeHostEntry(domain)
+		return fmt.Errorf("enforcer: failed to add firewall rule: %w", err)
 	}
-	return firstErr
+	return nil
 }
 
 func (e *windowsEnforcer) UnblockDomain(domain string, ips []string) error {
@@ -80,6 +82,10 @@ func (e *windowsEnforcer) UnblockDomain(domain string, ips []string) error {
 		return err
 	}
 
+	return e.unblockDomainLocked(domain, ips)
+}
+
+func (e *windowsEnforcer) unblockDomainLocked(domain string, ips []string) error {
 	if err := e.removeHostEntry(domain); err != nil {
 		return fmt.Errorf("enforcer: failed to remove host entry: %w", err)
 	}
@@ -211,7 +217,18 @@ func (e *windowsEnforcer) removeHostEntry(domain string) error {
 func (e *windowsEnforcer) readHostsLines() ([]string, error) {
 	file, err := os.Open(e.hostsPath)
 	if err != nil {
-		return nil, err
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		// The hosts file was deleted (e.g. by an admin) — recreate it with a
+		// baseline so localhost keeps resolving, then continue reading.
+		if werr := e.writeHostsLines(defaultHostsLines()); werr != nil {
+			return nil, werr
+		}
+		file, err = os.Open(e.hostsPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer file.Close()
 
@@ -222,6 +239,18 @@ func (e *windowsEnforcer) readHostsLines() ([]string, error) {
 	}
 
 	return lines, scanner.Err()
+}
+
+// defaultHostsLines is the baseline written when the hosts file is missing.
+func defaultHostsLines() []string {
+	return []string{
+		"# Copyright (c) 1993-2009 Microsoft Corp.",
+		"#",
+		"# This is a sample HOSTS file used by Microsoft TCP/IP for Windows.",
+		"#",
+		"127.0.0.1       localhost",
+		"::1             localhost",
+	}
 }
 
 func (e *windowsEnforcer) writeHostsLines(lines []string) error {

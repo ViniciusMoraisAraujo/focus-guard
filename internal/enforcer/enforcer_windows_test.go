@@ -182,6 +182,68 @@ func TestWriteReadHostsLines_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestReadHostsLines_RecreatesMissingHostsFile(t *testing.T) {
+	e := newTestEnforcer(t)
+	if err := os.Remove(e.hostsPath); err != nil {
+		t.Fatalf("failed to remove hosts file: %v", err)
+	}
+
+	lines, err := e.readHostsLines()
+	if err != nil {
+		t.Fatalf("readHostsLines on missing file returned error: %v", err)
+	}
+
+	if _, err := os.Stat(e.hostsPath); err != nil {
+		t.Fatalf("expected hosts file to be recreated on disk: %v", err)
+	}
+
+	joined := strings.Join(lines, "\r\n")
+	if !strings.Contains(joined, "localhost") {
+		t.Errorf("expected localhost baseline to be written, got:\n%s", joined)
+	}
+}
+
+func TestAddHostEntry_RecreatesMissingHostsFile(t *testing.T) {
+	e := newTestEnforcer(t)
+	if err := os.Remove(e.hostsPath); err != nil {
+		t.Fatalf("failed to remove hosts file: %v", err)
+	}
+
+	if err := e.addHostEntry("example.com"); err != nil {
+		t.Fatalf("addHostEntry on missing hosts file returned error: %v", err)
+	}
+
+	content := readRawHosts(t, e.hostsPath)
+
+	if !strings.Contains(content, "localhost") {
+		t.Errorf("expected localhost baseline in recreated hosts, got:\n%s", content)
+	}
+	if !strings.Contains(content, "127.0.0.1 example.com # FOCUSGUARD: example.com") {
+		t.Errorf("expected block entry in recreated hosts, got:\n%s", content)
+	}
+}
+
+func TestBlockDomainLocked_RollbackCleansHosts(t *testing.T) {
+	e := newTestEnforcer(t)
+
+	if err := e.checkAdmin(); err == nil {
+		t.Skip("Skipping: running as admin, firewall rules may succeed")
+	}
+
+	err := e.blockDomainLocked("example.com", []string{"1.1.1.1", "2.2.2.2"})
+	if err == nil {
+		t.Fatal("expected blockDomainLocked to fail without admin privileges")
+	}
+
+	content := readRawHosts(t, e.hostsPath)
+	if strings.Contains(content, "FOCUSGUARD") {
+		t.Errorf("expected hosts file to be rolled back (no FOCUSGUARD markers), got:\n%s", content)
+	}
+	if !strings.Contains(content, "127.0.0.1 localhost") {
+		t.Errorf("expected original hosts content to be preserved, got:\n%s", content)
+	}
+}
+
 func TestBlockDoH_Windows(t *testing.T) {
 	e := newTestEnforcer(t)
 

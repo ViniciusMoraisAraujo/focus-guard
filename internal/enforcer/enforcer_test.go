@@ -288,3 +288,61 @@ func TestDoHProviders_DoTNameMatchesProtocol(t *testing.T) {
 		}
 	}
 }
+
+func TestApplyBlockRules_Success(t *testing.T) {
+	var added, removed []string
+	err := applyBlockRules(
+		[]string{"1.1.1.1", "2.2.2.2", "3.3.3.3"},
+		func(ip string) error { added = append(added, ip); return nil },
+		func(ip string) error { removed = append(removed, ip); return nil },
+	)
+	if err != nil {
+		t.Fatalf("applyBlockRules returned error: %v", err)
+	}
+	if len(added) != 3 {
+		t.Errorf("expected 3 rules added, got %v", added)
+	}
+	if len(removed) != 0 {
+		t.Errorf("expected no rollback on success, got %v", removed)
+	}
+}
+
+func TestApplyBlockRules_RollbackOnError(t *testing.T) {
+	var added, removed []string
+	failErr := errors.New("netsh failed")
+	err := applyBlockRules(
+		[]string{"1.1.1.1", "2.2.2.2", "3.3.3.3"},
+		func(ip string) error {
+			if ip == "2.2.2.2" {
+				return failErr
+			}
+			added = append(added, ip)
+			return nil
+		},
+		func(ip string) error { removed = append(removed, ip); return nil },
+	)
+	if !errors.Is(err, failErr) {
+		t.Fatalf("expected failErr, got %v", err)
+	}
+	if len(added) != 1 || added[0] != "1.1.1.1" {
+		t.Errorf("expected only 1.1.1.1 to be added before the failure, got %v", added)
+	}
+	if len(removed) != 1 || removed[0] != "1.1.1.1" {
+		t.Errorf("expected rollback to remove only 1.1.1.1, got %v", removed)
+	}
+}
+
+func TestApplyBlockRules_Empty(t *testing.T) {
+	var added, removed []string
+	err := applyBlockRules(
+		nil,
+		func(ip string) error { added = append(added, ip); return nil },
+		func(ip string) error { removed = append(removed, ip); return nil },
+	)
+	if err != nil {
+		t.Fatalf("applyBlockRules on empty input returned error: %v", err)
+	}
+	if len(added) != 0 || len(removed) != 0 {
+		t.Errorf("expected no calls on empty input, added=%v removed=%v", added, removed)
+	}
+}

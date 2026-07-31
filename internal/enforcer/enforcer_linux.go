@@ -47,22 +47,23 @@ func (e *linuxEnforcer) BlockDomain(domain string, ips []string) error {
 		return err
 	}
 
+	return e.blockDomainLocked(domain, ips)
+}
+
+// blockDomainLocked applies a block while holding the lock. If any firewall
+// rule fails, the whole operation is rolled back (host entry plus the rules
+// already applied) so the system never keeps a partial/zombie block.
+func (e *linuxEnforcer) blockDomainLocked(domain string, ips []string) error {
 	if err := e.addHostEntry(domain); err != nil {
 		return fmt.Errorf("enforcer: failed to add host entry: %w", err)
 	}
 
 	allIPs := dedupeIPs(ips)
-
-	var firstErr error
-	for _, ip := range allIPs {
-		if err := e.addFirewallRule(ip); err != nil {
-			if firstErr == nil {
-				firstErr = fmt.Errorf("enforcer: failed to add firewall rule for %s: %w", ip, err)
-			}
-		}
+	if err := applyBlockRules(allIPs, e.addFirewallRule, e.removeFirewallRule); err != nil {
+		_ = e.removeHostEntry(domain)
+		return fmt.Errorf("enforcer: failed to add firewall rule: %w", err)
 	}
-
-	return firstErr
+	return nil
 }
 
 func (e *linuxEnforcer) UnblockDomain(domain string, ips []string) error {
@@ -73,6 +74,10 @@ func (e *linuxEnforcer) UnblockDomain(domain string, ips []string) error {
 		return err
 	}
 
+	return e.unblockDomainLocked(domain, ips)
+}
+
+func (e *linuxEnforcer) unblockDomainLocked(domain string, ips []string) error {
 	if err := e.removeHostEntry(domain); err != nil {
 		return fmt.Errorf("enforcer: failed to remove host entry: %w", err)
 	}
@@ -87,6 +92,7 @@ func (e *linuxEnforcer) UnblockDomain(domain string, ips []string) error {
 			}
 		}
 	}
+
 	return firstErr
 }
 
@@ -210,7 +216,18 @@ func (e *linuxEnforcer) removeHostEntry(domain string) error {
 func (e *linuxEnforcer) readHostsLines() ([]string, error) {
 	file, err := os.Open(e.hostsPath)
 	if err != nil {
-		return nil, err
+		if !os.IsNotExist(err) {
+			return nil, err
+		}
+		// The hosts file was deleted — recreate it with a baseline so localhost
+		// keeps resolving, then continue reading.
+		if werr := e.writeHostsLines(defaultHostsLines()); werr != nil {
+			return nil, werr
+		}
+		file, err = os.Open(e.hostsPath)
+		if err != nil {
+			return nil, err
+		}
 	}
 	defer file.Close()
 
@@ -221,6 +238,14 @@ func (e *linuxEnforcer) readHostsLines() ([]string, error) {
 	}
 
 	return lines, scanner.Err()
+}
+
+// defaultHostsLines is the baseline written when the hosts file is missing.
+func defaultHostsLines() []string {
+	return []string{
+		"127.0.0.1 localhost",
+		"::1 localhost",
+	}
 }
 
 func (e *linuxEnforcer) writeHostsLines(lines []string) error {
