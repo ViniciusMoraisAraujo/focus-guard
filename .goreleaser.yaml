@@ -1,5 +1,4 @@
 # GoReleaser v2 — FocusGuard
-# Referência: https://goreleaser.com
 version: 2
 
 project_name: focusguard
@@ -12,62 +11,115 @@ env:
   - CGO_ENABLED=0
 
 builds:
-  - id: cli
+  - id: cli-linux
     main: ./cmd/focusguard
     binary: focusguard
     goos:
       - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: cli-windows
+    main: ./cmd/focusguard
+    binary: focusguard
+    goos:
       - windows
     goarch:
       - amd64
       - arm64
+    flags:
+      - -trimpath
     ldflags:
-      - -s -w -trimpath
+      - -s -w
 
-  - id: daemon
+  - id: daemon-linux
     main: ./cmd/focusguard-daemon
     binary: focusguard-daemon
     goos:
       - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: daemon-windows
+    main: ./cmd/focusguard-daemon
+    binary: focusguard-daemon
+    goos:
       - windows
     goarch:
       - amd64
       - arm64
+    flags:
+      - -trimpath
     ldflags:
-      - -s -w -trimpath
+      - -s -w
 
-  - id: watchdog
+  - id: watchdog-linux
     main: ./cmd/focusguard-watchdog
     binary: focusguard-watchdog
     goos:
       - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: watchdog-windows
+    main: ./cmd/focusguard-watchdog
+    binary: focusguard-watchdog
+    goos:
       - windows
     goarch:
       - amd64
       - arm64
+    flags:
+      - -trimpath
     ldflags:
-      - -s -w -trimpath
+      - -s -w
 
 archives:
-  - id: default
+  - id: windows
+    ids:
+      - cli-windows
+      - daemon-windows
+      - watchdog-windows
+    formats:
+      - zip
+    name_template: '{{ .ProjectName }}_{{ .Version }}_windows_{{ .Arch }}'
+    files: []
+
+  - id: linux
+    ids:
+      - cli-linux
+      - daemon-linux
+      - watchdog-linux
     formats:
       - tar.gz
-    format_overrides:
-      - goos: windows
-        formats:
-          - zip
-    name_template: >-
-      {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
+    name_template: '{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}'
     files:
-      - README.md
-      - scripts/focusguard.service
-      - scripts/install-daemon.ps1
+      - src: README.md
+      - src: scripts/focusguard.service
+        dst: focusguard.service
+      - src: scripts/install-linux.sh
+        dst: install-linux.sh
 
 checksum:
   name_template: checksums.txt
 
 snapshot:
-  name_template: '{{ .Version }}-next'
+  version_template: '{{ .Tag }}-next'
 
 changelog:
   sort: asc
@@ -78,7 +130,5 @@ changelog:
       - '^chore:'
 
 release:
-  owner: ViniciusMoraisAraujo
-  name: focus-guard
   draft: false
   prerelease: auto

@@ -1,0 +1,2 @@
+# Forçar LF nos scripts shell para evitar quebra no Linux (CRLF -> "bad interpreter")
+*.sh text eol=lf

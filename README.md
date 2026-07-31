@@ -119,6 +119,37 @@ sudo systemctl start focusguard
 
 ---
 
+## Release (Download)
+
+Cada release publicada no GitHub contém apenas os arquivos essenciais por plataforma:
+
+| Plataforma | Arquivo | Conteúdo |
+|------------|---------|----------|
+| 🪟 Windows | `focusguard_<versão>_windows_<arch>.zip` | Apenas os executáveis: `focusguard.exe`, `focusguard-daemon.exe`, `focusguard-watchdog.exe` |
+| 🐧 Linux | `focusguard_<versão>_linux_<arch>.tar.gz` | Binários + `focusguard.service` + `install-linux.sh` |
+
+**Windows:**
+
+```powershell
+# Como Administrador
+Expand-Archive focusguard_1.0.0_windows_amd64.zip -DestinationPath focusguard
+cd focusguard
+.\focusguard.exe install
+```
+
+**Linux:**
+
+```bash
+tar -xzf focusguard_1.0.0_linux_amd64.tar.gz
+cd focusguard_1.0.0_linux_amd64
+sudo ./install-linux.sh install
+
+# Remover
+sudo ./install-linux.sh uninstall
+```
+
+---
+
 ## Uso
 
 ### Modo Interativo (TUI)
