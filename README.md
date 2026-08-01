@@ -333,6 +333,25 @@ Serviço em background que:
 - Mantém timers de expiração e refresh periódico de IPs
 - Executa como **serviço Windows** (sem console) ou **processo Linux** com systemd
 
+### System Tray (`cmd/focusguard-tray/`)
+
+Ícone na bandeja do sistema com ações rápidas (`Status`, `Bloco rápido`,
+`Verificar atualização`, `Abrir TUI` e `Sair` — o daemon continua rodando).
+
+> 🪟 **Comportamento do tray**
+>
+> **IPC com timeout** — toda chamada ao daemon usa `SendWithTimeout` com
+> limite de 5s. O `getlantern/systray` entrega cliques por canal
+> não-bloqueante: se um handler ficasse preso num daemon sem resposta, os
+> cliques seguintes eram descartados silenciosamente e o tray aparentava
+> morto. Com o timeout, nenhum handler trava e cada clique é processado.
+>
+> **Respeita a resposta do daemon** — falha ao bloquear exibe o motivo
+> retornado pelo daemon no tooltip; "Verificar atualização" não alega
+> "✔ Você está atualizado" quando o daemon rejeita (ex.: auto-update não
+> configurado em build de dev); erro no status mostra tooltip de falha em
+> vez do estado normal.
+
 ### Autostart (`internal/autostart/`)
 
 Gerencia a inicialização automática do daemon:
