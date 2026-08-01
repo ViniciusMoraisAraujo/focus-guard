@@ -174,6 +174,11 @@ func parseIptablesBlockedIPs(output string) map[string]bool {
 }
 
 func (e *linuxEnforcer) addHostEntry(domain string) error {
+	domain, err := sanitizeDomain(domain)
+	if err != nil {
+		return err
+	}
+
 	lines, err := e.readHostsLines()
 	if err != nil {
 		return err
@@ -197,6 +202,11 @@ func (e *linuxEnforcer) addHostEntry(domain string) error {
 }
 
 func (e *linuxEnforcer) removeHostEntry(domain string) error {
+	domain, err := sanitizeDomain(domain)
+	if err != nil {
+		return err
+	}
+
 	lines, err := e.readHostsLines()
 	if err != nil {
 		return err
@@ -304,23 +314,46 @@ func (e *linuxEnforcer) addFirewallRuleUnchecked(ip string) error {
 	return nil
 }
 
+// execCommandContext is an indirection for firewall command execution so tests
+// can stub iptables without root privileges.
+var execCommandContext = func(ctx context.Context, name string, args ...string) cmdRunner {
+	return exec.CommandContext(ctx, name, args...)
+}
+
+// cmdRunner is the subset of *exec.Cmd used by removeFirewallRule.
+type cmdRunner interface {
+	CombinedOutput() ([]byte, error)
+}
+
+// maxFirewallRuleRemovals caps the orphan-rule sweep: in a pathological
+// firewall state where iptables never reports "does a matching rule exist"
+// (e.g. a broken driver that accepts but never applies -D), the loop must stop
+// instead of spinning forever.
+const maxFirewallRuleRemovals = 100
+
+// removeFirewallRule removes every matching DROP rule for ip, looping until
+// iptables reports "does a matching rule exist". This sweeps orphan rules
+// accumulated from previous crashes/races instead of removing just one.
 func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 	bin, err := iptablesBinFor(ip)
 	if err != nil {
 		return err
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	cmd := exec.CommandContext(ctx, bin, "-D", "OUTPUT", "-d", ip, "-j", "DROP")
-	if out, err := cmd.CombinedOutput(); err != nil {
-		if strings.Contains(string(out), "does a matching rule exist") {
-			return nil
+	for attempts := 0; attempts < maxFirewallRuleRemovals; attempts++ {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		cmd := execCommandContext(ctx, bin, "-D", "OUTPUT", "-d", ip, "-j", "DROP")
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			if strings.Contains(string(out), "does a matching rule exist") {
+				return nil
+			}
+			return fmt.Errorf("%s -D falhou: %w (%s)", bin, err, strings.TrimSpace(string(out)))
 		}
-		return fmt.Errorf("%s -D falhou: %w (%s)", bin, err, strings.TrimSpace(string(out)))
 	}
-	return nil
+
+	return fmt.Errorf("%s: limite de %d remoções atingido para %s (regras órfãs podem restar)", bin, maxFirewallRuleRemovals, ip)
 }
 
 func (e *linuxEnforcer) Status() (EnforcerStatus, error) {

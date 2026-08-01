@@ -3,10 +3,13 @@
 package enforcer
 
 import (
+	"context"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -89,6 +92,101 @@ func TestParseIptablesBlockedIPs(t *testing.T) {
 	}
 	if len(blocked) != 2 {
 		t.Errorf("expected 2 blocked IPs, got %d: %v", len(blocked), blocked)
+	}
+}
+
+// TestAddHostEntry_SanitizesWWW tests that a domain with a www. prefix is
+// normalized so the hosts entries never become the redundant www.www.site.com.
+func TestAddHostEntry_SanitizesWWW(t *testing.T) {
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+	if err := os.WriteFile(tempHostsPath, []byte("127.0.0.1 localhost\n::1 localhost\n"), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	if err := enf.addHostEntry("www.site.com"); err != nil {
+		t.Fatalf("addHostEntry: %v", err)
+	}
+
+	data, err := os.ReadFile(tempHostsPath)
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	content := string(data)
+
+	if strings.Contains(content, "www.www.site.com") {
+		t.Errorf("expected no www.www.site.com redundancy, got:\n%s", content)
+	}
+	if !strings.Contains(content, "127.0.0.1 site.com # FOCUSGUARD: site.com") {
+		t.Errorf("expected sanitized site.com entry, got:\n%s", content)
+	}
+	if !strings.Contains(content, "127.0.0.1 www.site.com # FOCUSGUARD: site.com") {
+		t.Errorf("expected www.site.com entry, got:\n%s", content)
+	}
+}
+
+// TestAddHostEntry_RejectsInjection tests that a domain containing newlines or
+// spaces (a /etc/hosts injection attempt) never reaches the hosts file raw.
+func TestAddHostEntry_RejectsInjection(t *testing.T) {
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+	initial := "127.0.0.1 localhost\n::1 localhost\n"
+	if err := os.WriteFile(tempHostsPath, []byte(initial), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	// A CRLF in the domain must not inject a second hosts line.
+	if err := enf.addHostEntry("evil.com\r\n127.0.0.1 attacker.com"); err != nil {
+		t.Fatalf("addHostEntry should sanitize, not error: %v", err)
+	}
+
+	data, err := os.ReadFile(tempHostsPath)
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	content := string(data)
+
+	// A CRLF injection would create a NEW line mapping 127.0.0.1 attacker.com.
+	// After sanitization the tokens are fused into one hostname, so no such
+	// mapping line may exist.
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "127.0.0.1 attacker.com") ||
+			strings.HasPrefix(trimmed, "::1 attacker.com") {
+			t.Errorf("injection created a mapping for attacker.com: %q", line)
+		}
+	}
+	if strings.Contains(content, "127.0.0.1 attacker.com") && !strings.Contains(content, "evil.com127.0.0.1attacker.com") {
+		t.Errorf("expected injected tokens fused into the domain, got:\n%s", content)
+	}
+}
+
+// TestRemoveHostEntry_SanitizesWWW tests that removal uses the same
+// normalization, so blocking www.site.com and unblocking site.com (or vice
+// versa) hit the same marker.
+func TestRemoveHostEntry_SanitizesWWW(t *testing.T) {
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+	if err := os.WriteFile(tempHostsPath, []byte("127.0.0.1 localhost\n::1 localhost\n"), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	if err := enf.addHostEntry("www.site.com"); err != nil {
+		t.Fatalf("addHostEntry: %v", err)
+	}
+	if err := enf.removeHostEntry("site.com"); err != nil {
+		t.Fatalf("removeHostEntry: %v", err)
+	}
+
+	data, err := os.ReadFile(tempHostsPath)
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	if strings.Contains(string(data), "FOCUSGUARD") {
+		t.Errorf("expected all FOCUSGUARD markers removed, got:\n%s", data)
 	}
 }
 
@@ -342,6 +440,127 @@ func TestUnprivilegedCheck(t *testing.T) {
 	errSync := enf.Sync(map[string][]string{"example.com": {"1.1.1.1"}})
 	if errSync == nil {
 		t.Error("expected error due to lack of root privileges in Sync, got nil")
+	}
+}
+
+// fakeCmdRunner simulates an iptables -D invocation: it succeeds a configurable
+// number of times (removing one orphan rule each) and then reports the
+// "does a matching rule exist" no-match error, like the real iptables.
+type fakeCmdRunner struct {
+	successes int
+	calls     [][]string // every command line run (one entry per invocation)
+}
+
+func (f *fakeCmdRunner) CombinedOutput() ([]byte, error) {
+	if f.successes > 0 {
+		f.successes--
+		return nil, nil
+	}
+	return []byte("iptables: Bad rule (does a matching rule exist in that chain)."), errors.New("exit status 1")
+}
+
+func TestRemoveFirewallRule_RemovesAllDuplicateRules(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	runner := &fakeCmdRunner{successes: 3}
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		runner.calls = append(runner.calls, append([]string{name}, args...))
+		return runner
+	}
+
+	enf := &linuxEnforcer{}
+	if err := enf.removeFirewallRule("1.2.3.4"); err != nil {
+		t.Fatalf("removeFirewallRule: %v", err)
+	}
+
+	// Every invocation must be the same -D command for the same IP.
+	for i, call := range runner.calls {
+		if len(call) < 5 || call[0] != "iptables" {
+			t.Errorf("call %d should be an iptables invocation, got %v", i, call)
+		}
+		if !slices.Contains(call, "-D") || !slices.Contains(call, "1.2.3.4") {
+			t.Errorf("call %d should be iptables -D ... 1.2.3.4, got %v", i, call)
+		}
+	}
+
+	// 3 orphan rules removed + 1 final no-match probe = 4 invocations.
+	if len(runner.calls) != 4 {
+		t.Errorf("expected 4 iptables invocations (3 removals + 1 probe), got %d", len(runner.calls))
+	}
+}
+
+func TestRemoveFirewallRule_NoRulesIsNoOp(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	runner := &fakeCmdRunner{successes: 0}
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		runner.calls = append(runner.calls, append([]string{name}, args...))
+		return runner
+	}
+
+	enf := &linuxEnforcer{}
+	if err := enf.removeFirewallRule("1.2.3.4"); err != nil {
+		t.Fatalf("removeFirewallRule with no rules should not error: %v", err)
+	}
+
+	if len(runner.calls) != 1 {
+		t.Errorf("expected exactly 1 no-match probe, got %d calls", len(runner.calls))
+	}
+}
+
+func TestRemoveFirewallRule_PropagatesRealErrors(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		return &failRunner{msg: "iptables: Permission denied"}
+	}
+
+	enf := &linuxEnforcer{}
+	err := enf.removeFirewallRule("1.2.3.4")
+	if err == nil {
+		t.Fatal("expected error for non-no-match failure")
+	}
+	if !strings.Contains(err.Error(), "Permission denied") {
+		t.Errorf("expected permission error surfaced, got %v", err)
+	}
+}
+
+// failRunner always fails with a fixed message that is NOT the no-match case.
+type failRunner struct {
+	msg string
+}
+
+func (f *failRunner) CombinedOutput() ([]byte, error) {
+	return []byte(f.msg), errors.New("exit status 1")
+}
+
+// TestRemoveFirewallRule_StopsAtCap verifies the defensive guard against a
+// pathological firewall state where iptables never reports "does a matching
+// rule exist": the loop must stop after maxFirewallRuleRemovals attempts with
+// an error instead of spinning forever.
+func TestRemoveFirewallRule_StopsAtCap(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	runner := &fakeCmdRunner{successes: 1 << 30} // always succeeds, never no-match
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		runner.calls = append(runner.calls, append([]string{name}, args...))
+		return runner
+	}
+
+	enf := &linuxEnforcer{}
+	err := enf.removeFirewallRule("1.2.3.4")
+	if err == nil {
+		t.Fatal("expected error when the sweep never reaches no-match")
+	}
+	if !strings.Contains(err.Error(), "limite") {
+		t.Errorf("expected cap-limit error, got: %v", err)
+	}
+	if len(runner.calls) != maxFirewallRuleRemovals {
+		t.Errorf("expected exactly %d invocations at the cap, got %d", maxFirewallRuleRemovals, len(runner.calls))
 	}
 }
 

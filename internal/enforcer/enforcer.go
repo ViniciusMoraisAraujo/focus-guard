@@ -1,6 +1,7 @@
 package enforcer
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"strings"
@@ -70,6 +71,48 @@ func resolveIPs(domain string, lookup lookupFunc) ([]string, error) {
 	}
 
 	return ipStrings, nil
+}
+
+// sanitizeDomain cleans a user-supplied domain before it is written to the
+// hosts file or used as a marker: it strips the scheme and path, removes CR/LF
+// and spaces (hosts-file injection vectors), collapses a leading "www." prefix
+// (so www.site.com and www.www.site.com both normalize to site.com, avoiding
+// redundant www.www.site.com entries) and rejects characters that cannot appear
+// in a hostname.
+func sanitizeDomain(domain string) (string, error) {
+	// Hostnames and URL schemes are case-insensitive: lowercase first so both
+	// "HTTP://example.com" and "HtTpS://example.com/path" are stripped the
+	// same way as their lowercase equivalents.
+	d := strings.ToLower(strings.TrimSpace(domain))
+	d = strings.TrimPrefix(d, "http://")
+	d = strings.TrimPrefix(d, "https://")
+	if i := strings.Index(d, "/"); i >= 0 {
+		d = d[:i]
+	}
+
+	// Remove newlines, spaces and tabs — a domain containing them is an
+	// injection attempt against /etc/hosts (a CRLF would start a second line).
+	d = strings.NewReplacer("\r", "", "\n", "", " ", "", "\t", "").Replace(d)
+
+	// Collapse leading www. prefixes so blocking www.site.com never produces
+	// the redundant www.www.site.com entry (addHostEntry appends www. itself).
+	for strings.HasPrefix(d, "www.") {
+		d = d[len("www."):]
+	}
+
+	if d == "" {
+		return "", errors.New("enforcer: domínio vazio após sanitização")
+	}
+
+	for _, r := range d {
+		valid := (r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z') ||
+			(r >= '0' && r <= '9') || r == '.' || r == '-' || r == '_'
+		if !valid {
+			return "", fmt.Errorf("enforcer: domínio inválido %q", domain)
+		}
+	}
+
+	return d, nil
 }
 
 // dedupeIPs removes empty strings and duplicates, preserving order.

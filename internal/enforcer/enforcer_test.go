@@ -346,3 +346,44 @@ func TestApplyBlockRules_Empty(t *testing.T) {
 		t.Errorf("expected no calls on empty input, added=%v removed=%v", added, removed)
 	}
 }
+
+func TestSanitizeDomain(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		want    string
+		wantErr bool
+	}{
+		{"plain", "example.com", "example.com", false},
+		{"http scheme", "http://example.com", "example.com", false},
+		{"https scheme", "https://example.com", "example.com", false},
+		{"uppercase scheme", "HTTP://example.com", "example.com", false},
+		{"mixed-case scheme", "HtTpS://example.com/path", "example.com", false},
+		{"with path", "https://example.com/some/path", "example.com", false},
+		{"leading www", "www.example.com", "example.com", false},
+		{"double www", "www.www.example.com", "example.com", false},
+		{"uppercase www collapsed", "WWW.example.com", "example.com", false},
+		{"uppercase domain lowercased", "EXAMPLE.COM", "example.com", false},
+		{"surrounding spaces", "  example.com  ", "example.com", false},
+		{"crlf injection removed", "example.com\r\n127.0.0.1 evil.com", "example.com127.0.0.1evil.com", false},
+		{"space injection removed", "example.com 127.0.0.1", "example.com127.0.0.1", false},
+		{"tab injection removed", "example.com\t127.0.0.1", "example.com127.0.0.1", false},
+		{"empty", "", "", true},
+		{"only www", "www.", "", true},
+		{"forbidden char rejected", "example.com; rm -rf /", "", true},
+		{"underscore allowed", "my_site.com", "my_site.com", false},
+		{"hyphen allowed", "my-site.com", "my-site.com", false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := sanitizeDomain(tt.in)
+			if (err != nil) != tt.wantErr {
+				t.Fatalf("sanitizeDomain(%q) error = %v, wantErr %v", tt.in, err, tt.wantErr)
+			}
+			if got != tt.want {
+				t.Errorf("sanitizeDomain(%q) = %q, want %q", tt.in, got, tt.want)
+			}
+		})
+	}
+}

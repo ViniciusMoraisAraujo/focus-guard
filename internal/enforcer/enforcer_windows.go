@@ -175,6 +175,11 @@ func parseFocusGuardRuleNames(output string) map[string]bool {
 }
 
 func (e *windowsEnforcer) addHostEntry(domain string) error {
+	domain, err := sanitizeDomain(domain)
+	if err != nil {
+		return err
+	}
+
 	lines, err := e.readHostsLines()
 	if err != nil {
 		return err
@@ -198,6 +203,11 @@ func (e *windowsEnforcer) addHostEntry(domain string) error {
 }
 
 func (e *windowsEnforcer) removeHostEntry(domain string) error {
+	domain, err := sanitizeDomain(domain)
+	if err != nil {
+		return err
+	}
+
 	lines, err := e.readHostsLines()
 	if err != nil {
 		return err
