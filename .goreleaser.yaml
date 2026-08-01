@@ -145,6 +145,8 @@ archives:
       - src: CHANGELOG.md
       - src: scripts/focusguard.service
         dst: focusguard.service
+      - src: scripts/focusguard-tray.desktop
+        dst: focusguard-tray.desktop
       - src: scripts/install-linux.sh
         dst: install-linux.sh
 

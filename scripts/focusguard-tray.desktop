@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=FocusGuard Tray
+Comment=FocusGuard — ícone da bandeja do sistema
+# Exec deve apontar para o mesmo BIN_DIR do install-linux.sh
+Exec=/usr/local/bin/focusguard-tray
+Terminal=false
+Categories=Utility;
+X-GNOME-Autostart-enabled=true

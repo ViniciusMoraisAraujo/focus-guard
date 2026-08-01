@@ -40,6 +40,7 @@ install_binaries() {
   if [[ -f "${dir}/focusguard-tray" ]]; then
     install -m 0755 "${dir}/focusguard-tray" "${BIN_DIR}/focusguard-tray"
     install_tray_deps
+    install_tray_autostart
   fi
 }
 
@@ -55,6 +56,74 @@ install_tray_deps() {
   apt-get update -qq >/dev/null 2>&1 || true
   apt-get install -y libayatana-appindicator3-1 libgtk-3-0 \
     || echo "[FocusGuard] Aviso: não foi possível instalar as dependências do tray." >&2
+}
+
+# tray_user retorna o usuário real que invocou o sudo (ou root como fallback).
+# O autostart do tray é por usuário (espelho da chave HKCU Run do Windows).
+tray_user() {
+  echo "${SUDO_USER:-$(logname 2>/dev/null || echo root)}"
+}
+
+tray_user_home() {
+  local user home
+  user="$(tray_user)"
+  # '|| true' evita abortar sob 'set -e' quando getent/awk falham (usuário inexistente)
+  if cmd_exists getent; then
+    home="$(getent passwd "${user}" 2>/dev/null | cut -d: -f6 || true)"
+  else
+    home="$(awk -F: -v u="${user}" '$1 == u { print $6 }' /etc/passwd 2>/dev/null || true)"
+  fi
+  if [[ -z "${home}" ]]; then
+    return 1
+  fi
+  echo "${home}"
+}
+
+install_tray_autostart() {
+  local dir user home gid autostart_dir desktop
+  dir="$(script_dir)"
+
+  if [[ ! -f "${dir}/focusguard-tray.desktop" ]]; then
+    echo "[FocusGuard] Aviso: focusguard-tray.desktop não encontrado. Autostart do tray não registrado." >&2
+    return 0
+  fi
+
+  user="$(tray_user)"
+  if ! home="$(tray_user_home)"; then
+    echo "[FocusGuard] Aviso: não foi possível determinar o home do usuário ${user}. Autostart do tray não registrado." >&2
+    return 0
+  fi
+  gid="$(id -gn "${user}" 2>/dev/null || echo "${user}")"
+  autostart_dir="${home}/.config/autostart"
+  desktop="${autostart_dir}/focusguard-tray.desktop"
+
+  echo "[FocusGuard] Registrando autostart do tray para o usuário ${user}..."
+  # Best-effort: qualquer falha aqui NÃO deve abortar a instalação do daemon.
+  # install -d age como mkdir -p, mas define o dono dos diretórios criados,
+  # para o usuário poder gerenciar o autostart sem sudo (espelho da HKCU).
+  if ! install -d -m 0755 -o "${user}" -g "${gid}" "${autostart_dir}" ||
+     ! sed "s|^Exec=.*|Exec=${BIN_DIR}/focusguard-tray|" \
+        "${dir}/focusguard-tray.desktop" > "${desktop}"; then
+    echo "[FocusGuard] Aviso: não foi possível registrar o autostart do tray em ${autostart_dir}." >&2
+    rm -f "${desktop}" # evita deixar um .desktop parcial/quebrado no autostart do usuário
+    return 0
+  fi
+  chmod 0644 "${desktop}" 2>/dev/null || true
+  chown "${user}:${gid}" "${desktop}" 2>/dev/null || true
+  echo "[FocusGuard] ✔ Tray registrado para iniciar com o login (${autostart_dir})."
+}
+
+remove_tray_autostart() {
+  local home autostart_dir desktop
+  if ! home="$(tray_user_home)"; then
+    return 0
+  fi
+  autostart_dir="${home}/.config/autostart"
+  desktop="${autostart_dir}/focusguard-tray.desktop"
+  if [[ -f "${desktop}" ]]; then
+    rm -f "${desktop}"
+    echo "[FocusGuard] Autostart do tray removido (${desktop})."
+  fi
 }
 
 install_service() {
@@ -93,6 +162,7 @@ do_uninstall() {
   rm -f "${SERVICE_FILE}"
   echo "[FocusGuard] Removendo binários..."
   rm -f "${BIN_DIR}/focusguard" "${BIN_DIR}/focusguard-daemon" "${BIN_DIR}/focusguard-watchdog" "${BIN_DIR}/focusguard-tray"
+  remove_tray_autostart
   echo "[FocusGuard] ✔ FocusGuard removido. Estado preservado em ${STATE_DIR}"
 }
 
