@@ -22,8 +22,10 @@ type Store struct {
 	onSave   func()
 }
 
-// SetOnSave registers a callback invoked before each save, so external watchers
-// (e.g. statewatch) can suppress the fsnotify event caused by the daemon itself.
+// SetOnSave registers a callback invoked after each save, so external watchers
+// (e.g. statewatch) can hash the content the daemon just wrote and suppress
+// only the matching fsnotify event — instead of a time-based window that
+// creates a blind spot for external edits.
 func (s *Store) SetOnSave(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -83,10 +85,6 @@ func (s *Store) Save(state *State) error {
 		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
-	if s.onSave != nil {
-		s.onSave()
-	}
-
 	if state.Version == 0 {
 		state.Version = 1
 	}
@@ -128,6 +126,13 @@ func (s *Store) Save(state *State) error {
 
 	if err := os.Rename(tmpName, s.filePath); err != nil {
 		return fmt.Errorf("failed to rename temp file: %w", err)
+	}
+
+	// Invoke onSave after the rename so watchers can hash the content now on
+	// disk. A rare race (the fsnotify event delivered before this callback)
+	// only causes one redundant no-op Reconcile, since disk == RAM then.
+	if s.onSave != nil {
+		s.onSave()
 	}
 
 	return nil

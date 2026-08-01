@@ -8,11 +8,12 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"focusguard/internal/fsutil"
 )
 
 const (
-	defaultDebounce  = 200 * time.Millisecond
-	selfWriteWindow = 500 * time.Millisecond
+	defaultDebounce = 200 * time.Millisecond
 )
 
 type fsEvent struct {
@@ -24,35 +25,43 @@ type Reconciler interface {
 }
 
 type StateWatcher struct {
-	mu             sync.Mutex
-	StatePath      string
-	reconciler     Reconciler
-	debounce       time.Duration
-	events         chan fsEvent
-	stopCh         chan struct{}
-	stopOnce       sync.Once
-	watcher        *fsnotify.Watcher
-	lastSelfWrite  time.Time
-	selfWriteDelay time.Duration
+	mu               sync.Mutex
+	StatePath        string
+	reconciler       Reconciler
+	debounce         time.Duration
+	events           chan fsEvent
+	stopCh           chan struct{}
+	stopOnce         sync.Once
+	watcher          *fsnotify.Watcher
+	lastSelfHash     fsutil.Hash
+	reconcileRunning bool
+	reconcilePending bool
 }
 
-// MarkSelfWrite records that a write to the state file was performed by the
-// daemon itself, so the next fsnotify event is ignored (avoids redundant
-// Reconcile cycles after every store.Save).
+// MarkSelfWrite records the SHA-256 of the state file content as written by
+// the daemon itself, so an fsnotify event matching exactly that content is
+// ignored (avoids redundant Reconcile cycles). Content-based matching has no
+// time window, so an external edit that changes the content right after a
+// self-write is still detected — there is no 500ms blind spot.
 func (w *StateWatcher) MarkSelfWrite() {
-	delay := w.selfWriteDelay
-	if delay == 0 {
-		delay = selfWriteWindow
-	}
+	sum, err := fsutil.HashFile(w.StatePath)
 	w.mu.Lock()
-	w.lastSelfWrite = time.Now().Add(delay)
-	w.mu.Unlock()
+	defer w.mu.Unlock()
+	if err != nil {
+		w.lastSelfHash = fsutil.Hash{}
+		return
+	}
+	w.lastSelfHash = sum
 }
 
 func (w *StateWatcher) isSelfWrite() bool {
+	sum, err := fsutil.HashFile(w.StatePath)
+	if err != nil {
+		return false
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return !w.lastSelfWrite.IsZero() && time.Now().Before(w.lastSelfWrite)
+	return w.lastSelfHash != (fsutil.Hash{}) && w.lastSelfHash == sum
 }
 
 func New(reconciler Reconciler, statePath string) *StateWatcher {
@@ -159,11 +168,40 @@ func (w *StateWatcher) debounceAndReconcile() {
 	}
 }
 
+// detectAndReconcile runs the reconcile asynchronously so a slow Reconcile
+// never freezes the event loop. A boolean lock ensures only one reconcile runs
+// at a time; events arriving while one is in flight are coalesced into a
+// single follow-up run instead of being lost or spawning concurrent runs.
 func (w *StateWatcher) detectAndReconcile() {
-	log.Printf("[StateWatcher] Alteração detectada em %s — executando reconciliação...", w.StatePath)
-	if err := w.reconciler.Reconcile(); err != nil {
-		log.Printf("[StateWatcher] Erro na reconciliação após alteração em %s: %v", w.StatePath, err)
-	} else {
-		log.Printf("[StateWatcher] Reconciliação concluída com sucesso para %s", w.StatePath)
+	w.mu.Lock()
+	if w.reconcileRunning {
+		w.reconcilePending = true
+		w.mu.Unlock()
+		return
+	}
+	w.reconcileRunning = true
+	w.mu.Unlock()
+
+	go func() {
+		defer w.reconcileDone()
+		log.Printf("[StateWatcher] Alteração detectada em %s — executando reconciliação...", w.StatePath)
+		if err := w.reconciler.Reconcile(); err != nil {
+			log.Printf("[StateWatcher] Erro na reconciliação após alteração em %s: %v", w.StatePath, err)
+		} else {
+			log.Printf("[StateWatcher] Reconciliação concluída com sucesso para %s", w.StatePath)
+		}
+	}()
+}
+
+// reconcileDone releases the boolean lock and re-runs once if a reconcile was
+// requested while another one was in flight.
+func (w *StateWatcher) reconcileDone() {
+	w.mu.Lock()
+	w.reconcileRunning = false
+	pending := w.reconcilePending
+	w.reconcilePending = false
+	w.mu.Unlock()
+	if pending {
+		w.detectAndReconcile()
 	}
 }

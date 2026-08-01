@@ -2,6 +2,7 @@ package hostswatch
 
 import (
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,12 +12,12 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
+	"focusguard/internal/fsutil"
 	"focusguard/internal/policy"
 )
 
 const (
 	defaultDebounce   = 200 * time.Millisecond
-	selfWriteWindow   = 500 * time.Millisecond
 	defaultSweepEvery = 30 * time.Second
 )
 
@@ -33,36 +34,45 @@ type Scheduler interface {
 }
 
 type HostsWatcher struct {
-	mu             sync.Mutex
-	HostsPath      string
-	enf            Enforcer
-	sched          Scheduler
-	debounce       time.Duration
-	events         chan fsEvent
-	stopCh         chan struct{}
-	stopOnce       sync.Once
-	watcher        *fsnotify.Watcher
-	sweepInterval  time.Duration
-	lastSelfWrite  time.Time
-	selfWriteDelay time.Duration
+	mu            sync.Mutex
+	HostsPath     string
+	enf           Enforcer
+	sched         Scheduler
+	debounce      time.Duration
+	events        chan fsEvent
+	stopCh        chan struct{}
+	stopOnce      sync.Once
+	watcher       *fsnotify.Watcher
+	sweepInterval time.Duration
+	lastSelfHash  fsutil.Hash
+	detectRunning bool
+	detectPending bool
 }
 
-// MarkSelfWrite records that a write to the hosts file was performed by the
-// daemon itself, so the next fsnotify event is ignored (avoids redundant Sync).
+// MarkSelfWrite records the SHA-256 of the hosts file content as written by
+// the daemon itself, so an fsnotify event matching exactly that content is
+// ignored (avoids redundant Sync). Content-based matching has no time window,
+// so an external edit that changes the content right after a self-write is
+// still detected — there is no 500ms blind spot.
 func (w *HostsWatcher) MarkSelfWrite() {
-	delay := w.selfWriteDelay
-	if delay == 0 {
-		delay = selfWriteWindow
-	}
+	sum, err := fsutil.HashFile(w.HostsPath)
 	w.mu.Lock()
-	w.lastSelfWrite = time.Now().Add(delay)
-	w.mu.Unlock()
+	defer w.mu.Unlock()
+	if err != nil {
+		w.lastSelfHash = fsutil.Hash{}
+		return
+	}
+	w.lastSelfHash = sum
 }
 
 func (w *HostsWatcher) isSelfWrite() bool {
+	sum, err := fsutil.HashFile(w.HostsPath)
+	if err != nil {
+		return false
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	return !w.lastSelfWrite.IsZero() && time.Now().Before(w.lastSelfWrite)
+	return w.lastSelfHash != (fsutil.Hash{}) && w.lastSelfHash == sum
 }
 
 func New(enf Enforcer, sched Scheduler) *HostsWatcher {
@@ -160,7 +170,7 @@ func (w *HostsWatcher) eventLoop() {
 		case <-w.events:
 			w.debounceAndDetect()
 		case <-sweep.C:
-			w.detectTamper()
+			w.detectTamperAsync()
 		case <-w.stopCh:
 			return
 		}
@@ -178,7 +188,7 @@ func (w *HostsWatcher) debounceAndDetect() {
 			}
 			timer.Reset(w.debounce)
 		case <-timer.C:
-			w.detectTamper()
+			w.detectTamperAsync()
 			return
 		case <-w.stopCh:
 			return
@@ -186,10 +196,51 @@ func (w *HostsWatcher) debounceAndDetect() {
 	}
 }
 
-func (w *HostsWatcher) detectTamper() {
+// detectTamperAsync runs detectTamper asynchronously so a slow Sync never
+// freezes the event loop. A boolean lock ensures only one detect runs at a
+// time; events arriving while one is in flight are coalesced into a single
+// follow-up run instead of being lost or spawning concurrent runs.
+func (w *HostsWatcher) detectTamperAsync() {
+	w.mu.Lock()
+	if w.detectRunning {
+		w.detectPending = true
+		w.mu.Unlock()
+		return
+	}
+	w.detectRunning = true
+	w.mu.Unlock()
+
+	go func() {
+		defer w.detectDone()
+		if err := w.detectTamper(); err != nil {
+			// A failed Sync means the hosts restore did not happen (e.g. no
+			// permission to write the hosts file) — surface it instead of
+			// silently dropping it, mirroring the statewatch error logging.
+			log.Printf("[HostsWatcher] Erro ao restaurar hosts após adulteração: %v", err)
+		}
+	}()
+}
+
+// detectDone releases the boolean lock and re-runs once if a detect was
+// requested while another one was in flight.
+func (w *HostsWatcher) detectDone() {
+	w.mu.Lock()
+	w.detectRunning = false
+	pending := w.detectPending
+	w.detectPending = false
+	w.mu.Unlock()
+	if pending {
+		w.detectTamperAsync()
+	}
+}
+
+func (w *HostsWatcher) detectTamper() error {
 	blocks, err := w.sched.ListBlocks()
 	if err != nil || len(blocks) == 0 {
-		return
+		// A ListBlocks failure or an empty block list is intentionally
+		// ignored: without the block list there is nothing to restore, and
+		// the next event/sweep retries.
+		return nil
 	}
 
 	activeBlocks := make(map[string][]string, len(blocks))
@@ -200,19 +251,21 @@ func (w *HostsWatcher) detectTamper() {
 	data, err := os.ReadFile(w.HostsPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
-			return
+			// An unreadable-but-existing hosts file is left alone; the next
+			// event/sweep retries rather than risking a bad rewrite.
+			return nil
 		}
-		// The hosts file was deleted (e.g. by an admin) — recreate it.
-		_ = w.enf.Sync(activeBlocks)
-		return
+		// The hosts file was deleted (e.g. by an admin) — recreate it. The
+		// error is propagated so the async caller can log a failed restore.
+		return w.enf.Sync(activeBlocks)
 	}
 
 	hostsContent := string(data)
 	for _, b := range blocks {
 		marker := fmt.Sprintf("# FOCUSGUARD: %s", b.Domain)
 		if !strings.Contains(hostsContent, marker) {
-			_ = w.enf.Sync(activeBlocks)
-			return
+			return w.enf.Sync(activeBlocks)
 		}
 	}
+	return nil
 }
