@@ -5,7 +5,7 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Unreleased]
+## [0.2.5] - 2026-08-01
 
 ### 🪟 System Tray: correções de confiabilidade
 
@@ -24,6 +24,18 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - **Testes de regressão (TDD)** — 4 novos testes cobrindo falha no bloqueio,
   falha na verificação de atualização, falha no status e o uso de timeout em
   todo o IPC do tray (garantindo que `Send` sem deadline nunca é chamado).
+
+### 🐧 Autostart do tray no Linux (XDG)
+
+- **Autostart por usuário** — o `install-linux.sh` agora registra o tray para
+  iniciar com o login gravando um `focusguard-tray.desktop` em
+  `~/.config/autostart/` do usuário real (resolvido via `SUDO_USER`,
+  espelhando a chave `HKCU Run` do Windows). O diretório é criado com o
+  usuário como dono, para que ele possa gerenciar o autostart sem sudo.
+- **Best-effort** — qualquer falha no registro do autostart (usuário sem
+  entrada no passwd, `getent` ausente, etc.) apenas loga um aviso e nunca
+  aborta a instalação do daemon; o uninstall remove o `.desktop`.
+- O template `focusguard-tray.desktop` é incluído no pacote de release Linux.
 
 ## [0.2.4] - 2026-08-01
 
