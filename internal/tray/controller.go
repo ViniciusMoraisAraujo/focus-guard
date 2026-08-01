@@ -2,11 +2,19 @@ package tray
 
 import (
 	"fmt"
+	"time"
 
 	"focusguard/internal/ipc"
 )
 
-const quickBlockDuration = "4h"
+const (
+	quickBlockDuration = "4h"
+	// daemonTimeout bounds every IPC call from the tray. The systray library
+	// delivers clicks through a non-blocking channel: if a handler blocks
+	// forever on a hung daemon, all subsequent clicks are silently dropped
+	// and the tray appears dead.
+	daemonTimeout = 5 * time.Second
+)
 
 var quickBlockDomains = []string{
 	"youtube.com",
@@ -20,6 +28,7 @@ var quickBlockDomains = []string{
 // Daemon is the IPC surface used by the tray controller.
 type Daemon interface {
 	Send(req ipc.Request) (*ipc.Response, error)
+	SendWithTimeout(req ipc.Request, timeout time.Duration) (*ipc.Response, error)
 }
 
 // Controller wires a Systray to a Daemon. All of its logic is plain Go and
@@ -100,29 +109,44 @@ func (c *Controller) onReady() {
 }
 
 func (c *Controller) refreshStatus() {
-	resp, err := c.daemon.Send(ipc.Request{Action: "status"})
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "status"}, daemonTimeout)
 	if err != nil || resp == nil {
 		c.systray.SetTooltip("⚠ Daemon indisponível")
+		return
+	}
+	if !resp.Success {
+		c.systray.SetTooltip(errorTooltip("Falha ao consultar status", resp))
 		return
 	}
 	c.systray.SetTooltip(statusTooltip(resp))
 }
 
 func (c *Controller) blockDomain(domain string) {
-	_, err := c.daemon.Send(ipc.Request{Action: "block", Domain: domain, Duration: quickBlockDuration})
-	c.refreshStatus()
-	if err != nil {
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "block", Domain: domain, Duration: quickBlockDuration}, daemonTimeout)
+	// Em caso de falha o tooltip de erro é o estado final; só em sucesso
+	// atualiza o status (evita round-trip extra quando o daemon está fora).
+	if err != nil || resp == nil {
 		c.systray.SetTooltip("⚠ Falha ao bloquear " + domain)
+		return
 	}
+	if !resp.Success {
+		c.systray.SetTooltip(errorTooltip("Falha ao bloquear "+domain, resp))
+		return
+	}
+	c.refreshStatus()
 }
 
 func (c *Controller) checkUpdate() {
 	c.updateItem.Disable()
 	defer c.updateItem.Enable()
 
-	resp, err := c.daemon.Send(ipc.Request{Action: "update"})
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "update"}, daemonTimeout)
 	if err != nil || resp == nil {
 		c.systray.SetTooltip("⚠ Falha ao verificar atualização")
+		return
+	}
+	if !resp.Success {
+		c.systray.SetTooltip(errorTooltip("Falha ao verificar atualização", resp))
 		return
 	}
 	if resp.UpdateAvailable {
@@ -130,6 +154,15 @@ func (c *Controller) checkUpdate() {
 		return
 	}
 	c.systray.SetTooltip(fmt.Sprintf("✔ Você está atualizado (v%s)", resp.CurrentVersion))
+}
+
+// errorTooltip builds a tooltip for a response the daemon rejected (Success
+// false), surfacing the daemon's own Message when present.
+func errorTooltip(action string, resp *ipc.Response) string {
+	if resp.Message != "" {
+		return "⚠ " + action + ": " + resp.Message
+	}
+	return "⚠ " + action
 }
 
 func statusTooltip(resp *ipc.Response) string {

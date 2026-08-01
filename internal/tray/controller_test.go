@@ -1,6 +1,7 @@
 package tray
 
 import (
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -141,6 +142,10 @@ func (m *mockDaemon) Send(req ipc.Request) (*ipc.Response, error) {
 	return m.resp, m.err
 }
 
+func (m *mockDaemon) SendWithTimeout(req ipc.Request, _ time.Duration) (*ipc.Response, error) {
+	return m.Send(req)
+}
+
 func (m *mockDaemon) requests() []ipc.Request {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -162,6 +167,10 @@ func (m *blockingDaemon) Send(req ipc.Request) (*ipc.Response, error) {
 		<-m.release
 	}
 	return m.resp, nil
+}
+
+func (m *blockingDaemon) SendWithTimeout(req ipc.Request, _ time.Duration) (*ipc.Response, error) {
+	return m.Send(req)
 }
 
 func waitFor(t *testing.T, cond func() bool) {
@@ -348,3 +357,96 @@ var errDaemonDown = &daemonDownError{}
 type daemonDownError struct{}
 
 func (*daemonDownError) Error() string { return "connection refused" }
+
+// --- regressions: daemon rejecting actions / IPC timeouts ---
+
+func TestController_BlockFailureShowsDaemonMessage(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: false, Message: "falha ao resolver domínio"}}
+	c := NewController(s, d, nil)
+	c.Run()
+
+	blockParent := s.itemByTitle("🚫 Bloco rápido")
+	blockParent.children[0].click()
+
+	// o tooltip inicial de status ja contem a mensagem do daemon, entao
+	// assertamos o texto acao-especifico para exercitar de fato o blockDomain
+	waitFor(t, func() bool {
+		tt := s.getTooltip()
+		return strings.Contains(tt, "Falha ao bloquear") && strings.Contains(tt, "falha ao resolver domínio")
+	})
+}
+
+func TestController_UpdateFailureDoesNotClaimUpToDate(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: false, Message: "auto-update não configurado"}}
+	c := NewController(s, d, nil)
+	c.Run()
+
+	s.itemByTitle("🔄 Verificar atualização").click()
+
+	waitFor(t, func() bool {
+		tt := s.getTooltip()
+		return strings.Contains(tt, "Falha ao verificar atualização") && !strings.Contains(tt, "✔ Você está atualizado")
+	})
+}
+
+func TestController_StatusFailureShowsError(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: false, Message: "erro ao consultar firewall"}}
+	c := NewController(s, d, nil)
+	c.Run()
+
+	waitFor(t, func() bool {
+		tt := s.getTooltip()
+		return strings.Contains(tt, "erro ao consultar firewall") && !strings.Contains(tt, "🛡 FocusGuard")
+	})
+}
+
+type timeoutRecordingDaemon struct {
+	mu        sync.Mutex
+	timeouts  []time.Duration
+	sendCalls int
+}
+
+func (m *timeoutRecordingDaemon) Send(ipc.Request) (*ipc.Response, error) {
+	m.mu.Lock()
+	m.sendCalls++
+	m.mu.Unlock()
+	return nil, errors.New("controller must use SendWithTimeout")
+}
+
+func (m *timeoutRecordingDaemon) SendWithTimeout(_ ipc.Request, d time.Duration) (*ipc.Response, error) {
+	m.mu.Lock()
+	m.timeouts = append(m.timeouts, d)
+	m.mu.Unlock()
+	return &ipc.Response{Success: true, DoHActive: true, FirewallRules: 3}, nil
+}
+
+func TestController_UsesTimeoutForAllIPCCalls(t *testing.T) {
+	s := newMockSystray()
+	d := &timeoutRecordingDaemon{}
+	c := NewController(s, d, nil)
+	c.Run()
+
+	// o fetch inicial de status deve usar SendWithTimeout com deadline positivo
+	waitFor(t, func() bool {
+		d.mu.Lock()
+		defer d.mu.Unlock()
+		return len(d.timeouts) >= 1
+	})
+
+	s.itemByTitle("🚪 Sair").click()
+	waitFor(t, func() bool { return s.quitCount() == 1 })
+
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	if d.sendCalls != 0 {
+		t.Errorf("Send chamado %d vez(es); todo IPC deve usar SendWithTimeout", d.sendCalls)
+	}
+	for i, to := range d.timeouts {
+		if to <= 0 {
+			t.Errorf("timeout[%d] = %v, esperava deadline positivo", i, to)
+		}
+	}
+}
