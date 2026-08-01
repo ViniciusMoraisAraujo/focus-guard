@@ -11,10 +11,13 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/enforcer"
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
 	"focusguard/internal/policy"
+	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
+	"focusguard/internal/store"
 	"focusguard/internal/update"
 )
 
@@ -219,6 +222,8 @@ func TestStartStatewatch_StopIsIdempotent(t *testing.T) {
 }
 
 func TestRunDaemon_StatewatchIntegration(t *testing.T) {
+	requireRoot(t)
+
 	origGoos := goos
 	goos = "linux"
 	defer func() { goos = origGoos }()
@@ -267,6 +272,8 @@ func TestRunDaemon_StatewatchIntegration(t *testing.T) {
 }
 
 func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
+	requireRoot(t)
+
 	origGoos := goos
 	goos = "linux"
 	defer func() { goos = origGoos }()
@@ -419,6 +426,8 @@ func TestGetStateFilePath_Windows_ForwardSlash(t *testing.T) {
 }
 
 func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
+	requireRoot(t)
+
 	origGoos := goos
 	goos = "linux"
 	defer func() { goos = origGoos }()
@@ -461,6 +470,8 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 }
 
 func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
+	requireRoot(t)
+
 	origGoos := goos
 
 	goos = "linux"
@@ -669,9 +680,9 @@ func TestGetWatchdog_Invalid(t *testing.T) {
 }
 
 type fakeUpdaterAPI struct {
-	result   *update.UpdateResult
-	checkErr error
-	applyErr error
+	result     *update.UpdateResult
+	checkErr   error
+	applyErr   error
 	applyCalls int32
 }
 
@@ -848,4 +859,259 @@ type fakeUpdateChecker struct {
 func (f *fakeUpdateChecker) Check(_ context.Context, apply bool) (ipc.UpdateStatus, error) {
 	atomic.AddInt32(&f.calls, 1)
 	return ipc.UpdateStatus{CurrentVersion: "1.0.0"}, nil
+}
+
+// ---- Real store → statewatch → scheduler chain integration tests ----
+//
+// These wire the exact chain runDaemon uses (store.SetOnSave feeds the watcher's
+// content-based self-write marker after each write, and the scheduler is the
+// reconciler), with a fake enforcer since the real one needs root/firewall.
+// They prove external tampering (edit/delete/rename) is detected through the
+// full fsnotify → statewatch → Reconcile → store path and that the disk mirror
+// is restored from RAM.
+
+// fakeDaemonEnforcer implements the full enforcer.Enforcer interface with
+// call counters; Sync and BlockDoH are the operations the scheduler triggers
+// from Reconcile.
+type fakeDaemonEnforcer struct {
+	syncCalls int32
+}
+
+func (f *fakeDaemonEnforcer) BlockDomain(_ string, _ []string) error { return nil }
+func (f *fakeDaemonEnforcer) UnblockDomain(_ string, _ []string) error {
+	return nil
+}
+func (f *fakeDaemonEnforcer) Sync(_ map[string][]string) error {
+	atomic.AddInt32(&f.syncCalls, 1)
+	return nil
+}
+func (f *fakeDaemonEnforcer) BlockDoH() error   { return nil }
+func (f *fakeDaemonEnforcer) UnblockDoH() error { return nil }
+func (f *fakeDaemonEnforcer) Status() (enforcer.EnforcerStatus, error) {
+	return enforcer.EnforcerStatus{}, nil
+}
+
+// seededStateFile writes a state.json containing one active block, so the
+// scheduler has RAM content after bootstrap without any DNS lookups.
+func seededStateFile(t *testing.T) string {
+	t.Helper()
+	statePath := filepath.Join(t.TempDir(), "state.json")
+	now := time.Now()
+	content := fmt.Sprintf(`{
+		"version": 1,
+		"blocks": {
+			"example.com": {
+				"domain": "example.com",
+				"started_at": %q,
+				"expires_at": %q,
+				"resolved_ips": ["127.0.0.1"]
+			}
+		}
+	}`, now.Add(-time.Minute).Format(time.RFC3339), now.Add(24*time.Hour).Format(time.RFC3339))
+	if err := os.WriteFile(statePath, []byte(content), 0644); err != nil {
+		t.Fatalf("seed state file: %v", err)
+	}
+	return statePath
+}
+
+// newRealWatcherChain wires store → statewatch → scheduler the same way
+// runDaemon does and starts everything, returning the pieces for assertions.
+func newRealWatcherChain(t *testing.T) (*store.Store, *scheduler.Scheduler, *fakeDaemonEnforcer, string) {
+	t.Helper()
+	statePath := seededStateFile(t)
+	st, err := store.NewStore(statePath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	enf := &fakeDaemonEnforcer{}
+	sched := scheduler.NewScheduler(st, enf)
+	sw := statewatch.New(sched, statePath)
+	st.SetOnSave(sw.MarkSelfWrite)
+	if err := sw.Start(); err != nil {
+		t.Fatalf("statewatch.Start: %v", err)
+	}
+	t.Cleanup(sw.Stop)
+	if err := sched.Start(); err != nil {
+		t.Fatalf("scheduler.Start: %v", err)
+	}
+	return st, sched, enf, statePath
+}
+
+// waitForFileContains polls path until its content contains want or times out.
+func waitForFileContains(t *testing.T, path, want string, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		data, err := os.ReadFile(path)
+		if err == nil && strings.Contains(string(data), want) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	data, _ := os.ReadFile(path)
+	t.Fatalf("timed out waiting for %s to contain %q; got %q", path, want, data)
+}
+
+// waitForCalls polls an atomic counter until it reaches at least want or times
+// out — a way to observe the enforcer side of a completed bootstrap/reconcile.
+func waitForCalls(t *testing.T, counter *int32, want int, timeout time.Duration) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if atomic.LoadInt32(counter) >= int32(want) {
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for counter to reach %d (got %d)", want, atomic.LoadInt32(counter))
+}
+
+// requireRoot skips the test unless running as root: runDaemon-based tests
+// write the state file to the real /var/lib/focusguard path.
+func requireRoot(t *testing.T) {
+	t.Helper()
+	if os.Geteuid() != 0 {
+		t.Skip("requires root: runDaemon writes state to /var/lib/focusguard")
+	}
+}
+
+func TestRealChain_ExternalTamperRestoresDisk(t *testing.T) {
+	_, sched, enf, statePath := newRealWatcherChain(t)
+
+	// Bootstrap (sched.Start → Reconcile → Save → onSave) must have completed
+	// so the self-write hash is recorded; wait for the Sync it triggers.
+	waitForCalls(t, &enf.syncCalls, 1, 5*time.Second)
+
+	// An external process wipes the block from the disk mirror.
+	tampered := `{"version":1,"blocks":{}}`
+	if err := os.WriteFile(statePath, []byte(tampered), 0644); err != nil {
+		t.Fatalf("external tamper: %v", err)
+	}
+
+	// The watcher must detect it and the scheduler must restore disk from RAM.
+	waitForFileContains(t, statePath, "example.com", 5*time.Second)
+
+	blocks, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Domain != "example.com" {
+		t.Errorf("expected example.com still in RAM, got %+v", blocks)
+	}
+	if calls := atomic.LoadInt32(&enf.syncCalls); calls < 2 {
+		t.Errorf("expected ≥2 Sync calls (bootstrap + tamper restore), got %d", calls)
+	}
+}
+
+func TestRealChain_ExternalDeleteRecreatesFile(t *testing.T) {
+	_, sched, _, statePath := newRealWatcherChain(t)
+
+	// Deleting the disk mirror must be detected and the file recreated from RAM.
+	if err := os.Remove(statePath); err != nil {
+		t.Fatalf("os.Remove: %v", err)
+	}
+
+	waitForFileContains(t, statePath, "example.com", 5*time.Second)
+
+	blocks, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Domain != "example.com" {
+		t.Errorf("expected example.com still in RAM, got %+v", blocks)
+	}
+}
+
+func TestRealChain_ExternalRenameRecreatesFile(t *testing.T) {
+	_, sched, _, statePath := newRealWatcherChain(t)
+
+	// Renaming the state file away must be detected and the file recreated.
+	if err := os.Rename(statePath, statePath+".bak"); err != nil {
+		t.Fatalf("os.Rename: %v", err)
+	}
+
+	waitForFileContains(t, statePath, "example.com", 5*time.Second)
+
+	blocks, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Domain != "example.com" {
+		t.Errorf("expected example.com still in RAM, got %+v", blocks)
+	}
+}
+
+// TestRealChain_ExternalEditAfterSelfWriteDetected is the regression test for
+// the old 500ms blind spot: an external edit landing immediately after a daemon
+// self-write must still be detected, because the self-write marker is the
+// content hash (recorded post-write by store.onSave), not a time window.
+func TestRealChain_ExternalEditAfterSelfWriteDetected(t *testing.T) {
+	st, sched, _, statePath := newRealWatcherChain(t)
+	waitForFileContains(t, statePath, "example.com", 5*time.Second)
+
+	// The daemon persists its current state (store.Save fires onSave after the
+	// write, recording the SHA-256 of the content just written).
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := st.Save(state); err != nil {
+		t.Fatalf("daemon Save: %v", err)
+	}
+
+	// An external edit lands immediately after (inside what used to be the
+	// 500ms window). It must be detected and restored away.
+	tampered := fmt.Sprintf(`{
+		"version": 1,
+		"blocks": {
+			"evil.com": {
+				"domain": "evil.com",
+				"started_at": %q,
+				"expires_at": %q,
+				"resolved_ips": ["127.0.0.1"]
+			}
+		}
+	}`, time.Now().Add(-time.Minute).Format(time.RFC3339), time.Now().Add(24*time.Hour).Format(time.RFC3339))
+	if err := os.WriteFile(statePath, []byte(tampered), 0644); err != nil {
+		t.Fatalf("external edit: %v", err)
+	}
+
+	// The disk mirror must be restored to the daemon's RAM content.
+	waitForFileContains(t, statePath, "example.com", 5*time.Second)
+	data, _ := os.ReadFile(statePath)
+	if strings.Contains(string(data), "evil.com") {
+		t.Error("tampered content should have been restored away")
+	}
+
+	if blocks, err := sched.ListBlocks(); err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	} else if len(blocks) != 1 || blocks[0].Domain != "example.com" {
+		t.Errorf("expected example.com in RAM, got %+v", blocks)
+	}
+}
+
+// TestRealChain_RestoreIsStable_NoLoop guards against a restore loop: after a
+// tamper is fixed, the daemon's own restore write must not cascade into more
+// restores/Sync calls.
+//
+// This only holds because (a) the scheduler's restore path goes through
+// store.Save, so onSave records the SHA-256 of the content just written (the
+// matching fsnotify event is suppressed), and (b) Reconcile only calls the
+// enforcer when the disk actually diverges from RAM — a redundant reconcile
+// from the benign fsnotify-before-onSave race is therefore a no-op that cannot
+// add Sync calls.
+func TestRealChain_RestoreIsStable_NoLoop(t *testing.T) {
+	_, _, enf, statePath := newRealWatcherChain(t)
+
+	tampered := `{"version":1,"blocks":{}}`
+	if err := os.WriteFile(statePath, []byte(tampered), 0644); err != nil {
+		t.Fatalf("external tamper: %v", err)
+	}
+	waitForFileContains(t, statePath, "example.com", 5*time.Second)
+
+	after := atomic.LoadInt32(&enf.syncCalls)
+	time.Sleep(600 * time.Millisecond) // well past the 200ms debounce
+	if calls := atomic.LoadInt32(&enf.syncCalls); calls != after {
+		t.Errorf("Sync count changed after settling: before=%d after=%d", after, calls)
+	}
 }
