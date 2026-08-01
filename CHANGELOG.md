@@ -5,6 +5,33 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.2.4] - 2026-08-01
+
+### 👁️ Watchers: sem ponto cego de 500ms e event loop assíncrono
+
+- **Ponto cego de 500ms eliminado**: a supressão de eventos do próprio daemon
+  deixou de ser baseada em tempo (janela de 500ms) e passou a comparar o
+  SHA-256 do conteúdo gravado — `MarkSelfWrite` registra o hash do que o
+  daemon acabou de escrever (via `onSave` pós-escrita) e apenas o evento
+  `fsnotify` com conteúdo idêntico é ignorado. Uma edição externa que chega
+  logo após um self-write agora é detectada e revertida — sem ponto cego.
+- **Event loop assíncrono**: `Reconcile` (statewatch) e a detecção de
+  adulteração/Sync (hostswatch) rodam em goroutine com trava booleana
+  (`running`/`pending`) — uma operação lenta não congela mais o event loop;
+  eventos que chegam durante a execução são coalescidos em uma única
+  execução de acompanhamento, sem perder nem duplicar trabalho.
+- **Exclusão/renomeação monitoradas**: os watchers reagem a `fsnotify.Remove`
+  e `fsnotify.Rename`, recriando o arquivo (hosts ou state) a partir da
+  memória quando ele é apagado ou renomeado.
+- **Restauração do `hosts` apagado**: se o arquivo `hosts` for deletado, o
+  `detectTamper` força o `Sync` do enforcer para recriá-lo com os marcadores.
+- **Falhas de restauração logadas**: erro do `Sync` no hostswatch agora é
+  propagado e registrado em log, em vez de descartado silenciosamente.
+- **Testes de integração** no daemon cobrindo a cadeia real
+  `store → statewatch → scheduler`: adulteração externa, delete, rename e
+  edição imediatamente após um self-write — com restauração do disco a partir
+  da RAM e ausência de loop de Sync/Reconcile.
+
 ## [0.2.3] - 2026-07-31
 
 ### 🆕 System Tray App
