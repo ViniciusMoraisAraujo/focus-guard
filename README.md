@@ -18,7 +18,7 @@
 - 🔄 **Arquitetura Cliente-Servidor** — Daemon em background com IPC via Unix socket
 - 🐳 **Systemd Watchdog** — Suporte a health check via `NOTIFY_SOCKET`
 - 🪟 **Serviço Windows nativo** — Roda como serviço Windows sem console visível
-- 👁️ **File Watcher** — Monitora `/etc/hosts` em tempo real com `fsnotify` e reaplica regras se detectar violação
+- 👁️ **File Watcher** — Monitora `/etc/hosts` e o `state.json` em tempo real com `fsnotify`, detecta adulterações via SHA-256 e restaura automaticamente
 
 ---
 
@@ -352,6 +352,31 @@ Monitora o arquivo `hosts` em tempo real usando `fsnotify`:
 - Aplica debounce para evitar múltiplas reações a uma mesma alteração
 - Reaplica bloqueios automaticamente se detectar violação
 - Roda em background no daemon
+
+### StateWatcher (`internal/statewatch/`)
+
+Monitora o arquivo de estado `state.json` em tempo real usando `fsnotify`:
+- Detecta adulterações, exclusões e renomeações do arquivo de estado
+- Aciona o `Reconcile` do scheduler para restaurar o disco a partir da memória
+- Roda em background no daemon
+
+> 🛡️ **Comportamento dos watchers (v0.2.4+)**
+>
+> **Detecção via SHA-256 (sem ponto cego de 500ms)** — gravações feitas pelo
+> próprio daemon são marcadas pelo hash do conteúdo gravado (registrado logo
+> após a escrita, via `onSave` no store e `SetOnHostsWrite` no enforcer);
+> apenas o evento `fsnotify` com conteúdo idêntico é ignorado. Uma edição
+> externa é detectada mesmo que chegue imediatamente após um self-write.
+>
+> **Restauração automática a partir da memória** — se o `hosts` ou o
+> `state.json` for adulterado, apagado ou renomeado, ele é recriado a partir
+> da RAM do scheduler: o `hosts` ganha novamente os marcadores
+> `# FOCUSGUARD:` e o `state.json` é reescrito com os bloqueios ativos.
+>
+> **Event loop assíncrono** — `Reconcile`/`Sync` rodam em goroutine com trava
+> booleana (`running`/`pending`); uma operação lenta não congela o watcher, e
+> eventos que chegam durante a execução são coalescidos em uma única execução
+> de acompanhamento, sem perder nem duplicar trabalho.
 
 ### Scheduler (`internal/scheduler/`)
 
