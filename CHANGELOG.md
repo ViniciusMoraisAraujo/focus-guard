@@ -5,6 +5,26 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### 🪟 System Tray: correções de confiabilidade
+
+- **IPC com timeout** — todas as chamadas do tray ao daemon agora usam
+  `SendWithTimeout` com limite de 5s (`daemonTimeout`). O `getlantern/systray`
+  entrega cliques por canal **não-bloqueante**: se um handler ficasse preso
+  num daemon sem resposta, os cliques seguintes eram descartados
+  silenciosamente e o tray aparentava morto. Agora nenhum handler trava e
+  cada clique é processado.
+- **`resp.Success` honrado** — o tray passou a respeitar a resposta do daemon
+  em vez de assumir sucesso:
+  - Falha ao bloquear exibe no tooltip o motivo retornado pelo daemon;
+  - "Verificar atualização" não alega mais "✔ Você está atualizado" quando o
+    daemon rejeita (ex.: auto-update não configurado em build de dev);
+  - Erro no status mostra tooltip de falha em vez do estado normal.
+- **Testes de regressão (TDD)** — 4 novos testes cobrindo falha no bloqueio,
+  falha na verificação de atualização, falha no status e o uso de timeout em
+  todo o IPC do tray (garantindo que `Send` sem deadline nunca é chamado).
+
 ## [0.2.4] - 2026-08-01
 
 ### 👁️ Watchers: sem ponto cego de 500ms e event loop assíncrono
