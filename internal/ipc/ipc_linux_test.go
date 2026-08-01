@@ -5,6 +5,7 @@ package ipc
 import (
 	"bytes"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"testing"
@@ -17,6 +18,21 @@ func setTestEndpoint(t *testing.T) {
 	orig := TestSocketPath
 	TestSocketPath = filepath.Join(t.TempDir(), "focusguard-test.sock")
 	t.Cleanup(func() { TestSocketPath = orig })
+}
+
+// newTestListener binds a unix socket at a temp path and points the package
+// dial endpoint at it, so client tests exercise the real Listen/Dial path
+// without needing root access to /run.
+func newTestListener(t *testing.T) net.Listener {
+	t.Helper()
+	setTestEndpoint(t)
+
+	ln, err := Listen()
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+	t.Cleanup(func() { ln.Close() })
+	return ln
 }
 
 func TestListenAndDial(t *testing.T) {

@@ -2,7 +2,6 @@ package ipc
 
 import (
 	"encoding/json"
-	"net"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -41,19 +40,13 @@ func (m *integrationMockEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
 
-func startIntegrationServer(t *testing.T) string {
+// startIntegrationServer points the package Listen/Dial endpoints at a
+// test-only address — a unix socket in a temp dir on Linux, an ephemeral TCP
+// port on Windows — so the real Server+Scheduler chain runs without root.
+func startIntegrationServer(t *testing.T) {
 	t.Helper()
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("find free port: %v", err)
-	}
-	addr := ln.Addr().String()
-	ln.Close()
-
-	origAddr := TestDialAddr
-	TestDialAddr = addr
-	t.Cleanup(func() { TestDialAddr = origAddr })
+	setTestEndpoint(t)
 
 	tmpDir := t.TempDir()
 	st, err := store.NewStore(filepath.Join(tmpDir, "state.json"))
@@ -76,7 +69,6 @@ func startIntegrationServer(t *testing.T) string {
 	t.Cleanup(func() { srv.Stop() })
 
 	time.Sleep(50 * time.Millisecond)
-	return addr
 }
 
 func TestIntegration_BlockAndStatus(t *testing.T) {

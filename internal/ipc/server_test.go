@@ -95,15 +95,8 @@ func TestClientSend_DialError(t *testing.T) {
 func TestClientSendWithTimeout_Success(t *testing.T) {
 	server := setupTestServer(t)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := newTestListener(t)
 	defer ln.Close()
-
-	origDialAddr := TestDialAddr
-	TestDialAddr = ln.Addr().String()
-	defer func() { TestDialAddr = origDialAddr }()
 
 	go func() {
 		conn, _ := ln.Accept()
@@ -138,15 +131,8 @@ func TestClientSendWithTimeout_DialError(t *testing.T) {
 func TestClientSend_Success(t *testing.T) {
 	server := setupTestServer(t)
 
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := newTestListener(t)
 	defer ln.Close()
-
-	origDialAddr := TestDialAddr
-	TestDialAddr = ln.Addr().String()
-	defer func() { TestDialAddr = origDialAddr }()
 
 	go func() {
 		conn, _ := ln.Accept()
@@ -166,15 +152,8 @@ func TestClientSend_Success(t *testing.T) {
 }
 
 func TestClientSend_DecodeError(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := newTestListener(t)
 	defer ln.Close()
-
-	origDialAddr := TestDialAddr
-	TestDialAddr = ln.Addr().String()
-	defer func() { TestDialAddr = origDialAddr }()
 
 	go func() {
 		conn, _ := ln.Accept()
@@ -185,7 +164,7 @@ func TestClientSend_DecodeError(t *testing.T) {
 	}()
 
 	c := NewClient()
-	_, err = c.Send(Request{Action: "ping"})
+	_, err := c.Send(Request{Action: "ping"})
 	if err == nil {
 		t.Fatal("expected decode error with invalid response")
 	}

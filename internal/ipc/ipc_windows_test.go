@@ -25,6 +25,23 @@ func setTestEndpoint(t *testing.T) {
 	t.Cleanup(func() { TestDialAddr = orig })
 }
 
+// newTestListener binds a TCP listener on a free port and points the package
+// dial endpoint at it, so client tests exercise the real Listen/Dial path.
+func newTestListener(t *testing.T) net.Listener {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen: %v", err)
+	}
+
+	orig := TestDialAddr
+	TestDialAddr = ln.Addr().String()
+	t.Cleanup(func() { TestDialAddr = orig })
+	t.Cleanup(func() { ln.Close() })
+	return ln
+}
+
 func TestListenAndDial(t *testing.T) {
 	setTestEndpoint(t)
 
