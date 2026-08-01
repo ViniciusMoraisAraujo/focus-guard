@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
@@ -426,6 +427,120 @@ func TestScheduler_Reconcile_EmptyState(t *testing.T) {
 
 	if err := sched.Reconcile(); err != nil {
 		t.Fatalf("Reconcile() on empty state should not error: %v", err)
+	}
+}
+
+// TestScheduler_Start_CorruptedStateFileDoesNotAbort verifies that a corrupted
+// state.json at boot (invalid JSON or 0 bytes) does not prevent the daemon from
+// starting: the scheduler must boot with a clean RAM state and overwrite the
+// corrupted disk copy with the (clean) in-memory state.
+func TestScheduler_Start_CorruptedStateFileDoesNotAbort(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+
+	// Corrupted JSON — exactly what Load() must tolerate instead of erroring.
+	if err := os.WriteFile(dbPath, []byte(`{not valid json`), 0644); err != nil {
+		t.Fatalf("write corrupted state: %v", err)
+	}
+
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	enf := newMockEnforcer()
+	sched := NewScheduler(st, enf)
+
+	if err := sched.Start(); err != nil {
+		t.Fatalf("Start() should not abort on corrupted state, got: %v", err)
+	}
+
+	if sched.HasActiveBlocks() {
+		t.Error("expected no active blocks after boot with corrupted state")
+	}
+
+	// The disk mirror must have been healed: readable, valid, empty state.
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load() after Start() should succeed (file healed): %v", err)
+	}
+	if len(loaded.Blocks) != 0 {
+		t.Errorf("expected healed state with no blocks, got %d", len(loaded.Blocks))
+	}
+}
+
+// TestScheduler_Start_ZeroByteStateFileDoesNotAbort is the same guarantee for
+// a 0-byte state.json (crash mid-write).
+func TestScheduler_Start_ZeroByteStateFileDoesNotAbort(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+
+	if err := os.WriteFile(dbPath, nil, 0644); err != nil {
+		t.Fatalf("truncate state: %v", err)
+	}
+
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	enf := newMockEnforcer()
+	sched := NewScheduler(st, enf)
+
+	if err := sched.Start(); err != nil {
+		t.Fatalf("Start() should not abort on empty state file, got: %v", err)
+	}
+
+	loaded, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load() after Start() should succeed (file healed): %v", err)
+	}
+	if len(loaded.Blocks) != 0 {
+		t.Errorf("expected healed state with no blocks, got %d", len(loaded.Blocks))
+	}
+}
+
+// TestScheduler_Reconcile_CorruptedFileWithEmptyRAMHeals covers the post-boot
+// live-heal gap: with the disk corrupted (or emptied to 0 bytes) and NO active
+// blocks in RAM, a Reconcile triggered by statewatch must still rewrite the
+// clean RAM state over the corrupted disk. Without healing inside Load(),
+// statesEqual(cleanState, cleanState) is true and the file would stay
+// corrupted until the next daemon restart.
+func TestScheduler_Reconcile_CorruptedFileWithEmptyRAMHeals(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+
+	st, err := store.NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	enf := newMockEnforcer()
+	sched := NewScheduler(st, enf)
+
+	if err := sched.Start(); err != nil {
+		t.Fatalf("Start(): %v", err)
+	}
+
+	// Boot with no blocks; now corrupt the disk mirror (as an external editor
+	// or a crash mid-write would).
+	if err := os.WriteFile(dbPath, []byte(`{not valid json`), 0644); err != nil {
+		t.Fatalf("corrupt state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() on corrupted disk with empty RAM: %v", err)
+	}
+
+	// The raw disk copy must have been healed to valid JSON even though RAM is
+	// empty — otherwise the corrupted file lingers until the next restart.
+	data, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read state file after heal: %v", err)
+	}
+	var healed store.State
+	if err := json.Unmarshal(data, &healed); err != nil {
+		t.Fatalf("state file should be valid JSON after Reconcile, got: %v (%q)", err, string(data))
+	}
+	if len(healed.Blocks) != 0 {
+		t.Errorf("expected healed file with no blocks, got %d", len(healed.Blocks))
 	}
 }
 

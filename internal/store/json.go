@@ -53,33 +53,77 @@ func NewStore(filePath string) (*Store, error) {
 
 func (s *Store) Load() (*State, error) {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 
 	data, err := os.ReadFile(s.filePath)
 	if os.IsNotExist(err) {
-		return &State{
-			Version: 1,
-			Blocks:  make(map[string]policy.Block),
-		}, nil
+		s.mu.RUnlock()
+		return cleanState(), nil
 	}
 	if err != nil {
+		s.mu.RUnlock()
 		return nil, fmt.Errorf("failed to read state file: %w", err)
 	}
 
 	var state State
 	if err := json.Unmarshal(data, &state); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal state: %w", err)
+		s.mu.RUnlock()
+		// Arquivo corrompido ou vazio (0 bytes — ex.: crash no meio da escrita
+		// ou edição manual quebrada): em vez de abortar o boot, re-inicializa um
+		// estado limpo e cura o disco imediatamente. Sem essa cura, um Reconcile
+		// com RAM vazia veria o arquivo corrompido como "em sincronia" (ambos
+		// vazios) e ele ficaria corrompido até o próximo restart. Se a RAM tiver
+		// bloqueios, o Reconcile seguinte sobrescreve com o estado real — a RAM
+		// continua sendo a fonte da verdade.
+		s.healCorrupted()
+		return cleanState(), nil
 	}
+	s.mu.RUnlock()
+
 	if state.Blocks == nil {
 		state.Blocks = make(map[string]policy.Block)
 	}
 	return &state, nil
 }
 
-func (s *Store) Save(state *State) error {
+// healCorrupted rewrites a corrupted or empty state file with a clean state.
+// Best-effort: a failure here only means the next Reconcile/Save retries —
+// Load never aborts on a bad file.
+func (s *Store) healCorrupted() {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	// Re-read sob o write lock: se outro writer (ex.: um Save concorrente)
+	// já tiver curado/gravado um arquivo válido, não sobrescrevemos.
+	data, err := os.ReadFile(s.filePath)
+	if err != nil {
+		return
+	}
+	var state State
+	if err := json.Unmarshal(data, &state); err == nil {
+		return // já válido — outro goroutine cuidou
+	}
+	_ = s.saveLocked(cleanState())
+}
+
+// cleanState returns a fresh, empty state used when the file is missing,
+// corrupted or empty — the disk copy is only a mirror of the in-memory state.
+func cleanState() *State {
+	return &State{
+		Version: 1,
+		Blocks:  make(map[string]policy.Block),
+	}
+}
+
+func (s *Store) Save(state *State) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.saveLocked(state)
+}
+
+// saveLocked writes state to disk atomically (temp file + rename) and fires
+// onSave after the rename so watchers can hash the content now on disk. The
+// caller must hold s.mu.
+func (s *Store) saveLocked(state *State) error {
 	dir := filepath.Dir(s.filePath)
 	if err := os.MkdirAll(dir, 0755); err != nil {
 		return fmt.Errorf("failed to create directory: %w", err)
