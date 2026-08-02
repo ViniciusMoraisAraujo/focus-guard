@@ -3,10 +3,14 @@
 package enforcer
 
 import (
+	"context"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
@@ -135,7 +139,7 @@ Regra:
     Nome da regra:    Windows Defender Firewall - default
 `
 
-	names := parseFocusGuardRuleNames(output)
+	names := parseFocusGuardRuleNames([]byte(output))
 
 	if !names["FocusGuard_1.1.1.1"] {
 		t.Error("expected FocusGuard_1.1.1.1 to be parsed")
@@ -153,7 +157,7 @@ func TestParseFocusGuardRuleNames_NoRules(t *testing.T) {
     Nome da regra:    Windows Defender Firewall - default
 `
 
-	names := parseFocusGuardRuleNames(output)
+	names := parseFocusGuardRuleNames([]byte(output))
 	if len(names) != 0 {
 		t.Errorf("expected no FocusGuard rules, got %v", names)
 	}
@@ -385,7 +389,7 @@ Regra:
     Nome da regra:    Windows Defender Firewall - xxx
 `
 
-	status := countFocusGuardRules(output)
+	status := countFocusGuardRules([]byte(output))
 
 	if status.FirewallRules != 3 {
 		t.Errorf("FirewallRules = %d, want 3", status.FirewallRules)
@@ -404,7 +408,7 @@ Regra:
     Nome da regra:    Outra regra qualquer
 `
 
-	status := countFocusGuardRules(output)
+	status := countFocusGuardRules([]byte(output))
 
 	if status.FirewallRules != 0 {
 		t.Errorf("FirewallRules = %d, want 0", status.FirewallRules)
@@ -414,28 +418,195 @@ Regra:
 	}
 }
 
-func TestCountFocusGuardNames(t *testing.T) {
-	output := "FocusGuard_1.1.1.1\nFocusGuard_DoH_8_8_8_8\nFocusGuard_DoT_TCP\nWindows Defender Firewall - default\n"
+// batchStubWin replaces execCommandContext for the Windows batch/Status tests:
+// it records every invocation (name+args) and the scripts fed via stdin, and
+// returns a canned netsh dump for show-rule queries.
+type batchStubWin struct {
+	calls  [][]string
+	stdins []string
+	// showCount returns the netsh dump for each show rule call, in order.
+	showDumps []string
+}
 
-	status := countFocusGuardNames(output)
+func (b *batchStubWin) SetStdin(r io.Reader) {
+	data, _ := io.ReadAll(r)
+	b.stdins = append(b.stdins, string(data))
+}
 
-	if status.FirewallRules != 3 {
-		t.Errorf("FirewallRules = %d, want 3", status.FirewallRules)
+func (b *batchStubWin) CombinedOutput() ([]byte, error) {
+	if len(b.calls) == 0 {
+		return nil, nil
 	}
-	if !status.DoHActive {
-		t.Error("DoHActive deve ser true quando existem regras DoH/DoT")
+	last := b.calls[len(b.calls)-1]
+	if slices.Contains(last, "show") {
+		idx := 0
+		for _, c := range b.calls {
+			if slices.Contains(c, "show") {
+				idx++
+			}
+		}
+		if idx-1 < len(b.showDumps) {
+			return []byte(b.showDumps[idx-1]), nil
+		}
+	}
+	return nil, nil
+}
+
+func stubBatchExecWin(t *testing.T, b *batchStubWin) {
+	t.Helper()
+	orig := execCommandContext
+	t.Cleanup(func() { execCommandContext = orig })
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		b.calls = append(b.calls, append([]string{name}, args...))
+		return b
 	}
 }
 
-func TestCountFocusGuardNames_NoRules(t *testing.T) {
-	output := "Windows Defender Firewall - default\nOutra regra qualquer\n"
-
-	status := countFocusGuardNames(output)
-
-	if status.FirewallRules != 0 {
-		t.Errorf("FirewallRules = %d, want 0", status.FirewallRules)
+// TestAddFirewallRulesBatch_SingleNetshProcess verifies that N rules are
+// applied with a single netsh process fed a script via stdin (no PowerShell,
+// no one exec per IP), and that a verification query confirms the result.
+func TestAddFirewallRulesBatch_SingleNetshProcess(t *testing.T) {
+	b := &batchStubWin{
+		showDumps: []string{
+			"", // first query: no rules exist yet
+			"Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n\nRegra:\n    Nome da regra:    FocusGuard_8.8.8.8\n",
+		},
 	}
-	if status.DoHActive {
-		t.Error("DoHActive deve ser false sem regras FocusGuard")
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	if err := e.addFirewallRulesBatch([]string{"1.1.1.1", "8.8.8.8"}); err != nil {
+		t.Fatalf("addFirewallRulesBatch: %v", err)
+	}
+
+	// Expect: 1 show query (existing), 1 netsh add via stdin, 1 verification show.
+	if len(b.calls) != 3 {
+		t.Fatalf("expected 3 netsh invocations, got %d: %v", len(b.calls), b.calls)
+	}
+
+	addCall := b.calls[1]
+	if addCall[0] != "netsh" {
+		t.Errorf("expected netsh add invocation, got %v", addCall)
+	}
+	if len(b.stdins) != 1 {
+		t.Fatalf("expected 1 stdin script, got %d", len(b.stdins))
+	}
+	for _, ip := range []string{"1.1.1.1", "8.8.8.8"} {
+		if !strings.Contains(b.stdins[0], "add rule name=FocusGuard_"+ip+" dir=out action=block remoteip="+ip) {
+			t.Errorf("script missing rule for %s:\n%s", ip, b.stdins[0])
+		}
+	}
+	if !strings.Contains(b.stdins[0], "exit") {
+		t.Errorf("script must end with exit:\n%s", b.stdins[0])
+	}
+}
+
+// TestAddFirewallRulesBatch_MissingRuleAfterAdd verifies that when netsh exits
+// 0 but a rule is not actually present after the batch, an error is returned
+// (netsh can mask internal failures with exit code 0).
+func TestAddFirewallRulesBatch_MissingRuleAfterAdd(t *testing.T) {
+	b := &batchStubWin{
+		showDumps: []string{
+			"", // first query: no rules exist yet
+			"Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n", // 8.8.8.8 missing
+		},
+	}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	err := e.addFirewallRulesBatch([]string{"1.1.1.1", "8.8.8.8"})
+	if err == nil {
+		t.Fatal("expected error when a rule is missing after the batch")
+	}
+	if !strings.Contains(err.Error(), "8.8.8.8") {
+		t.Errorf("error should mention the missing rule, got: %v", err)
+	}
+}
+
+// TestSyncLocked_WritesHostsOnce verifies the batched Windows Sync rewrites
+// the hosts file exactly once for N domains (single read-modify-write).
+func TestSyncLocked_WritesHostsOnce(t *testing.T) {
+	b := &batchStubWin{
+		showDumps: []string{
+			"", // first query: no rules exist yet
+			"Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n\nRegra:\n    Nome da regra:    FocusGuard_2.2.2.2\n",
+		},
+	}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	var writes int32
+	e.SetOnHostsWrite(func() { atomic.AddInt32(&writes, 1) })
+
+	active := map[string][]string{
+		"a.com": {"1.1.1.1"},
+		"b.com": {"2.2.2.2"},
+	}
+	if err := e.syncLocked(active); err != nil {
+		t.Fatalf("syncLocked: %v", err)
+	}
+
+	if got := atomic.LoadInt32(&writes); got != 1 {
+		t.Errorf("expected exactly 1 hosts write for 2 domains, got %d", got)
+	}
+
+	content := readRawHosts(t, e.hostsPath)
+	for _, d := range []string{"a.com", "b.com"} {
+		if !strings.Contains(content, "# FOCUSGUARD: "+d) {
+			t.Errorf("hosts missing marker for %s:\n%s", d, content)
+		}
+	}
+	if !strings.Contains(content, "127.0.0.1 localhost") {
+		t.Errorf("original hosts lines must be preserved:\n%s", content)
+	}
+}
+
+// TestStatus_UsesNetshNotPowerShell verifies Status() queries the firewall
+// with a single native netsh invocation (no PowerShell runtime) and reuses the
+// existing countFocusGuardRules parser.
+func TestStatus_UsesNetshNotPowerShell(t *testing.T) {
+	b := &batchStubWin{
+		showDumps: []string{
+			"Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n\nRegra:\n    Nome da regra:    FocusGuard_DoH_8_8_8_8\n\nRegra:\n    Nome da regra:    FocusGuard_DoT_TCP\n\nRegra:\n    Nome da regra:    Windows Defender Firewall - default\n",
+		},
+	}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	st, err := e.Status()
+	if err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+	if st.FirewallRules != 3 {
+		t.Errorf("FirewallRules = %d, want 3", st.FirewallRules)
+	}
+	if !st.DoHActive {
+		t.Error("DoHActive deve ser true quando existem regras DoH/DoT")
+	}
+
+	for _, c := range b.calls {
+		if c[0] == "powershell" {
+			t.Errorf("Status must not invoke PowerShell, got %v", c)
+		}
+	}
+
+	// checkAdmin usa um subprocesso net session; o Status em si deve fazer
+	// exatamente uma consulta netsh show rule name=all dir=out.
+	var netshCalls [][]string
+	for _, c := range b.calls {
+		if c[0] == "netsh" {
+			netshCalls = append(netshCalls, c)
+		}
+	}
+	if len(netshCalls) != 1 {
+		t.Errorf("expected exactly 1 netsh invocation, got %d: %v", len(netshCalls), b.calls)
+	}
+	if len(netshCalls) == 1 {
+		if !slices.Contains(netshCalls[0], "name=all") {
+			t.Errorf("expected netsh show rule name=all, got %v", netshCalls[0])
+		}
+		if !slices.Contains(netshCalls[0], "dir=out") {
+			t.Errorf("expected netsh show to filter dir=out, got %v", netshCalls[0])
+		}
 	}
 }

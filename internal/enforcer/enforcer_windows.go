@@ -3,7 +3,7 @@
 package enforcer
 
 import (
-	"bufio"
+	"bytes"
 	"context"
 	"fmt"
 	"os"
@@ -38,8 +38,8 @@ func (e *windowsEnforcer) checkAdmin() error {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 
-		cmd := exec.CommandContext(ctx, "net", "session")
-		e.adminErr = cmd.Run()
+		cmd := execCommandContext(ctx, "net", "session")
+		_, e.adminErr = cmd.CombinedOutput()
 	})
 	if e.adminErr != nil {
 		return fmt.Errorf("checkAdmin: %w", e.adminErr)
@@ -58,16 +58,19 @@ func (e *windowsEnforcer) BlockDomain(domain string, ips []string) error {
 	return e.blockDomainLocked(domain, ips)
 }
 
-// blockDomainLocked applies a block while holding the lock. If any firewall
-// rule fails, the whole operation is rolled back (host entry plus the rules
-// already applied) so the system never keeps a partial/zombie block.
+// blockDomainLocked applies a block while holding the lock. If the batched
+// firewall application fails, the whole operation is rolled back (host entry
+// plus every attempted rule) so the system never keeps a partial/zombie block.
 func (e *windowsEnforcer) blockDomainLocked(domain string, ips []string) error {
 	if err := e.addHostEntry(domain); err != nil {
 		return fmt.Errorf("enforcer: failed to add host entry: %w", err)
 	}
 
 	allIPs := dedupeIPs(ips)
-	if err := applyBlockRules(allIPs, e.addFirewallRule, e.removeFirewallRule); err != nil {
+	if err := e.addFirewallRulesBatch(allIPs); err != nil {
+		for _, ip := range allIPs {
+			_ = e.removeFirewallRule(ip)
+		}
 		_ = e.removeHostEntry(domain)
 		return fmt.Errorf("enforcer: failed to add firewall rule: %w", err)
 	}
@@ -112,61 +115,131 @@ func (e *windowsEnforcer) Sync(activeBlocks map[string][]string) error {
 		return err
 	}
 
+	return e.syncLocked(activeBlocks)
+}
+
+// syncLocked applies a batch of active blocks with a single hosts-file rewrite
+// (one read-modify-write for N domains instead of one write per domain) and a
+// single batched netsh application. The caller must hold e.mu.
+func (e *windowsEnforcer) syncLocked(activeBlocks map[string][]string) error {
 	lines, err := e.readHostsLines()
-	if err == nil {
-		var cleanLines []string
-		for _, line := range lines {
-			if !strings.Contains(line, "# FOCUSGUARD:") {
-				cleanLines = append(cleanLines, line)
-			}
+	if err != nil {
+		return fmt.Errorf("enforcer: failed to read hosts file: %w", err)
+	}
+
+	// Strip stale FOCUSGUARD markers and append the batch's entries in one pass.
+	var newLines []string
+	for _, line := range lines {
+		if !strings.Contains(line, "# FOCUSGUARD:") {
+			newLines = append(newLines, line)
 		}
-		if err := e.writeHostsLines(cleanLines); err != nil {
-			return fmt.Errorf("enforcer: failed to clean hosts file: %w", err)
+	}
+	seen := make(map[string]bool, len(activeBlocks))
+	for domain := range activeBlocks {
+		d, err := sanitizeDomain(domain)
+		if err != nil {
+			return err
 		}
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		newLines = append(newLines, hostEntryLines(d)...)
+	}
+	if err := e.writeHostsLines(newLines); err != nil {
+		return fmt.Errorf("enforcer: failed to sync hosts file: %w", err)
 	}
 
 	existing := e.existingFocusGuardRules()
 
-	for domain, ips := range activeBlocks {
-		if err := e.addHostEntry(domain); err != nil {
-			return fmt.Errorf("enforcer: failed to sync host entry for %s: %w", domain, err)
-		}
-
+	var missing []string
+	for _, ips := range activeBlocks {
 		for _, ip := range dedupeIPs(ips) {
 			if existing[fmt.Sprintf("FocusGuard_%s", ip)] {
 				continue
 			}
-			if err := e.addFirewallRuleUnchecked(ip); err != nil {
-				return fmt.Errorf("enforcer: failed to sync firewall rule for %s: %w", ip, err)
-			}
+			missing = append(missing, ip)
+		}
+	}
+
+	if len(missing) > 0 {
+		if err := e.runNetshAddBatch(missing); err != nil {
+			return fmt.Errorf("enforcer: failed to sync firewall rules: %w", err)
 		}
 	}
 	return nil
 }
 
 // existingFocusGuardRules consults the firewall once and returns the names of
-// every FocusGuard rule already present, so Sync can add only the missing ones.
+// every FocusGuard rule already present, so Sync/block can add only the missing
+// ones.
 func (e *windowsEnforcer) existingFocusGuardRules() map[string]bool {
 	names := make(map[string]bool)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
-	out, err := cmd.Output()
+	cmd := execCommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return names
 	}
-	return parseFocusGuardRuleNames(string(out))
+	return parseFocusGuardRuleNames(out)
 }
 
-func parseFocusGuardRuleNames(output string) map[string]bool {
+// addFirewallRulesBatch applies one FocusGuard rule per IP with a single netsh
+// process fed a script via stdin (1 exec for N IPs instead of one exec per
+// IP). IPs already blocked are skipped.
+func (e *windowsEnforcer) addFirewallRulesBatch(ips []string) error {
+	allIPs := dedupeIPs(ips)
+	if len(allIPs) == 0 {
+		return nil
+	}
+
+	existing := e.existingFocusGuardRules()
+	var missing []string
+	for _, ip := range allIPs {
+		if !existing[fmt.Sprintf("FocusGuard_%s", ip)] {
+			missing = append(missing, ip)
+		}
+	}
+	return e.runNetshAddBatch(missing)
+}
+
+// runNetshAddBatch feeds an add-rule script to a single netsh process via
+// stdin and then verifies the rules actually exist, because netsh can exit 0
+// even when an inner command of the script failed.
+func (e *windowsEnforcer) runNetshAddBatch(ips []string) error {
+	if len(ips) == 0 {
+		return nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	cmd := execCommandContext(ctx, "netsh")
+	cmd.SetStdin(strings.NewReader(buildNetshAddScript(ips)))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("netsh firewall add em lote falhou: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+
+	// netsh pode mascarar falha interna com exit 0: confirma a aplicação real.
+	after := e.existingFocusGuardRules()
+	for _, ip := range ips {
+		if !after[fmt.Sprintf("FocusGuard_%s", ip)] {
+			return fmt.Errorf("netsh firewall add em lote incompleto: regra FocusGuard_%s ausente", ip)
+		}
+	}
+	return nil
+}
+
+func parseFocusGuardRuleNames(output []byte) map[string]bool {
 	names := make(map[string]bool)
-	for _, line := range strings.Split(output, "\n") {
-		idx := strings.Index(line, "FocusGuard")
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		idx := bytes.Index(line, []byte("FocusGuard"))
 		if idx < 0 {
 			continue
 		}
-		name := strings.TrimSpace(line[idx:])
+		name := string(bytes.TrimSpace(line[idx:]))
 		if name != "" {
 			names[name] = true
 		}
@@ -192,12 +265,7 @@ func (e *windowsEnforcer) addHostEntry(domain string) error {
 		}
 	}
 
-	lines = append(lines,
-		fmt.Sprintf("127.0.0.1 %s # FOCUSGUARD: %s", domain, domain),
-		fmt.Sprintf("::1 %s # FOCUSGUARD: %s", domain, domain),
-		fmt.Sprintf("127.0.0.1 www.%s # FOCUSGUARD: %s", domain, domain),
-		fmt.Sprintf("::1 www.%s # FOCUSGUARD: %s", domain, domain),
-	)
+	lines = append(lines, hostEntryLines(domain)...)
 
 	return e.writeHostsLines(lines)
 }
@@ -225,7 +293,7 @@ func (e *windowsEnforcer) removeHostEntry(domain string) error {
 }
 
 func (e *windowsEnforcer) readHostsLines() ([]string, error) {
-	file, err := os.Open(e.hostsPath)
+	data, err := os.ReadFile(e.hostsPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
 			return nil, err
@@ -235,20 +303,13 @@ func (e *windowsEnforcer) readHostsLines() ([]string, error) {
 		if werr := e.writeHostsLines(defaultHostsLines()); werr != nil {
 			return nil, werr
 		}
-		file, err = os.Open(e.hostsPath)
+		data, err = os.ReadFile(e.hostsPath)
 		if err != nil {
 			return nil, err
 		}
 	}
-	defer file.Close()
 
-	var lines []string
-	scanner := bufio.NewScanner(file)
-	for scanner.Scan() {
-		lines = append(lines, scanner.Text())
-	}
-
-	return lines, scanner.Err()
+	return splitHostsLines(data), nil
 }
 
 // defaultHostsLines is the baseline written when the hosts file is missing.
@@ -274,44 +335,12 @@ func (e *windowsEnforcer) writeHostsLines(lines []string) error {
 	return nil
 }
 
-func (e *windowsEnforcer) addFirewallRule(ip string) error {
-	ruleName := fmt.Sprintf("FocusGuard_%s", ip)
-	if e.ruleExists(ruleName) {
-		return nil
-	}
-	return e.addFirewallRuleUnchecked(ip)
-}
-
-func (e *windowsEnforcer) ruleExists(ruleName string) bool {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	return exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...).Run() == nil
-}
-
-func (e *windowsEnforcer) addFirewallRuleUnchecked(ip string) error {
-	ruleName := fmt.Sprintf("FocusGuard_%s", ip)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-
-	addCmd := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "add", "rule",
-		"name="+ruleName,
-		"dir=out",
-		"action=block",
-		"remoteip="+ip)
-
-	if out, err := addCmd.CombinedOutput(); err != nil {
-		return fmt.Errorf("netsh firewall add falhou: %w (%s)", err, strings.TrimSpace(string(out)))
-	}
-
-	return nil
-}
-
 func (e *windowsEnforcer) removeFirewallRule(ip string) error {
 	ruleName := fmt.Sprintf("FocusGuard_%s", ip)
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
+	cmd := execCommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
 	if out, err := cmd.CombinedOutput(); err != nil {
 		outStr := string(out)
 		if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
@@ -334,47 +363,23 @@ func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	// G3: consulta focada — apenas as regras FocusGuard*, em vez de despejar
-	// todas as regras do firewall e filtrar o dump inteiro em Go.
-	ps := exec.CommandContext(ctx, "powershell", "-NoProfile", "-Command",
-		"Get-NetFirewallRule -Name 'FocusGuard*' | Select-Object -ExpandProperty Name")
-	if out, err := ps.Output(); err == nil {
-		return countFocusGuardNames(string(out)), nil
-	}
-
-	// Fallback para ambientes sem PowerShell: dump completo via netsh.
-	fallback := exec.CommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
-	out, err := fallback.Output()
+	// Consulta nativa via netsh (sem PowerShell): todas as regras FocusGuard
+	// são dir=out, então o filtro por direção reduz o dump a ser parseado.
+	cmd := execCommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all", "dir=out")
+	out, err := cmd.CombinedOutput()
 	if err != nil {
 		return EnforcerStatus{}, fmt.Errorf("netsh show rules falhou: %w", err)
 	}
-	return countFocusGuardRules(string(out)), nil
+	return countFocusGuardRules(out), nil
 }
 
-// countFocusGuardNames conta as regras FocusGuard a partir da saída do
-// PowerShell (um nome por linha).
-func countFocusGuardNames(output string) EnforcerStatus {
-	status := EnforcerStatus{}
-	for _, line := range strings.Split(output, "\n") {
-		name := strings.TrimSpace(line)
-		if !strings.HasPrefix(name, "FocusGuard_") {
-			continue
-		}
-		status.FirewallRules++
-		if strings.Contains(name, "FocusGuard_DoH_") || strings.Contains(name, "FocusGuard_DoT_") {
-			status.DoHActive = true
-		}
-	}
-	return status
-}
-
-func countFocusGuardRules(output string) EnforcerStatus {
+func countFocusGuardRules(output []byte) EnforcerStatus {
 	status := EnforcerStatus{}
 
-	for _, line := range strings.Split(output, "\n") {
-		if strings.Contains(line, "FocusGuard") {
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		if bytes.Contains(line, []byte("FocusGuard")) {
 			status.FirewallRules++
-			if strings.Contains(line, "FocusGuard_DoH_") || strings.Contains(line, "FocusGuard_DoT_") {
+			if bytes.Contains(line, []byte("FocusGuard_DoH_")) || bytes.Contains(line, []byte("FocusGuard_DoT_")) {
 				status.DoHActive = true
 			}
 		}

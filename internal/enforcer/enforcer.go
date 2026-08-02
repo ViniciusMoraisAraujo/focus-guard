@@ -1,9 +1,13 @@
 package enforcer
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
+	"os/exec"
 	"strings"
 )
 
@@ -44,17 +48,34 @@ var DoHProviders = []DoHProvider{
 }
 
 type lookupFunc func(host string) ([]net.IP, error)
+type lookupFuncCtx func(ctx context.Context, host string) ([]net.IP, error)
 
 func ResolveIPs(domain string) ([]string, error) {
 	return resolveIPs(domain, net.LookupIP)
 }
 
+// ResolveIPsContext resolves a domain honoring a caller-provided context, so
+// DNS lookups can be cancelled or bounded by a timeout (net.LookupIP has no
+// context variant). The DefaultResolver.LookupIP method is wrapped because it
+// takes a network argument.
+func ResolveIPsContext(ctx context.Context, domain string) ([]string, error) {
+	return resolveIPsCtx(ctx, domain, func(ctx context.Context, host string) ([]net.IP, error) {
+		return net.DefaultResolver.LookupIP(ctx, "ip", host)
+	})
+}
+
 func resolveIPs(domain string, lookup lookupFunc) ([]string, error) {
+	return resolveIPsCtx(context.Background(), domain, func(_ context.Context, host string) ([]net.IP, error) {
+		return lookup(host)
+	})
+}
+
+func resolveIPsCtx(ctx context.Context, domain string, lookup lookupFuncCtx) ([]string, error) {
 	cleaned := strings.TrimPrefix(domain, "http://")
 	cleaned = strings.TrimPrefix(cleaned, "https://")
 	cleaned = strings.Split(cleaned, "/")[0]
 
-	ips, err := lookup(cleaned)
+	ips, err := lookup(ctx, cleaned)
 	if err != nil {
 		return nil, fmt.Errorf("failed to resolve IPs for domain %s: %v", domain, err)
 	}
@@ -71,6 +92,35 @@ func resolveIPs(domain string, lookup lookupFunc) ([]string, error) {
 	}
 
 	return ipStrings, nil
+}
+
+// splitHostsLines splits hosts content into lines without per-line string
+// allocations before they are needed. It operates on []byte and strips a
+// trailing \r from CRLF endings (matching bufio.Scanner.ScanLines), and drops
+// the empty element a final \n would otherwise produce.
+func splitHostsLines(data []byte) []string {
+	raw := bytes.Split(data, []byte("\n"))
+	lines := make([]string, 0, len(raw))
+	for _, line := range raw {
+		line = bytes.TrimSuffix(line, []byte("\r"))
+		lines = append(lines, string(line))
+	}
+	if n := len(lines); n > 0 && lines[n-1] == "" {
+		lines = lines[:n-1]
+	}
+	return lines
+}
+
+// hostEntryLines returns the four hosts entries used to block a domain (IPv4
+// and IPv6 for the domain and its www subdomain), each tagged with the
+// FOCUSGUARD marker for idempotent removal.
+func hostEntryLines(domain string) []string {
+	return []string{
+		fmt.Sprintf("127.0.0.1 %s # FOCUSGUARD: %s", domain, domain),
+		fmt.Sprintf("::1 %s # FOCUSGUARD: %s", domain, domain),
+		fmt.Sprintf("127.0.0.1 www.%s # FOCUSGUARD: %s", domain, domain),
+		fmt.Sprintf("::1 www.%s # FOCUSGUARD: %s", domain, domain),
+	}
 }
 
 // sanitizeDomain cleans a user-supplied domain before it is written to the
@@ -132,20 +182,78 @@ func dedupeIPs(ips []string) []string {
 	return result
 }
 
-// applyBlockRules applies addRule to each IP, tracking the ones already applied.
-// On the first failure it best-effort removes every rule applied so far and
-// returns the error, so a partially failed block never leaves zombie firewall
-// rules behind.
-func applyBlockRules(ips []string, addRule, removeRule func(string) error) error {
-	added := make([]string, 0, len(ips))
+// groupIPsByFamily splits IPs into IPv4 and IPv6 lists so each family can be
+// handled by the right firewall binary in a single batched invocation.
+func groupIPsByFamily(ips []string) (v4, v6 []string) {
 	for _, ip := range ips {
-		if err := addRule(ip); err != nil {
-			for _, done := range added {
-				_ = removeRule(done)
-			}
-			return err
+		parsed := net.ParseIP(ip)
+		if parsed == nil {
+			continue
 		}
-		added = append(added, ip)
+		if parsed.To4() != nil {
+			v4 = append(v4, ip)
+		} else {
+			v6 = append(v6, ip)
+		}
 	}
-	return nil
+	return v4, v6
+}
+
+// buildRestoreScript renders the stdin payload for iptables-restore/ip6tables
+// --noflush: a *filter header, one -A OUTPUT DROP line per IP (with the family
+// mask, matching the iptables-save format) and a COMMIT footer.
+//
+// Chain policy lines (e.g. ":OUTPUT ACCEPT [0:0]") are intentionally NOT
+// emitted: under --noflush they would reset the chain policy/counters, which
+// could clobber a hardened OUTPUT DROP policy. Omitting them appends rules to
+// the existing built-in chain without touching its policy.
+func buildRestoreScript(ips []string, mask string) string {
+	var b strings.Builder
+	b.WriteString("*filter\n")
+	for _, ip := range ips {
+		b.WriteString("-A OUTPUT -d ")
+		b.WriteString(ip)
+		b.WriteString(mask)
+		b.WriteString(" -j DROP\n")
+	}
+	b.WriteString("COMMIT\n")
+	return b.String()
+}
+
+// buildNetshAddScript renders the script fed to a single netsh process via
+// stdin: one full-context add rule line per IP (netsh scripting needs the
+// advfirewall firewall context on every line) followed by exit.
+func buildNetshAddScript(ips []string) string {
+	var b strings.Builder
+	for _, ip := range ips {
+		b.WriteString("advfirewall firewall add rule name=FocusGuard_")
+		b.WriteString(ip)
+		b.WriteString(" dir=out action=block remoteip=")
+		b.WriteString(ip)
+		b.WriteString("\r\n")
+	}
+	b.WriteString("exit\r\n")
+	return b.String()
+}
+
+// execCommandContext is an indirection for firewall command execution so tests
+// can stub iptables/netsh without root/admin privileges.
+var execCommandContext = func(ctx context.Context, name string, args ...string) cmdRunner {
+	return &execCmd{Cmd: exec.CommandContext(ctx, name, args...)}
+}
+
+// cmdRunner is the subset of *exec.Cmd used by the enforcer. SetStdin feeds a
+// batch script (iptables-restore / netsh) to the process.
+type cmdRunner interface {
+	SetStdin(r io.Reader)
+	CombinedOutput() ([]byte, error)
+}
+
+// execCmd adapts *exec.Cmd to the cmdRunner interface.
+type execCmd struct {
+	*exec.Cmd
+}
+
+func (c *execCmd) SetStdin(r io.Reader) {
+	c.Cmd.Stdin = r
 }
