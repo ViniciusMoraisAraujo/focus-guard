@@ -19,6 +19,11 @@
 - 🐳 **Systemd Watchdog** — Suporte a health check via `NOTIFY_SOCKET`
 - 🪟 **Serviço Windows nativo** — Roda como serviço Windows sem console visível
 - 👁️ **File Watcher** — Monitora `/etc/hosts` e o `state.json` em tempo real com `fsnotify`, detecta adulterações via SHA-256 e restaura automaticamente
+- 🍅 **Pomodoro e presets** — ciclos de trabalho/descanso por categoria (`social`, `video`, `news`, `games`); presets personalizados via `preset add/remove`
+- 🎯 **Metas diárias e streak** — define uma meta de foco diária (`goal set 4h`); o `stats` mostra a sequência de dias consecutivos com foco
+- ⏰ **Agendamento recorrente** — bloqueia categorias em horários fixos dos dias da semana (`schedule add --days seg,ter,qua --start 08:00 --end 12:00`)
+- 🚨 **Modo pânico e allowlist** — `block --internet` corta toda a internet de uma vez, com `--allow` para manter ferramentas de trabalho acessíveis
+- 📊 **Analytics com export** — `stats` com gráfico ASCII, streak e exportação para CSV/JSON (`--export`)
 
 ---
 
@@ -214,6 +219,59 @@ focusguard interactive
 focusguard              # (sem argumentos também abre a TUI)
 ```
 
+#### Bloqueio por categoria e modo pânico (v0.4.0+)
+
+```bash
+# Bloquear uma categoria inteira (presets embutidos e personalizados)
+focusguard presets                          # listar as categorias disponíveis
+focusguard block --preset social --duration 2h
+
+# Modo pânico: bloquear TODA a internet por um período
+focusguard block --internet --duration 30m
+
+# Modo pânico com allowlist: só os domínios permitidos continuam acessíveis
+focusguard block --internet --allow docs.google.com,drive.google.com --duration 2h
+```
+
+#### Presets personalizados (v0.4.0+)
+
+```bash
+# Criar um preset próprio e usá-lo em block/pomodoro/schedule
+focusguard preset add estudos github.com stackoverflow.com docs.google.com
+focusguard block --preset estudos --duration 4h
+
+# Remover um preset personalizado (embutidos não podem ser removidos)
+focusguard preset remove estudos
+```
+
+#### Agendamento recorrente (v0.4.0+)
+
+```bash
+# Bloquear "social" de segunda a sexta, das 08:00 às 12:00
+focusguard schedule add --preset social --days seg,ter,qua,qui,sex --start 08:00 --end 12:00 --label "Manhã de foco"
+
+# Dias aceitam inglês ou português: mon,tue,wed / seg,ter,qua
+focusguard schedule list                  # listar regras
+focusguard schedule remove <id>           # remover uma regra
+```
+
+#### Metas, pomodoro e analytics (v0.4.0+)
+
+```bash
+# Meta diária de foco
+focusguard goal set 4h                    # definir meta (ex: 4h, 90m)
+focusguard goal                           # consultar a meta
+
+# Sessão pomodoro sobre uma categoria (25min trabalho + 5min descanso × 4 ciclos)
+focusguard pomodoro --preset social --work 25 --rest 5 --cycles 4 --strict
+focusguard pomodoro-stop                  # encerrar a sessão (não funciona em --strict)
+
+# Relatório de foco: gráfico ASCII + streak + exportação
+focusguard stats                          # gráfico de foco (30 dias)
+focusguard stats --export csv > focusguard-stats.csv      # exportar CSV
+focusguard stats --export json > focusguard-stats.json    # exportar JSON
+```
+
 > ⚠️ O daemon (`focusguard-daemon`) precisa estar rodando para que `block` e `status` funcionem.
 
 ### Makefile
@@ -262,11 +320,31 @@ focusguard/
 │   │   ├── enforcer_windows.go    # Implementação Windows (hosts + netsh)
 │   │   └── *test.go
 │   ├── scheduler/                 # Gerenciamento de timers e expiração
-│   │   ├── scheduler.go           # Block, timer, refresh periódico de IPs
+│   │   ├── scheduler.go           # Block, BlockAllInternet, timer, refresh periódico
 │   │   └── scheduler_test.go
 │   ├── hostswatch/                # File watcher para /etc/hosts
 │   │   ├── hostswatch.go          # Monitora alterações com fsnotify, reaplica bloqueios
 │   │   └── hostswatch_test.go
+│   ├── preset/                    # Catálogo de presets (builtin + personalizados)
+│   │   ├── preset.go              # Store persistente: social, video, news, games + custom
+│   │   └── preset_test.go
+│   ├── schedule/                  # Agendamento recorrente
+│   │   ├── schedule.go            # Regras por dia/horário, persistência, worker de aplicação
+│   │   └── schedule_test.go
+│   ├── pomodoro/                  # Sessões de foco em ciclos trabalho/descanso
+│   │   ├── pomodoro.go            # Controller sobre o scheduler (work/rest/cycles, --strict)
+│   │   └── pomodoro_test.go
+│   ├── goal/                      # Meta diária de foco
+│   │   ├── goal.go                # Store persistente (goal.json)
+│   │   └── goal_test.go
+│   ├── analytics/                 # Histórico de sessões (JSONL)
+│   │   ├── analytics.go           # Recorder, Summarize, streak, RenderStats, ExportCSV/JSON
+│   │   └── analytics_test.go
+│   ├── processguard/              # Encerra processos da denylist (steam/discord)
+│   │   ├── processguard.go        # Scan periódico enquanto houver sessão ativa
+│   │   └── processguard_test.go
+│   ├── recovery/                  # Smart Recovery: rollback pós-update no watchdog
+│   │   └── recovery.go            # Restaura .bak se o daemon novo crashar no boot
 │   ├── ipc/                       # Comunicação cliente-servidor
 │   │   ├── ipc.go                 # Request/Response (JSON sobre Unix socket)
 │   │   ├── client.go              # Cliente IPC
@@ -275,7 +353,7 @@ focusguard/
 │   │   ├── ipc_windows.go         # Unix socket (%PROGRAMDATA%/FocusGuard/)
 │   │   └── *test.go
 │   ├── tui/                       # Interface interativa (Bubble Tea)
-│   │   ├── tui.go                 # Modelo TUI com tabela + formulário
+│   │   ├── tui.go                 # Modelo TUI com tabela + formulário + meta diária
 │   │   └── tui_test.go
 │   └── watchdog/                  # Systemd watchdog
 │       ├── watchdog.go            # Notificações via NOTIFY_SOCKET
@@ -344,6 +422,19 @@ Interface interativa construída com [Bubble Tea](https://github.com/charmbracel
 |---------|-----------|
 | `focusguard` | Abre modo interativo (TUI) |
 | `focusguard block <domínio> --duration <tempo>` | Bloqueia um domínio |
+| `focusguard block --preset <categoria> --duration <tempo>` | Bloqueia uma categoria inteira |
+| `focusguard block --internet [--allow <d1,d2>] --duration <tempo>` | Modo pânico: bloqueia toda a internet (com allowlist opcional) |
+| `focusguard presets` | Lista as categorias de bloqueio disponíveis |
+| `focusguard preset add <nome> <dominio...>` | Cria um preset personalizado |
+| `focusguard preset remove <nome>` | Remove um preset personalizado |
+| `focusguard schedule add --preset <cat> --days <dias> --start HH:MM --end HH:MM` | Cria um agendamento recorrente |
+| `focusguard schedule list` | Lista os agendamentos |
+| `focusguard schedule remove <id>` | Remove um agendamento |
+| `focusguard pomodoro --preset <cat> [--work 25] [--rest 5] [--cycles 4] [--strict]` | Sessão pomodoro (ciclos trabalho/descanso) |
+| `focusguard pomodoro-stop` | Encerra a sessão pomodoro |
+| `focusguard goal set <duração>` | Define a meta diária de foco (ex: 4h) |
+| `focusguard goal` | Consulta a meta diária |
+| `focusguard stats [--export csv\|json]` | Relatório de foco em ASCII, com exportação |
 | `focusguard status` | Lista bloqueios ativos |
 | `focusguard install` | Instala daemon como serviço de inicialização |
 | `focusguard uninstall` | Remove daemon da inicialização |
@@ -440,6 +531,35 @@ Interface para aplicação de regras no sistema operacional:
 | Linux | `enforcer_linux.go` | `iptables`/`ip6tables` | `/etc/hosts` |
 | Windows | `enforcer_windows.go` | `netsh advfirewall` | `C:\Windows\System32\drivers\etc\hosts` |
 
+- **`BlockAll`/`UnblockAll` (v0.4.0)** — regra *catch-all* que corta toda a
+  internet: `REJECT --reject-with tcp-reset` no Linux e bloqueio de qualquer
+  endereço no Windows. Sustenta o modo pânico (`block --internet`) e a
+  allowlist (os IPs permitidos continuam acessíveis e não têm sockets derrubados).
+
+### Presets (`internal/preset/`)
+
+Catálogo de categorias persistido ao lado do state.json:
+- **Embutidos** — `social`, `video`, `news` e `games` (não removíveis)
+- **Personalizados** — `focusguard preset add/remove`, usados em `block
+  --preset`, `pomodoro --preset` e `schedule add --preset`
+
+### Agendamento (`internal/schedule/`)
+
+Regras recorrentes de bloqueio por dia da semana e horário:
+- Janelas de trabalho/descanso com suporte a horários **overnight**
+  (`start 22:00 → end 06:00`)
+- Worker no daemon reavalia as regras a cada 30s (e no boot) e aplica as
+  janelas vencidas via `ApplyActiveRules` (idempotente)
+- Persistência em `schedules.json`; IPC `schedule-add/list/remove`
+
+### Metas e Analytics (`internal/goal/` + `internal/analytics/`)
+
+- **Meta diária** — `goal.json` define a meta (ex: 4h/dia); exibida no `status`
+  e na TUI
+- **Streak** — dias consecutivos com foco, calculado por `ComputeStreak`
+- **Exportação** — `ExportCSV`/`ExportJSON` alimentam o `stats --export`
+  (`focusguard-stats.csv`/`.json`)
+
 ### IPC (`internal/ipc/`)
 
 Comunicação entre CLI e Daemon via Unix socket:
@@ -483,9 +603,15 @@ go test ./internal/scheduler/... -v
 | `ipc` | Listen/Dial, server handleConnection, invalid JSON, unsupported action |
 | `scheduler` | Block/List, boot reconciliation, timer expiration, periodic IP refresh |
 | `hostswatch` | New, detectTamper (intact, missing, partial), Start/Stop, eventLoop, debounce |
+| `preset` | Store persistente, builtin não removíveis, add/remove com validação |
+| `schedule` | Regras, validação de dias/horários, janelas overnight, persistência, ApplyActiveRules |
+| `pomodoro` | Ciclos work/rest, expiração automática, sessão estrita (--strict) |
+| `goal` | Set/Get persistido, validação de duração |
+| `analytics` | Recorder JSONL, Summarize, streak, RenderStats, ExportCSV/JSON, linhas corrompidas puladas |
+| `recovery` | FindRecentBackup, ShouldRollBack, RestoreFromBackup, RecoverIfNeeded |
 | `watchdog` | New() config, sendNotification, Start() com health check |
-| `tui` | Model Init/Update/View, key handling, state transitions, messages |
-| `cmd/focusguard` | printUsage, handleBlockCommand, handleStatusCommand, main com flags, runInteractive |
+| `tui` | Model Init/Update/View, key handling, state transitions, messages, meta diária |
+| `cmd/focusguard` | printUsage, handleBlockCommand (domínio/preset/internet), schedule add/list/remove, preset add/remove, goal set/get, stats --export, main com flags, runInteractive |
 
 ---
 
