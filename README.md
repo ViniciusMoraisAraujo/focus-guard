@@ -39,9 +39,22 @@ go build -o bin/focusguard-daemon.exe ./cmd/focusguard-daemon
 
 ## Instalação
 
+### 📦 Localização dos arquivos (v0.3.0+)
+
+| Plataforma | Binários (pasta protegida) | Estado |
+|------------|----------------------------|--------|
+| 🐧 Linux | `/opt/focusguard/` (root:root) | `/var/lib/focusguard/` |
+| 🪟 Windows | `C:\Program Files\FocusGuard\` | `C:\ProgramData\FocusGuard\` |
+
+> Os binários vivem numa **pasta protegida**, fora do alcance do usuário
+> comum — sem permissão de escrita no diretório, não há exclusão acidental.
+> A pasta do pacote extraído pode ser apagada após a instalação; para
+> remover o FocusGuard use o desinstalador (`install-linux.sh uninstall` /
+> `install-daemon.ps1 uninstall`).
+
 ### Windows — Serviço nativo
 
-O daemon roda como um **serviço Windows legítimo** (gerenciado pelo Service Control Manager), sem console visível.
+O daemon roda como um **serviço Windows legítimo** (gerenciado pelo Service Control Manager), sem console visível. Os executáveis são copiados para **`C:\Program Files\FocusGuard\`** (ACL padrão: o usuário comum só tem leitura/execução).
 
 #### Via CLI (recomendado)
 
@@ -50,7 +63,7 @@ O daemon roda como um **serviço Windows legítimo** (gerenciado pelo Service Co
 .\bin\focusguard.exe install
 ```
 
-Isso cria o serviço, copia os binários e inicia o daemon automaticamente.
+Isso cria o serviço apontando para `C:\Program Files\FocusGuard\focusguard-daemon.exe` e inicia o daemon automaticamente.
 
 #### Via PowerShell script
 
@@ -59,11 +72,13 @@ Isso cria o serviço, copia os binários e inicia o daemon automaticamente.
 .\scripts\install-daemon.ps1 install
 ```
 
+O script copia os 4 executáveis para `C:\Program Files\FocusGuard\`, registra o serviço, cria o atalho do Desktop e inicia o daemon.
+
 #### Manualmente com `sc.exe`
 
 ```powershell
 # Como Administrador:
-sc create FocusGuard binPath="C:\caminho\completo\focusguard-daemon.exe" start=auto displayname="FocusGuard Daemon"
+sc create FocusGuard binPath="C:\Program Files\FocusGuard\focusguard-daemon.exe" start=auto displayname="FocusGuard Daemon"
 sc start FocusGuard
 ```
 
@@ -91,8 +106,15 @@ sc delete FocusGuard
 
 ### Linux — Systemd
 
+Os binários são instalados em **`/opt/focusguard/`** (root:root, pasta
+protegida); a CLI fica disponível via symlink em `/usr/local/bin/focusguard`.
+A unit systemd aponta para `/opt/focusguard/focusguard-daemon`.
+
 ```bash
-# Via CLI (recomendado)
+# Via instalador (recomendado — instala no /opt/focusguard e migra layouts antigos)
+sudo ./install-linux.sh install
+
+# Via CLI
 sudo make install
 # ou
 sudo ./bin/focusguard install
@@ -104,13 +126,16 @@ systemctl status focusguard
 sudo systemctl stop focusguard
 
 # Remover
+sudo ./install-linux.sh uninstall
+# ou
 sudo make uninstall
 ```
 
 #### Manualmente
 
 ```bash
-# Copiar service file
+# Copiar service file (o unit aponta para /opt/focusguard/focusguard-daemon —
+# prefira o ./install-linux.sh, que instala os binários no lugar certo)
 sudo cp scripts/focusguard.service /etc/systemd/system/
 sudo systemctl daemon-reload
 sudo systemctl enable focusguard
@@ -127,8 +152,8 @@ Cada release publicada no GitHub contém apenas os arquivos essenciais por plata
 
 | Plataforma | Arquivo | Conteúdo |
 |------------|---------|----------|
-| 🪟 Windows | `focusguard_<versão>_windows_<arch>.zip` | Apenas os executáveis: `focusguard.exe`, `focusguard-daemon.exe`, `focusguard-watchdog.exe` |
-| 🐧 Linux | `focusguard_<versão>_linux_<arch>.tar.gz` | Binários + `focusguard.service` + `install-linux.sh` |
+| 🪟 Windows | `focusguard_<versão>_windows_<arch>.zip` | Executáveis (`focusguard.exe`, `focusguard-daemon.exe`, `focusguard-watchdog.exe`, `focusguard-tray.exe`) + `install-daemon.ps1` + `install.txt` |
+| 🐧 Linux | `focusguard_<versão>_linux_<arch>.tar.gz` | Binários + `focusguard.service` + `install-linux.sh` + `install.txt` |
 
 **Windows:**
 
@@ -136,7 +161,7 @@ Cada release publicada no GitHub contém apenas os arquivos essenciais por plata
 # Como Administrador
 Expand-Archive focusguard_1.0.0_windows_amd64.zip -DestinationPath focusguard
 cd focusguard
-.\focusguard.exe install
+.\install-daemon.ps1 install   # copia para C:\Program Files\FocusGuard e inicia o serviço
 ```
 
 **Linux:**
@@ -144,7 +169,7 @@ cd focusguard
 ```bash
 tar -xzf focusguard_1.0.0_linux_amd64.tar.gz
 cd focusguard_1.0.0_linux_amd64
-sudo ./install-linux.sh install
+sudo ./install-linux.sh install   # binários em /opt/focusguard (pasta protegida)
 
 # Remover
 sudo ./install-linux.sh uninstall
