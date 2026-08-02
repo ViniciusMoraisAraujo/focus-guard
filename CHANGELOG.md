@@ -7,6 +7,37 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-08-02
+
+### 📦 Instalação em pasta protegida (anti-exclusão acidental)
+
+- **Linux — `/opt/focusguard`** — os 4 binários (focusguard, focusguard-daemon,
+  focusguard-watchdog e focusguard-tray) passam a viver em `/opt/focusguard`
+  (root:root 0755), pasta padrão do FHS para aplicativos de terceiros, fora do
+  alcance do usuário comum: sem permissão de escrita no diretório, não há
+  exclusão acidental. A CLI continua no PATH via symlink
+  (`/usr/local/bin/focusguard`) — apagar o symlink não derruba nada, pois a
+  unit systemd, o autostart do tray e o atalho do Desktop usam caminhos
+  absolutos da pasta protegida.
+- **Windows — `C:\Program Files\FocusGuard`** — o instalador agora COPIA os 4
+  executáveis (daemon, CLI, watchdog e tray) para o Program Files, cuja ACL
+  padrão dá ao usuário comum apenas leitura/execução (impossível excluir por
+  acidente). O serviço é registrado apontando para lá e o atalho do Desktop
+  mira o CLI da pasta protegida — o zip extraído vira um instalador
+  descartável. `ProgramW6432` evita o redirect 32-bit; o uninstall remove a
+  pasta. Chamadas `sc` → `sc.exe` explícitas (evita o alias Set-Content do
+  PowerShell na criação do serviço).
+- **Migração automática (Linux)** — instalações antigas (≤ 0.2.9) que ficavam
+  em `/usr/local/bin` são detectadas e o layout migra para `/opt/focusguard`:
+  a unit é reescrita com o novo `ExecStart` e o serviço reinicia no binário da
+  pasta protegida.
+- **Sem mudança de código Go** — todos os caminhos (CLI, daemon, watchdog,
+  tray) são resolvidos dinamicamente via `os.Executable()` + irmãos no mesmo
+  diretório; basta os 4 binários ficarem juntos na pasta protegida para o
+  update multi-binário e o Smart Recovery continuarem funcionando.
+- `install.txt` atualizado com os novos caminhos e a nota de que o pacote
+  extraído pode ser excluído após a instalação.
+
 ## [0.2.8] - 2026-08-02
 
 ### 🔀 Canais de atualização (beta vs. stable)

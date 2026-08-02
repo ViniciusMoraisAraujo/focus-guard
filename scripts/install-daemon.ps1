@@ -10,6 +10,13 @@ param(
 $ServiceName = "FocusGuard"
 $StateDir = "$env:PROGRAMDATA\FocusGuard"
 
+# Pasta protegida: os binários vivem em Program Files, cuja ACL padrão dá ao
+# usuário comum apenas leitura+execução — não é possível excluir por acidente
+# (o zip extraído vira um simples instalador descartável). ProgramW6432 evita
+# o redirect 32-bit que apontaria para "Program Files (x86)".
+$ProgramFilesDir = if ($env:ProgramW6432) { $env:ProgramW6432 } else { $env:ProgramFiles }
+$InstallDir = Join-Path $ProgramFilesDir "FocusGuard"
+
 # Get-CliExePath localiza o focusguard.exe (CLI) ao lado do daemon — é o alvo
 # do atalho do Desktop e quem carrega o ícone embedado via go-winres.
 # NOTA: NÃO reutiliza $ExePath de propósito — esse parâmetro é o caminho do
@@ -63,28 +70,49 @@ function Install-Daemon {
         Write-Host "[FocusGuard] Diretório de estado criado: $StateDir" -ForegroundColor Green
     }
 
-    $existing = sc query $ServiceName 2>$null
+    # Copia a suíte inteira (daemon, CLI, watchdog, tray) para a pasta
+    # protegida. O serviço, o atalho e os comandos install-tray/watchdog usam
+    # caminhos relativos ao executável, então tudo precisa viver junto ali.
+    if (-not (Test-Path $InstallDir)) {
+        New-Item -ItemType Directory -Path $InstallDir -Force | Out-Null
+    }
+    $srcDir = Split-Path -Parent $exe
+    $copied = $false
+    foreach ($name in @("focusguard.exe", "focusguard-daemon.exe", "focusguard-watchdog.exe", "focusguard-tray.exe")) {
+        $src = Join-Path $srcDir $name
+        if (Test-Path $src) {
+            Copy-Item $src -Destination $InstallDir -Force
+            $copied = $true
+        }
+    }
+    if ($copied) {
+        Write-Host "[FocusGuard] ✔ Binários copiados para a pasta protegida: $InstallDir" -ForegroundColor Green
+        Write-Host "[FocusGuard]   (pode excluir a pasta do zip extraído com segurança)" -ForegroundColor Gray
+    }
+    $exe = Join-Path $InstallDir "focusguard-daemon.exe"
+
+    $existing = sc.exe query $ServiceName 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[FocusGuard] Serviço '$ServiceName' já existe. Removendo..." -ForegroundColor Yellow
-        sc stop $ServiceName 2>$null | Out-Null
-        sc delete $ServiceName | Out-Null
+        sc.exe stop $ServiceName 2>$null | Out-Null
+        sc.exe delete $ServiceName | Out-Null
         Start-Sleep -Seconds 2
     }
 
-    sc create $ServiceName binPath=$exe start=auto displayname="FocusGuard Daemon"
+    sc.exe create $ServiceName binPath=$exe start=auto displayname="FocusGuard Daemon"
     if ($LASTEXITCODE -eq 0) {
         # Recovery automática: o daemon se auto-reinicia após aplicar um update
         # (exit code 1 — ver restartAfterUpdate). O SCM só sobe o serviço de
         # novo se a recovery estiver configurada: restart em 5s, 10s e 30s.
-        sc failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+        sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
         Write-Host "[FocusGuard] ✔ Serviço Windows '$ServiceName' instalado com sucesso!" -ForegroundColor Green
         Write-Host "[FocusGuard] O daemon iniciará automaticamente na inicialização do sistema." -ForegroundColor Cyan
         Write-Host "[FocusGuard] Recovery configurada: o daemon reinicia sozinho após atualização." -ForegroundColor Cyan
-        sc start $ServiceName | Out-Null
+        sc.exe start $ServiceName | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[FocusGuard] ✔ Daemon iniciado!" -ForegroundColor Green
         } else {
-            Write-Host "[FocusGuard] ⚠ Serviço instalado. Inicie manualmente com: sc start $ServiceName" -ForegroundColor Yellow
+            Write-Host "[FocusGuard] ⚠ Serviço instalado. Inicie manualmente com: sc.exe start $ServiceName" -ForegroundColor Yellow
         }
     } else {
         Write-Host "[FocusGuard] ✘ Falha ao criar serviço Windows. Execute como Administrador." -ForegroundColor Red
@@ -93,18 +121,18 @@ function Install-Daemon {
 }
 
 function Uninstall-Daemon {
-    $existing = sc query $ServiceName 2>$null
+    $existing = sc.exe query $ServiceName 2>$null
     if ($LASTEXITCODE -ne 0) {
         Write-Host "[FocusGuard] Serviço '$ServiceName' não está instalado." -ForegroundColor Yellow
         return
     }
 
     Write-Host "[FocusGuard] Parando serviço '$ServiceName'..." -ForegroundColor Cyan
-    sc stop $ServiceName 2>$null | Out-Null
+    sc.exe stop $ServiceName 2>$null | Out-Null
     Start-Sleep -Seconds 2
 
     Write-Host "[FocusGuard] Removendo serviço '$ServiceName'..." -ForegroundColor Cyan
-    sc delete $ServiceName | Out-Null
+    sc.exe delete $ServiceName | Out-Null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[FocusGuard] ✔ Serviço removido com sucesso!" -ForegroundColor Green
     } else {
@@ -118,13 +146,23 @@ function Uninstall-Daemon {
     }
 
     Remove-DesktopShortcut
+
+    if (Test-Path $InstallDir) {
+        Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
+        Write-Host "[FocusGuard] ✔ Pasta de instalação removida: $InstallDir" -ForegroundColor Green
+    }
 }
 
 # Install-DesktopShortcut cria um atalho .lnk no Desktop apontando para o
 # focusguard.exe (CLI), com o ícone embedado no próprio executável via
 # go-winres (IconLocation=focusguard.exe,0). Best-effort: falha não aborta.
 function Install-DesktopShortcut {
-    $cli = Get-CliExePath
+    # Prefere o CLI da pasta protegida (Program Files); o do zip extraído é o
+    # fallback para quem rodou o script sem copiar os binários.
+    $cli = Join-Path $InstallDir "focusguard.exe"
+    if (-not (Test-Path $cli)) {
+        $cli = Get-CliExePath
+    }
     if (-not $cli) {
         Write-Host "[FocusGuard] Aviso: focusguard.exe não encontrado. Atalho do Desktop não criado." -ForegroundColor Yellow
         return
@@ -163,10 +201,10 @@ function Remove-DesktopShortcut {
 }
 
 function Get-Status {
-    $existing = sc query $ServiceName 2>$null
+    $existing = sc.exe query $ServiceName 2>$null
     if ($LASTEXITCODE -eq 0) {
         Write-Host "[FocusGuard] ✔ Daemon instalado como serviço Windows." -ForegroundColor Green
-        sc query $ServiceName 2>$null | Select-String "STATE","START_TYPE" -SimpleMatch
+        sc.exe query $ServiceName 2>$null | Select-String "STATE","START_TYPE" -SimpleMatch
     } else {
         Write-Host "[FocusGuard] ✘ Daemon não está instalado como serviço." -ForegroundColor Yellow
         Write-Host "[FocusGuard] Execute 'install-daemon.ps1 install' (como Administrador) para instalar." -ForegroundColor Cyan

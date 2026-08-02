@@ -1,7 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-BIN_DIR="/usr/local/bin"
+# INSTALL_DIR é a pasta protegida onde ficam os binários (root:root 0755, fora
+# do alcance do usuário comum — evita exclusão acidental). SYMLINK_DIR guarda
+# apenas o symlink da CLI para o comando continuar disponível no PATH.
+INSTALL_DIR="/opt/focusguard"
+SYMLINK_DIR="/usr/local/bin"
 SERVICE_NAME="focusguard"
 SERVICE_FILE="/etc/systemd/system/${SERVICE_NAME}.service"
 STATE_DIR="/var/lib/focusguard"
@@ -33,14 +37,40 @@ install_binaries() {
     exit 1
   fi
 
-  echo "[FocusGuard] Instalando binários em ${BIN_DIR}..."
-  install -m 0755 "${dir}/focusguard" "${BIN_DIR}/focusguard"
-  install -m 0755 "${dir}/focusguard-daemon" "${BIN_DIR}/focusguard-daemon"
-  install -m 0755 "${dir}/focusguard-watchdog" "${BIN_DIR}/focusguard-watchdog"
+  echo "[FocusGuard] Criando pasta protegida ${INSTALL_DIR} (root:root)..."
+  install -d -m 0755 -o root -g root "${INSTALL_DIR}"
+
+  echo "[FocusGuard] Instalando binários em ${INSTALL_DIR}..."
+  install -m 0755 "${dir}/focusguard" "${INSTALL_DIR}/focusguard"
+  install -m 0755 "${dir}/focusguard-daemon" "${INSTALL_DIR}/focusguard-daemon"
+  install -m 0755 "${dir}/focusguard-watchdog" "${INSTALL_DIR}/focusguard-watchdog"
   if [[ -f "${dir}/focusguard-tray" ]]; then
-    install -m 0755 "${dir}/focusguard-tray" "${BIN_DIR}/focusguard-tray"
+    install -m 0755 "${dir}/focusguard-tray" "${INSTALL_DIR}/focusguard-tray"
     install_tray_deps
     install_tray_autostart
+  fi
+
+  # Só a CLI ganha symlink no PATH; daemon/tray/watchdog são referenciados por
+  # caminhos absolutos (unit systemd, autostart e atalho) na pasta protegida.
+  ln -sf "${INSTALL_DIR}/focusguard" "${SYMLINK_DIR}/focusguard"
+}
+
+# cleanup_old_layout remove instalações antigas (<= 0.2.9) que ficavam direto
+# em /usr/local/bin — os binários novos já estão em ${INSTALL_DIR}. Evita duas
+# cópias "oficiais": o update multi-binário resolve os irmãos pela pasta do
+# daemon, então todos precisam viver juntos na pasta protegida.
+cleanup_old_layout() {
+  local bin removed=0
+  for bin in focusguard focusguard-daemon focusguard-watchdog focusguard-tray; do
+    if [[ -f "${SYMLINK_DIR}/${bin}" && ! -L "${SYMLINK_DIR}/${bin}" ]]; then
+      echo "[FocusGuard] Removendo instalação antiga ${SYMLINK_DIR}/${bin}..."
+      rm -f "${SYMLINK_DIR}/${bin}"
+      removed=1
+    fi
+  done
+  if [[ "${removed}" -eq 1 ]]; then
+    ln -sf "${INSTALL_DIR}/focusguard" "${SYMLINK_DIR}/focusguard"
+    echo "[FocusGuard] ✔ Layout migrado: binários em ${INSTALL_DIR}, CLI em ${SYMLINK_DIR}/focusguard."
   fi
 }
 
@@ -102,7 +132,7 @@ install_tray_autostart() {
   # install -d age como mkdir -p, mas define o dono dos diretórios criados,
   # para o usuário poder gerenciar o autostart sem sudo (espelho da HKCU).
   if ! install -d -m 0755 -o "${user}" -g "${gid}" "${autostart_dir}" ||
-     ! sed "s|^Exec=.*|Exec=${BIN_DIR}/focusguard-tray|" \
+     ! sed "s|^Exec=.*|Exec=${INSTALL_DIR}/focusguard-tray|" \
         "${dir}/focusguard-tray.desktop" > "${desktop}"; then
     echo "[FocusGuard] Aviso: não foi possível registrar o autostart do tray em ${autostart_dir}." >&2
     rm -f "${desktop}" # evita deixar um .desktop parcial/quebrado no autostart do usuário
@@ -171,7 +201,7 @@ install_desktop_shortcut() {
 Type=Application
 Name=FocusGuard
 Comment=Bloqueio focado de distrações
-Exec=${BIN_DIR}/focusguard
+Exec=${INSTALL_DIR}/focusguard
 Icon=focusguard
 Terminal=true
 Categories=Utility;Security;
@@ -204,11 +234,18 @@ install_service() {
     exit 1
   fi
 
-  echo "[FocusGuard] Instalando unit systemd..."
-  install -m 0644 "${dir}/focusguard.service" "${SERVICE_FILE}"
+  echo "[FocusGuard] Instalando unit systemd (ExecStart=${INSTALL_DIR}/focusguard-daemon)..."
+  # O template versionado já aponta para /opt/focusguard; o sed garante o
+  # caminho da pasta protegida configurada neste script, mesmo se o template
+  # desatualizar.
+  sed "s|^ExecStart=.*|ExecStart=${INSTALL_DIR}/focusguard-daemon|" \
+      "${dir}/focusguard.service" > "${SERVICE_FILE}"
+  chmod 0644 "${SERVICE_FILE}"
   systemctl daemon-reload
   systemctl enable "${SERVICE_NAME}"
-  systemctl start "${SERVICE_NAME}"
+  # restart (e não start): em upgrade o serviço já está ativo e precisa trocar
+  # para o binário da pasta protegida.
+  systemctl restart "${SERVICE_NAME}"
   echo "[FocusGuard] ✔ FocusGuard instalado e iniciado!"
 }
 
@@ -219,6 +256,7 @@ do_install() {
     exit 1
   fi
   install_binaries
+  cleanup_old_layout
   install_service
   install_desktop_shortcut
 }
@@ -230,8 +268,11 @@ do_uninstall() {
   systemctl disable "${SERVICE_NAME}" 2>/dev/null || true
   systemctl daemon-reload
   rm -f "${SERVICE_FILE}"
-  echo "[FocusGuard] Removendo binários..."
-  rm -f "${BIN_DIR}/focusguard" "${BIN_DIR}/focusguard-daemon" "${BIN_DIR}/focusguard-watchdog" "${BIN_DIR}/focusguard-tray"
+  echo "[FocusGuard] Removendo pasta protegida ${INSTALL_DIR}..."
+  rm -rf "${INSTALL_DIR}"
+  echo "[FocusGuard] Removendo symlink/restos em ${SYMLINK_DIR}..."
+  rm -f "${SYMLINK_DIR}/focusguard" \
+        "${SYMLINK_DIR}/focusguard-daemon" "${SYMLINK_DIR}/focusguard-watchdog" "${SYMLINK_DIR}/focusguard-tray"
   remove_tray_autostart
   remove_desktop_shortcut
   echo "[FocusGuard] ✔ FocusGuard removido. Estado preservado em ${STATE_DIR}"

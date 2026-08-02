@@ -5,7 +5,10 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/usr/local/bin/focusguard-daemon
+# Binário na pasta protegida (/opt/focusguard) — fora do alcance do usuário
+# comum, evitando exclusão acidental. O install-linux.sh reescreve este
+# ExecStart com o INSTALL_DIR configurado no script.
+ExecStart=/opt/focusguard/focusguard-daemon
 Restart=always
 RestartSec=3
 WatchdogSec=30

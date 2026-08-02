@@ -33,11 +33,18 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
       sudo ./install-linux.sh install
 
     O script:
-      - instala os binários em /usr/local/bin (focusguard,
-        focusguard-daemon, focusguard-watchdog e focusguard-tray);
-      - instala a unit systemd "focusguard" (Restart=always);
+      - cria a pasta protegida /opt/focusguard (root:root) e instala lá
+        os 4 binários (focusguard, focusguard-daemon, focusguard-watchdog
+        e focusguard-tray) — fora do alcance do usuário comum, evitando
+        exclusão acidental;
+      - deixa apenas um symlink da CLI (focusguard) em /usr/local/bin
+        para o comando funcionar no terminal (apagar o symlink não
+        derruba o serviço);
+      - instala a unit systemd "focusguard" (Restart=always) apontando
+        para /opt/focusguard/focusguard-daemon;
       - habilita o serviço na inicialização (systemctl enable);
-      - INICIA o daemon imediatamente (systemctl start);
+      - INICIA o daemon imediatamente (systemctl restart);
+      - migra instalações antigas (<= 0.2.9) que ficavam em /usr/local/bin;
       - registra o autostart do tray no login do usuário e cria o
         atalho do FocusGuard no Desktop (quando presentes).
 
@@ -45,6 +52,9 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
       focusguard status
       systemctl status focusguard
       sudo ./install-linux.sh status
+
+    Depois de instalar, você pode excluir a pasta do tar.gz extraído —
+    os binários oficiais estão em /opt/focusguard.
 
 ------------------------------------------------------------
  2. WINDOWS (Windows 10/11, amd64 ou arm64)
@@ -54,22 +64,32 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
       - focusguard_X.Y.Z_windows_amd64.zip
       - focusguard_X.Y.Z_windows_arm64.zip
 
- 2) Extraia o ZIP em uma pasta (ex.: C:\FocusGuard).
+ 2) Extraia o ZIP em qualquer pasta (ex.: C:\FocusGuard).
 
  3) Abra o PowerShell como ADMINISTRADOR dentro da pasta extraída:
       Set-ExecutionPolicy -Scope Process Bypass
       .\install-daemon.ps1 install
 
     O script:
-      - cria o serviço Windows "FocusGuard" com início automático
-        (start=auto) e recovery configurada (o daemon reinicia
-        sozinho em 5s/10s/30s após uma falha ou atualização);
+      - COPIA os 4 executáveis (focusguard, focusguard-daemon,
+        focusguard-watchdog e focusguard-tray) para a pasta protegida
+        C:\Program Files\FocusGuard — a ACL padrão do Program Files só
+        permite ao usuário comum leitura/execução, então não há como
+        excluir por acidente;
+      - cria o serviço Windows "FocusGuard" apontando para
+        C:\Program Files\FocusGuard\focusguard-daemon.exe, com início
+        automático (start=auto) e recovery configurada (o daemon
+        reinicia sozinho em 5s/10s/30s após uma falha ou atualização);
       - INICIA o serviço imediatamente (sc start);
-      - cria o atalho do FocusGuard no Desktop.
+      - cria o atalho do FocusGuard no Desktop apontando para o CLI da
+        pasta protegida.
 
  4) Confirme que o serviço está ONLINE:
       .\install-daemon.ps1 status
       sc query FocusGuard
+
+    Depois de instalar, pode excluir a pasta do zip extraído com
+    segurança — os binários oficiais estão em C:\Program Files\FocusGuard.
 
  5) Componentes opcionais (com a CLI elevada):
       focusguard install-watchdog   -> watchdog externo
@@ -121,7 +141,9 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
 ------------------------------------------------------------
 
    Linux:   sudo ./install-linux.sh uninstall
+            (remove /opt/focusguard, o symlink e a unit systemd)
    Windows: .\install-daemon.ps1 uninstall   (como Administrador)
+            (remove o serviço, o atalho e C:\Program Files\FocusGuard)
 
    O estado (bloqueios e configuração) é preservado em
    /var/lib/focusguard (Linux) ou C:\ProgramData\FocusGuard
