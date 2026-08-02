@@ -7,6 +7,52 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.2.7] - 2026-08-02
+
+### 🔄 Auto-Update confiável (destaque)
+
+- **Atualização multi-binário (corrige update parcial)** — `focusguard update`
+  agora atualiza a **suíte inteira** (daemon, CLI, tray e watchdog), não só o
+  daemon: um daemon novo conversando por IPC com uma CLI antiga quebraria o
+  protocolo permanentemente. A troca é **atômica** (`UpdateToAll`): todos os
+  binários são copiados para backup antes de tocar em qualquer um, e se
+  qualquer binário falhar, todos os já atualizados são restaurados — nunca
+  fica uma versão meio-atualizada. Binários não instalados (ex.: tray
+  opcional) são pulados.
+- **Restart automático pós-update (corrige o "daemon zumbi")** — depois de
+  aplicar um update com sucesso e sem bloqueios/sessão ativos, o daemon
+  encerra o processo para o supervisor subir a versão nova imediatamente, em
+  vez de rodar o binário antigo em RAM até o usuário reiniciar a máquina.
+  - Linux: `systemd Restart=always` já reinicia com qualquer exit code.
+  - Windows: o daemon sai com **exit code 1** (o SCM só aplica recovery em
+    falha) e o `install-daemon.ps1` agora configura `sc failure ... actions=
+    restart` — o serviço volta sozinho em 5s/10s/30s.
+  - O hook de restart só dispara **após** a resposta IPC ter sido escrita no
+    socket (o CLI recebe o "✔ Atualização aplicada" antes do daemon sair).
+- **Comparação de versões com semver real (remove o hack do "dummy release")**
+  — `IsNewVersionAvailable` usa `golang.org/x/mod/semver` em vez de montar um
+  `Release` fake e chamar `GreaterThan` do go-selfupdate (que dependia do
+  parsing interno de `AssetName` da biblioteca e quebraria silenciosamente se
+  ela mudasse). Versões inválidas falham fechado (nunca decidem "há update").
+
+### 🐛 Correções de robustez (TDD)
+
+- **Race no canal `done` do pomodoro (poderia crashar o daemon)** — o `run()`
+  fechava o canal do struct após liberar o lock; se uma nova sessão começasse
+  na janela de finalização, o goroutine antigo fechava o canal da sessão nova
+  → `panic: close of closed channel`. Cada sessão agora captura seu próprio
+  canal local (mesmo padrão do `stop`) — regression test com recorder
+  bloqueante.
+- **`Stop()` síncrono no processguard** — o `Stop` fechava o canal e retornava
+  na hora, deixando um scan em voo lendo globais durante o teardown (data
+  race intermitente detectada pelo `-race`). Agora `Stop` aguarda o goroutine
+  sair antes de retornar.
+- **Validação endurecida no IPC**: bloqueio com duração `0` rejeitado (criava
+  bloqueio que expirava instantâneo mas ainda aplicava/removia regras de
+  firewall); tetos defensivos no pomodoro (`--work`/`--rest` até 7 dias,
+  `--cycles` até 1000) impedindo overflow/wrap no `int64` (ex.: `--work
+  1000000000` virava ~147 anos e passava na validação).
+
 ## [0.2.6] - 2026-08-02
 
 ### 🍅 Pomodoro, Presets e Analytics (destaque)
