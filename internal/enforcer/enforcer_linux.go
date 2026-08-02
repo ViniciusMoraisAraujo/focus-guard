@@ -164,7 +164,8 @@ func (e *linuxEnforcer) syncLocked(activeBlocks map[string][]string) error {
 }
 
 // existingBlockedIPs consults the firewall once and returns the IPs with an
-// existing DROP rule, so Sync/block can add only the missing ones. Both
+// existing block rule (current REJECT tcp-reset or legacy DROP), so
+// Sync/block can add only the missing ones. Both
 // families are always probed; a missing binary just fails the exec and is
 // skipped, which keeps the query deterministic in tests.
 func (e *linuxEnforcer) existingBlockedIPs() map[string]bool {
@@ -184,7 +185,8 @@ func (e *linuxEnforcer) existingBlockedIPs() map[string]bool {
 	return blocked
 }
 
-// addFirewallRulesBatch applies a DROP rule for every IP with a single
+// addFirewallRulesBatch applies a REJECT --reject-with tcp-reset rule for
+// every IP with a single
 // iptables-restore/ip6tables-restore --noflush invocation per address family
 // (1 exec for N IPs instead of one exec per IP). IPs already blocked are
 // skipped, so re-blocking after a periodic refresh never duplicates rules.
@@ -204,8 +206,9 @@ func (e *linuxEnforcer) addFirewallRulesBatch(ips []string) error {
 	return e.restoreFirewallRulesBatch(missing)
 }
 
-// restoreFirewallRulesBatch applies DROP rules for already-computed missing
-// IPs with one restore invocation per family.
+// restoreFirewallRulesBatch applies REJECT rules for already-computed missing
+// IPs with one restore invocation per family, then actively tears down
+// existing Keep-Alive sockets for the freshly blocked IPs.
 func (e *linuxEnforcer) restoreFirewallRulesBatch(ips []string) error {
 	v4, v6 := groupIPsByFamily(ips)
 	if len(v4) > 0 {
@@ -218,7 +221,25 @@ func (e *linuxEnforcer) restoreFirewallRulesBatch(ips []string) error {
 			return err
 		}
 	}
+
+	// Derruba conexões Keep-Alive ativas para os IPs recém-bloqueados: o
+	// REJECT cuida do próximo pacote (RST), o ss -K mata a conexão no kernel
+	// imediatamente. Best-effort — uma falha aqui não falha o block.
+	e.killSockets(dedupeIPs(ips))
 	return nil
+}
+
+// killSockets tears down existing TCP connections to the blocked IPs via
+// `ss -K dst <ip>` (iproute2). Best-effort and void: systems without ss,
+// without -K support or without privileges just skip — the REJECT tcp-reset
+// rule already terminates the flow on its next packet.
+func (e *linuxEnforcer) killSockets(ips []string) {
+	for _, ip := range ips {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		cmd := execCommandContext(ctx, "ss", "-K", "dst", ip)
+		_, _ = cmd.CombinedOutput()
+		cancel()
+	}
 }
 
 // restoreFirewallRules feeds a restore script to a single iptables-restore
@@ -238,7 +259,9 @@ func (e *linuxEnforcer) restoreFirewallRules(bin string, ips []string, mask stri
 func parseIptablesBlockedIPs(output []byte) map[string]bool {
 	blocked := make(map[string]bool)
 	for _, line := range bytes.Split(output, []byte("\n")) {
-		if !bytes.Contains(line, []byte("-j DROP")) || bytes.Contains(line, []byte("--dport")) {
+		isDrop := bytes.Contains(line, []byte("-j DROP"))
+		isReject := bytes.Contains(line, []byte("-j REJECT --reject-with tcp-reset"))
+		if (!isDrop && !isReject) || bytes.Contains(line, []byte("--dport")) {
 			continue
 		}
 		fields := bytes.Fields(line)
@@ -355,29 +378,44 @@ func iptablesBinFor(ip string) (string, error) {
 // instead of spinning forever.
 const maxFirewallRuleRemovals = 100
 
-// removeFirewallRule removes every matching DROP rule for ip, looping until
-// iptables reports "does a matching rule exist". This sweeps orphan rules
-// accumulated from previous crashes/races instead of removing just one.
+// removeFirewallRule removes every matching rule for ip — first the current
+// REJECT --reject-with tcp-reset spec, then the legacy -j DROP spec from
+// versions before REJECT — looping until iptables reports "does a matching
+// rule exist" for each. This sweeps orphan rules accumulated from previous
+// crashes/races instead of removing just one, including rules created by
+// older FocusGuard releases.
 func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 	bin, err := iptablesBinFor(ip)
 	if err != nil {
 		return err
 	}
 
-	for attempts := 0; attempts < maxFirewallRuleRemovals; attempts++ {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		cmd := execCommandContext(ctx, bin, "-D", "OUTPUT", "-d", ip, "-j", "DROP")
-		out, err := cmd.CombinedOutput()
-		cancel()
-		if err != nil {
-			if strings.Contains(string(out), "does a matching rule exist") {
-				return nil
+	specs := [][]string{
+		{"-j", "REJECT", "--reject-with", "tcp-reset"},
+		{"-j", "DROP"},
+	}
+	for _, spec := range specs {
+		removed := 0
+		for {
+			args := append([]string{"-D", "OUTPUT", "-d", ip}, spec...)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+			cmd := execCommandContext(ctx, bin, args...)
+			out, err := cmd.CombinedOutput()
+			cancel()
+			if err != nil {
+				if strings.Contains(string(out), "does a matching rule exist") {
+					break // spec esgotada — próxima spec (ou fim)
+				}
+				return fmt.Errorf("%s -D falhou: %w (%s)", bin, err, strings.TrimSpace(string(out)))
 			}
-			return fmt.Errorf("%s -D falhou: %w (%s)", bin, err, strings.TrimSpace(string(out)))
+			removed++
+			if removed >= maxFirewallRuleRemovals {
+				return fmt.Errorf("%s: limite de %d remoções atingido para %s (regras órfãs podem restar)", bin, maxFirewallRuleRemovals, ip)
+			}
 		}
 	}
 
-	return fmt.Errorf("%s: limite de %d remoções atingido para %s (regras órfãs podem restar)", bin, maxFirewallRuleRemovals, ip)
+	return nil
 }
 
 func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
@@ -423,7 +461,9 @@ func countIptablesRules(output []byte) EnforcerStatus {
 
 	for _, line := range bytes.Split(output, []byte("\n")) {
 		line = bytes.TrimSpace(line)
-		if !bytes.HasSuffix(line, []byte("-j DROP")) {
+		isDrop := bytes.HasSuffix(line, []byte("-j DROP"))
+		isReject := bytes.Contains(line, []byte("-j REJECT --reject-with tcp-reset"))
+		if !isDrop && !isReject {
 			continue
 		}
 		status.FirewallRules++

@@ -229,7 +229,22 @@ func (e *windowsEnforcer) runNetshAddBatch(ips []string) error {
 			return fmt.Errorf("netsh firewall add em lote incompleto: regra FocusGuard_%s ausente", ip)
 		}
 	}
+
+	// Derruba conexões Keep-Alive ativas: o flush do cache DNS impede que
+	// resoluções antigas mantenham fluxos para os IPs recém-bloqueados.
+	e.flushDNS()
 	return nil
+}
+
+// flushDNS clears the resolver cache (ipconfig /flushdns) so stale DNS
+// resolutions don't keep active Keep-Alive connections pointing at freshly
+// blocked IPs. Best-effort and void: a failure (ipconfig ausente, sem
+// privilégio) is ignored — the netsh block rule already stops new flows.
+func (e *windowsEnforcer) flushDNS() {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	cmd := execCommandContext(ctx, "ipconfig", "/flushdns")
+	_, _ = cmd.CombinedOutput()
 }
 
 func parseFocusGuardRuleNames(output []byte) map[string]bool {

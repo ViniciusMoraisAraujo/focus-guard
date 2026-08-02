@@ -4,6 +4,7 @@ package enforcer
 
 import (
 	"context"
+	"errors"
 	"io"
 	"os"
 	"path/filepath"
@@ -479,9 +480,10 @@ func TestAddFirewallRulesBatch_SingleNetshProcess(t *testing.T) {
 		t.Fatalf("addFirewallRulesBatch: %v", err)
 	}
 
-	// Expect: 1 show query (existing), 1 netsh add via stdin, 1 verification show.
-	if len(b.calls) != 3 {
-		t.Fatalf("expected 3 netsh invocations, got %d: %v", len(b.calls), b.calls)
+	// Expect: 1 show query (existing), 1 netsh add via stdin, 1 verification
+	// show + 1 ipconfig /flushdns (derrubar conexões via cache de DNS).
+	if len(b.calls) != 4 {
+		t.Fatalf("expected 4 invocations (show + netsh add + verify + flushdns), got %d: %v", len(b.calls), b.calls)
 	}
 
 	addCall := b.calls[1]
@@ -498,6 +500,12 @@ func TestAddFirewallRulesBatch_SingleNetshProcess(t *testing.T) {
 	}
 	if !strings.Contains(b.stdins[0], "exit") {
 		t.Errorf("script must end with exit:\n%s", b.stdins[0])
+	}
+
+	// A última invocação é o flush do cache de DNS.
+	last := b.calls[3]
+	if last[0] != "ipconfig" || !slices.Contains(last, "/flushdns") {
+		t.Errorf("expected ipconfig /flushdns after successful batch, got %v", last)
 	}
 }
 
@@ -520,6 +528,13 @@ func TestAddFirewallRulesBatch_MissingRuleAfterAdd(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "8.8.8.8") {
 		t.Errorf("error should mention the missing rule, got: %v", err)
+	}
+
+	// Sem flush de DNS em falha: a regra não foi aplicada de fato.
+	for _, c := range b.calls {
+		if c[0] == "ipconfig" {
+			t.Errorf("flushdns must not run when the batch failed, got %v", c)
+		}
 	}
 }
 
@@ -564,6 +579,61 @@ func TestSyncLocked_WritesHostsOnce(t *testing.T) {
 // TestStatus_UsesNetshNotPowerShell verifies Status() queries the firewall
 // with a single native netsh invocation (no PowerShell runtime) and reuses the
 // existing countFocusGuardRules parser.
+// flushStub records exec invocations so the DNS flush can be asserted.
+type flushStub struct {
+	calls [][]string
+	err   error
+}
+
+func (f *flushStub) SetStdin(r io.Reader) {}
+
+func (f *flushStub) CombinedOutput() ([]byte, error) {
+	return nil, f.err
+}
+
+func stubFlushExec(t *testing.T, f *flushStub) {
+	t.Helper()
+	orig := execCommandContext
+	t.Cleanup(func() { execCommandContext = orig })
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		f.calls = append(f.calls, append([]string{name}, args...))
+		return f
+	}
+}
+
+// TestFlushDNS_RunsIpconfig verifies flushDNS executes ipconfig /flushdns to
+// clear the resolver cache so stale resolutions don't keep Keep-Alive
+// connections pointing at freshly blocked IPs.
+func TestFlushDNS_RunsIpconfig(t *testing.T) {
+	f := &flushStub{}
+	stubFlushExec(t, f)
+
+	e := newTestEnforcer(t)
+	e.flushDNS()
+
+	if len(f.calls) != 1 {
+		t.Fatalf("expected 1 ipconfig invocation, got %d: %v", len(f.calls), f.calls)
+	}
+	call := f.calls[0]
+	if call[0] != "ipconfig" || !slices.Contains(call, "/flushdns") {
+		t.Errorf("expected ipconfig /flushdns, got %v", call)
+	}
+}
+
+// TestFlushDNS_BestEffort verifies a flush failure (ipconfig ausente, sem
+// privilégio) is silently ignored — the netsh block rule already stops new
+// flows.
+func TestFlushDNS_BestEffort(t *testing.T) {
+	f := &flushStub{err: errors.New("ipconfig: command not found")}
+	stubFlushExec(t, f)
+
+	e := newTestEnforcer(t)
+	e.flushDNS()
+	if len(f.calls) != 1 {
+		t.Errorf("expected 1 ipconfig invocation, got %d", len(f.calls))
+	}
+}
+
 func TestStatus_UsesNetshNotPowerShell(t *testing.T) {
 	b := &batchStubWin{
 		showDumps: []string{

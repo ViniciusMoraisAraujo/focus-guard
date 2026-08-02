@@ -428,13 +428,13 @@ func TestBuildRestoreScript(t *testing.T) {
 			"v4",
 			[]string{"1.1.1.1", "8.8.8.8"},
 			"/32",
-			"*filter\n-A OUTPUT -d 1.1.1.1/32 -j DROP\n-A OUTPUT -d 8.8.8.8/32 -j DROP\nCOMMIT\n",
+			"*filter\n-A OUTPUT -d 1.1.1.1/32 -j REJECT --reject-with tcp-reset\n-A OUTPUT -d 8.8.8.8/32 -j REJECT --reject-with tcp-reset\nCOMMIT\n",
 		},
 		{
 			"v6",
 			[]string{"2001:db8::1"},
 			"/128",
-			"*filter\n-A OUTPUT -d 2001:db8::1/128 -j DROP\nCOMMIT\n",
+			"*filter\n-A OUTPUT -d 2001:db8::1/128 -j REJECT --reject-with tcp-reset\nCOMMIT\n",
 		},
 		{
 			"empty",

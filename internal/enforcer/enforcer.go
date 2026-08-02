@@ -200,8 +200,13 @@ func groupIPsByFamily(ips []string) (v4, v6 []string) {
 }
 
 // buildRestoreScript renders the stdin payload for iptables-restore/ip6tables
-// --noflush: a *filter header, one -A OUTPUT DROP line per IP (with the family
-// mask, matching the iptables-save format) and a COMMIT footer.
+// --noflush: a *filter header, one -A OUTPUT REJECT line per IP (with the
+// family mask, matching the iptables-save format) and a COMMIT footer.
+//
+// REJECT --reject-with tcp-reset is used instead of DROP so blocked sites
+// fail fast with an RST instead of hanging on client-side timeouts — and the
+// RST sent on the next packet of an existing flow tears down Keep-Alive
+// connections at the packet level (ss -K does the same in the kernel).
 //
 // Chain policy lines (e.g. ":OUTPUT ACCEPT [0:0]") are intentionally NOT
 // emitted: under --noflush they would reset the chain policy/counters, which
@@ -214,7 +219,7 @@ func buildRestoreScript(ips []string, mask string) string {
 		b.WriteString("-A OUTPUT -d ")
 		b.WriteString(ip)
 		b.WriteString(mask)
-		b.WriteString(" -j DROP\n")
+		b.WriteString(" -j REJECT --reject-with tcp-reset\n")
 	}
 	b.WriteString("COMMIT\n")
 	return b.String()

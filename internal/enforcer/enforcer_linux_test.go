@@ -70,10 +70,14 @@ func TestIptablesBinFor(t *testing.T) {
 }
 
 func TestParseIptablesBlockedIPs(t *testing.T) {
+	// Mistura regras legadas (-j DROP) e atuais (-j REJECT --reject-with
+	// tcp-reset): ambas devem ser reconhecidas como IPs bloqueados.
 	output := `-P OUTPUT ACCEPT
 -A OUTPUT -d 1.1.1.1/32 -j DROP
 -A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
 -A OUTPUT -d 2001:db8::1/128 -j DROP
+-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset
+-A OUTPUT -d 2001:db8::2/128 -j REJECT --reject-with tcp-reset
 -A OUTPUT -p tcp --dport 853 -j DROP
 -A OUTPUT -d 10.0.0.1/32 -j ACCEPT
 `
@@ -81,10 +85,16 @@ func TestParseIptablesBlockedIPs(t *testing.T) {
 	blocked := parseIptablesBlockedIPs([]byte(output))
 
 	if !blocked["1.1.1.1"] {
-		t.Error("expected 1.1.1.1 to be parsed as blocked")
+		t.Error("expected 1.1.1.1 (legacy DROP) to be parsed as blocked")
 	}
 	if !blocked["2001:db8::1"] {
-		t.Error("expected 2001:db8::1 to be parsed as blocked")
+		t.Error("expected 2001:db8::1 (legacy DROP) to be parsed as blocked")
+	}
+	if !blocked["9.9.9.9"] {
+		t.Error("expected 9.9.9.9 (REJECT tcp-reset) to be parsed as blocked")
+	}
+	if !blocked["2001:db8::2"] {
+		t.Error("expected 2001:db8::2 (REJECT tcp-reset) to be parsed as blocked")
 	}
 	if blocked["8.8.8.8"] {
 		t.Error("DoH rule (--dport) should not be counted as an IP block")
@@ -92,8 +102,8 @@ func TestParseIptablesBlockedIPs(t *testing.T) {
 	if blocked["10.0.0.1"] {
 		t.Error("ACCEPT rule should not be counted")
 	}
-	if len(blocked) != 2 {
-		t.Errorf("expected 2 blocked IPs, got %d: %v", len(blocked), blocked)
+	if len(blocked) != 4 {
+		t.Errorf("expected 4 blocked IPs, got %d: %v", len(blocked), blocked)
 	}
 }
 
@@ -372,17 +382,19 @@ func TestDoHRuleArgs(t *testing.T) {
 }
 
 func TestCountIptablesRules(t *testing.T) {
+	// Regras atuais (REJECT tcp-reset) e legadas (DROP) contam para o Status.
 	output := `-P OUTPUT ACCEPT
 -A OUTPUT -d 1.1.1.1/32 -j DROP
 -A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
+-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset
 -A OUTPUT -p tcp --dport 853 -j DROP
 -A OUTPUT -d 10.0.0.1/32 -j ACCEPT
 `
 
 	status := countIptablesRules([]byte(output))
 
-	if status.FirewallRules != 3 {
-		t.Errorf("FirewallRules = %d, want 3", status.FirewallRules)
+	if status.FirewallRules != 4 {
+		t.Errorf("FirewallRules = %d, want 4", status.FirewallRules)
 	}
 	if !status.DoHActive {
 		t.Error("DoHActive deve ser true com regras de porta 443/853")
@@ -480,7 +492,11 @@ func TestRemoveFirewallRule_RemovesAllDuplicateRules(t *testing.T) {
 		t.Fatalf("removeFirewallRule: %v", err)
 	}
 
-	// Every invocation must be the same -D command for the same IP.
+	// Fase 1: sweep REJECT (3 remoções + 1 probe no-match). Fase 2: sweep
+	// legado DROP (1 probe no-match). Total = 5 invocations.
+	if len(runner.calls) != 5 {
+		t.Errorf("expected 5 iptables invocations (3 REJECT removals + 1 REJECT probe + 1 DROP probe), got %d", len(runner.calls))
+	}
 	for i, call := range runner.calls {
 		if len(call) < 5 || call[0] != "iptables" {
 			t.Errorf("call %d should be an iptables invocation, got %v", i, call)
@@ -489,10 +505,77 @@ func TestRemoveFirewallRule_RemovesAllDuplicateRules(t *testing.T) {
 			t.Errorf("call %d should be iptables -D ... 1.2.3.4, got %v", i, call)
 		}
 	}
+	// Os 4 primeiros usam a spec REJECT; o 5º é o probe da spec DROP legada.
+	for i := 0; i < 4; i++ {
+		if !slices.Contains(runner.calls[i], "REJECT") {
+			t.Errorf("call %d should be the REJECT sweep, got %v", i, runner.calls[i])
+		}
+	}
+	if !slices.Contains(runner.calls[4], "DROP") {
+		t.Errorf("call 4 should be the legacy DROP probe, got %v", runner.calls[4])
+	}
+}
 
-	// 3 orphan rules removed + 1 final no-match probe = 4 invocations.
+// seqResult is one canned outcome for the scripted seqRunner.
+type seqResult struct {
+	out []byte
+	err error
+}
+
+func successResult() seqResult { return seqResult{} }
+func noMatchResult() seqResult {
+	return seqResult{out: []byte("iptables: Bad rule (does a matching rule exist in that chain)."), err: errors.New("exit status 1")}
+}
+
+// seqRunner returns a fixed sequence of results (one per invocation), so a
+// test can script exactly which removals succeed and which probe no-match —
+// unlike fakeCmdRunner, whose success counter is global across both sweep
+// phases.
+type seqRunner struct {
+	results []seqResult
+	idx     int
+	calls   [][]string
+}
+
+func (s *seqRunner) SetStdin(r io.Reader) {}
+
+func (s *seqRunner) CombinedOutput() ([]byte, error) {
+	if s.idx >= len(s.results) {
+		return nil, errors.New("seqRunner: resultados esgotados")
+	}
+	r := s.results[s.idx]
+	s.idx++
+	return r.out, r.err
+}
+
+// TestRemoveFirewallRule_SweepsLegacyDropAfterReject verifies the migration
+// path: rules created by versions before REJECT tcp-reset (legacy -j DROP)
+// are still removed after the REJECT sweep finds nothing.
+func TestRemoveFirewallRule_SweepsLegacyDropAfterReject(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	// Sequência: 1 remoção REJECT, probe no-match, 1 remoção DROP legada,
+	// probe no-match.
+	runner := &seqRunner{results: []seqResult{successResult(), noMatchResult(), successResult(), noMatchResult()}}
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		runner.calls = append(runner.calls, append([]string{name}, args...))
+		return runner
+	}
+
+	enf := &linuxEnforcer{}
+	if err := enf.removeFirewallRule("5.6.7.8"); err != nil {
+		t.Fatalf("removeFirewallRule: %v", err)
+	}
+
 	if len(runner.calls) != 4 {
-		t.Errorf("expected 4 iptables invocations (3 removals + 1 probe), got %d", len(runner.calls))
+		t.Fatalf("expected 4 invocations, got %d: %v", len(runner.calls), runner.calls)
+	}
+	if !slices.Contains(runner.calls[0], "REJECT") {
+		t.Errorf("call 0 should be REJECT removal, got %v", runner.calls[0])
+	}
+	if !slices.Contains(runner.calls[2], "DROP") {
+		t.Errorf("call 2 should be legacy DROP removal, got %v", runner.calls[2])
 	}
 }
 
@@ -511,8 +594,9 @@ func TestRemoveFirewallRule_NoRulesIsNoOp(t *testing.T) {
 		t.Fatalf("removeFirewallRule with no rules should not error: %v", err)
 	}
 
-	if len(runner.calls) != 1 {
-		t.Errorf("expected exactly 1 no-match probe, got %d calls", len(runner.calls))
+	// 1 probe no-match para a spec REJECT + 1 probe para a DROP legada.
+	if len(runner.calls) != 2 {
+		t.Errorf("expected 2 no-match probes (REJECT + DROP), got %d calls", len(runner.calls))
 	}
 }
 
@@ -545,6 +629,78 @@ func (f *failRunner) SetStdin(r io.Reader) {
 
 func (f *failRunner) CombinedOutput() ([]byte, error) {
 	return []byte(f.msg), errors.New("exit status 1")
+}
+
+// killStub records exec invocations and returns a canned result, so socket
+// killing can be asserted without root privileges.
+type killStub struct {
+	calls [][]string
+	err   error
+}
+
+func (k *killStub) SetStdin(r io.Reader) {}
+
+func (k *killStub) CombinedOutput() ([]byte, error) {
+	return nil, k.err
+}
+
+func stubKillExec(t *testing.T, k *killStub) {
+	t.Helper()
+	orig := execCommandContext
+	t.Cleanup(func() { execCommandContext = orig })
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		k.calls = append(k.calls, append([]string{name}, args...))
+		return k
+	}
+}
+
+// TestKillSockets_RunsSSPerIP verifies ss -K dst <ip> is invoked once per IP
+// to tear down active Keep-Alive connections in the kernel.
+func TestKillSockets_RunsSSPerIP(t *testing.T) {
+	k := &killStub{}
+	stubKillExec(t, k)
+
+	enf := &linuxEnforcer{}
+	enf.killSockets([]string{"1.1.1.1", "2.2.2.2", "2001:db8::1"})
+
+	if len(k.calls) != 3 {
+		t.Fatalf("expected 3 ss invocations, got %d: %v", len(k.calls), k.calls)
+	}
+	for i, ip := range []string{"1.1.1.1", "2.2.2.2", "2001:db8::1"} {
+		call := k.calls[i]
+		if call[0] != "ss" || !slices.Contains(call, "-K") || !slices.Contains(call, "dst") || !slices.Contains(call, ip) {
+			t.Errorf("call %d should be ss -K dst %s, got %v", i, ip, call)
+		}
+	}
+}
+
+// TestKillSockets_EmptyIsNoOp verifies killSockets skips when there are no IPs.
+func TestKillSockets_EmptyIsNoOp(t *testing.T) {
+	k := &killStub{}
+	stubKillExec(t, k)
+
+	enf := &linuxEnforcer{}
+	enf.killSockets(nil)
+	enf.killSockets([]string{})
+
+	if len(k.calls) != 0 {
+		t.Errorf("expected no ss invocations for empty input, got %d", len(k.calls))
+	}
+}
+
+// TestKillSockets_BestEffort verifies socket-kill failures (ss ausente, sem
+// suporte -K, sem privilégio) are silently ignored — the REJECT rule already
+// kills the connection on the next packet.
+func TestKillSockets_BestEffort(t *testing.T) {
+	k := &killStub{err: errors.New("ss: option -K not supported")}
+	stubKillExec(t, k)
+
+	enf := &linuxEnforcer{}
+	enf.killSockets([]string{"1.1.1.1"})
+	// Sem pânico e sem propagar erro: a função é void/best-effort.
+	if len(k.calls) != 1 {
+		t.Errorf("expected 1 ss invocation, got %d", len(k.calls))
+	}
 }
 
 // TestRemoveFirewallRule_StopsAtCap verifies the defensive guard against a
@@ -655,9 +811,9 @@ func TestAddFirewallRulesBatch_V4SingleRestore(t *testing.T) {
 		t.Fatalf("addFirewallRulesBatch: %v", err)
 	}
 
-	// 2 existence queries (-S) + exactly 1 restore invocation.
-	if len(b.calls) != 3 {
-		t.Fatalf("expected 3 invocations (2 -S queries + 1 restore), got %d: %v", len(b.calls), b.calls)
+	// 2 existence queries (-S) + 1 restore + 3 socket kills (ss -K).
+	if len(b.calls) != 6 {
+		t.Fatalf("expected 6 invocations (2 -S queries + 1 restore + 3 ss), got %d: %v", len(b.calls), b.calls)
 	}
 
 	restore := b.calls[2]
@@ -673,8 +829,11 @@ func TestAddFirewallRulesBatch_V4SingleRestore(t *testing.T) {
 	}
 	script := b.stdins[0]
 	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"} {
-		if !strings.Contains(script, "-A OUTPUT -d "+ip+"/32 -j DROP") {
-			t.Errorf("script missing rule for %s:\n%s", ip, script)
+		if !strings.Contains(script, "-A OUTPUT -d "+ip+"/32 -j REJECT --reject-with tcp-reset") {
+			t.Errorf("script missing REJECT rule for %s:\n%s", ip, script)
+		}
+		if strings.Contains(script, "-j DROP") {
+			t.Errorf("script must use REJECT tcp-reset, not DROP:\n%s", script)
 		}
 	}
 	if !strings.HasPrefix(script, "*filter\n") || !strings.HasSuffix(script, "COMMIT\n") {
@@ -685,6 +844,21 @@ func TestAddFirewallRulesBatch_V4SingleRestore(t *testing.T) {
 	for _, c := range b.calls {
 		if c[0] == "iptables" && slices.Contains(c, "-A") {
 			t.Errorf("per-IP -A invocation found: %v", c)
+		}
+	}
+
+	// Cada IP recém-adicionado deve ter um ss -K dst <ip> para matar
+	// conexões Keep-Alive ativas.
+	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"} {
+		found := false
+		for _, c := range b.calls {
+			if c[0] == "ss" && slices.Contains(c, "-K") && slices.Contains(c, "dst") && slices.Contains(c, ip) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected ss -K dst %s socket-kill invocation", ip)
 		}
 	}
 }
@@ -709,8 +883,21 @@ func TestAddFirewallRulesBatch_SkipsExisting(t *testing.T) {
 	if strings.Contains(b.stdins[0], "1.1.1.1") {
 		t.Errorf("already-blocked IP must not be re-added:\n%s", b.stdins[0])
 	}
-	if !strings.Contains(b.stdins[0], "-A OUTPUT -d 2.2.2.2/32 -j DROP") {
+	if !strings.Contains(b.stdins[0], "-A OUTPUT -d 2.2.2.2/32 -j REJECT --reject-with tcp-reset") {
 		t.Errorf("missing IP 2.2.2.2 should be added:\n%s", b.stdins[0])
+	}
+
+	// Socket kill só para os IPs efetivamente adicionados, nunca para os já
+	// bloqueados.
+	for _, c := range b.calls {
+		if c[0] == "ss" {
+			if slices.Contains(c, "1.1.1.1") {
+				t.Errorf("already-blocked IP must not be socket-killed: %v", c)
+			}
+		}
+	}
+	if !slices.Contains(b.calls[len(b.calls)-1], "2.2.2.2") {
+		t.Errorf("expected socket kill for newly added 2.2.2.2, last call: %v", b.calls[len(b.calls)-1])
 	}
 }
 
@@ -725,8 +912,8 @@ func TestAddFirewallRulesBatch_MixedFamilies(t *testing.T) {
 		t.Fatalf("addFirewallRulesBatch: %v", err)
 	}
 
-	if len(b.calls) != 4 {
-		t.Fatalf("expected 4 invocations (2 -S queries + 2 restores), got %d: %v", len(b.calls), b.calls)
+	if len(b.calls) != 6 {
+		t.Fatalf("expected 6 invocations (2 -S queries + 2 restores + 2 ss), got %d: %v", len(b.calls), b.calls)
 	}
 	if b.calls[2][0] != "iptables-restore" {
 		t.Errorf("expected iptables-restore first, got %v", b.calls[2])
@@ -742,6 +929,19 @@ func TestAddFirewallRulesBatch_MixedFamilies(t *testing.T) {
 	}
 	if !strings.Contains(b.stdins[1], "-d 2001:db8::1/128") {
 		t.Errorf("v6 script should use /128 mask:\n%s", b.stdins[1])
+	}
+	// Socket kills para ambas as famílias (v4 e v6).
+	for _, ip := range []string{"1.1.1.1", "2001:db8::1"} {
+		found := false
+		for _, c := range b.calls {
+			if c[0] == "ss" && slices.Contains(c, "dst") && slices.Contains(c, ip) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("expected ss -K dst %s socket-kill invocation", ip)
+		}
 	}
 }
 
