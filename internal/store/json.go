@@ -160,9 +160,11 @@ func (s *Store) saveLocked(state *State) error {
 		return fmt.Errorf("failed to write to temp file: %w", err)
 	}
 
-	if err := tmpFile.Sync(); err != nil {
-		return fmt.Errorf("failed to sync temp file: %w", err)
-	}
+	// No fsync on purpose: state.json is only a mirror of the in-memory state
+	// (RAM is the source of truth), so forcing a physical flush on every save
+	// (block/unblock/reconcile) would thrash the drive for zero correctness
+	// gain — the OS page cache already serves the watchers. The atomic rename
+	// below still guarantees the file is never observed half-written.
 	if err := tmpFile.Close(); err != nil {
 		return fmt.Errorf("failed to close temp file: %w", err)
 	}
