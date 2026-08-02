@@ -2,11 +2,13 @@ package ipc
 
 import (
 	"context"
+	"time"
 
 	"focusguard/internal/analytics"
 	"focusguard/internal/policy"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
+	"focusguard/internal/schedule"
 )
 
 var (
@@ -26,6 +28,18 @@ type Request struct {
 	// Channel selects the release channel for the update action: "" or
 	// "stable" (default, skips prereleases) or "beta" (opt-in to prereleases).
 	Channel string `json:"channel,omitempty"`
+	// PresetName/Label/Domains describe a custom preset for preset-add/remove.
+	PresetName    string   `json:"preset_name,omitempty"`
+	PresetLabel   string   `json:"preset_label,omitempty"`
+	PresetDomains []string `json:"preset_domains,omitempty"`
+	// ScheduleRule/ScheduleID drive the schedule-add/remove actions.
+	ScheduleRule schedule.Rule `json:"schedule_rule,omitempty"`
+	ScheduleID   string        `json:"schedule_id,omitempty"`
+	// Allowlist lists the domains still reachable under the block-all action
+	// (deep-focus mode); empty means block all internet (panic mode).
+	Allowlist []string `json:"allowlist,omitempty"`
+	// GoalMinutes drives the goal-set action (daily focus goal in minutes).
+	GoalMinutes int `json:"goal_minutes,omitempty"`
 }
 
 type Response struct {
@@ -42,6 +56,9 @@ type Response struct {
 	Presets         []preset.Preset  `json:"presets,omitempty"`
 	Pomodoro        *pomodoro.State  `json:"pomodoro,omitempty"`
 	Stats           *analytics.Stats `json:"stats,omitempty"`
+	Schedules       []schedule.Rule  `json:"schedules,omitempty"`
+	// Goal is the current daily focus goal (goal-get / status).
+	Goal time.Duration `json:"goal,omitempty"`
 }
 
 // UpdateStatus holds the outcome of an auto-update check.

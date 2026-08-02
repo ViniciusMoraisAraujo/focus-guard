@@ -51,6 +51,8 @@ type Stats struct {
 	TotalFocus    time.Duration `json:"total_focus"`
 	PerDay        []DayStat     `json:"per_day"`
 	PerDomain     []DomainStat  `json:"per_domain"`
+	// Streak is the current run of consecutive days with focus.
+	Streak int `json:"streak"`
 }
 
 // Recorder appends sessions to a JSONL file. An empty path keeps the recorder
@@ -172,7 +174,49 @@ func Summarize(sessions []Session, days int, now time.Time) *Stats {
 		return st.PerDomain[i].Domain < st.PerDomain[j].Domain
 	})
 
+	st.Streak = ComputeStreak(sessions, now)
 	return st
+}
+
+// ComputeStreak returns the number of consecutive days (ending today, or
+// yesterday if today has no focus yet — a fresh day must not kill the streak
+// before the user starts) with at least one recorded session.
+func ComputeStreak(sessions []Session, now time.Time) int {
+	focused := make(map[string]bool)
+	for _, s := range sessions {
+		focused[s.Start.Format("2006-01-02")] = true
+	}
+
+	streak := 0
+	cursor := now
+	if !focused[now.Format("2006-01-02")] {
+		cursor = cursor.AddDate(0, 0, -1) // hoje ainda não conta — começa de ontem
+	}
+	for focused[cursor.Format("2006-01-02")] {
+		streak++
+		cursor = cursor.AddDate(0, 0, -1)
+	}
+	return streak
+}
+
+// ExportCSV renders the per-day window as comma-separated values with a
+// header row, minutes as integers (machine-readable, spreadsheet-friendly).
+func ExportCSV(st *Stats) string {
+	var b strings.Builder
+	b.WriteString("day,focus_minutes,sessions\n")
+	for _, d := range st.PerDay {
+		fmt.Fprintf(&b, "%s,%d,%d\n", d.Day, int(d.Duration/time.Minute), d.Sessions)
+	}
+	return b.String()
+}
+
+// ExportJSON marshals the whole report as indented JSON.
+func ExportJSON(st *Stats) (string, error) {
+	data, err := json.MarshalIndent(st, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	return string(data), nil
 }
 
 // RenderStats renders the report as an ASCII bar chart. The day with the most
@@ -183,7 +227,11 @@ func RenderStats(st *Stats, barWidth int) string {
 
 	fmt.Fprintf(&b, "FocusGuard — Estatísticas de foco\n\n")
 	fmt.Fprintf(&b, "Sessões registradas: %d\n", st.TotalSessions)
-	fmt.Fprintf(&b, "Tempo total de foco: %s\n\n", st.TotalFocus.Round(time.Minute))
+	fmt.Fprintf(&b, "Tempo total de foco: %s\n", st.TotalFocus.Round(time.Minute))
+	if st.Streak > 0 {
+		fmt.Fprintf(&b, "🔥 Raia de foco: %d dia(s) consecutivo(s)\n", st.Streak)
+	}
+	fmt.Fprintln(&b)
 
 	fmt.Fprintf(&b, "Foco por dia (últimos %d dias):\n", len(st.PerDay))
 	max := time.Duration(0)

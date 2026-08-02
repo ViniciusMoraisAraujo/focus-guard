@@ -109,6 +109,81 @@ func TestSummarize_PerDomain(t *testing.T) {
 
 // TestSummarize_Empty verifies an empty session list produces zeroed stats
 // with a fully zero-filled PerDay window.
+// ---------------------------------------------------------------------------
+// Streak (raia de dias consecutivos) & exportação
+// ---------------------------------------------------------------------------
+
+func TestComputeStreak_Empty(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC) // segunda
+	if got := ComputeStreak(nil, now); got != 0 {
+		t.Errorf("streak sem sessões = %d, want 0", got)
+	}
+}
+
+func TestComputeStreak_ConsecutiveDays(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC) // segunda
+	sessions := []Session{
+		testSession(now.AddDate(0, 0, -2), now.AddDate(0, 0, -2).Add(time.Hour), "social", time.Hour), // sábado
+		testSession(now.AddDate(0, 0, -1), now.AddDate(0, 0, -1).Add(time.Hour), "social", time.Hour), // domingo
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),                                    // hoje (segunda)
+	}
+	if got := ComputeStreak(sessions, now); got != 3 {
+		t.Errorf("streak = %d, want 3", got)
+	}
+}
+
+func TestComputeStreak_BrokenStreak(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC) // segunda
+	// sessões em seg (dia -3) e hoje (seg) — falta domingo (-1) → streak = 1 (hoje)
+	sessions := []Session{
+		testSession(now.AddDate(0, 0, -3), now.AddDate(0, 0, -3).Add(time.Hour), "social", time.Hour),
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),
+	}
+	if got := ComputeStreak(sessions, now); got != 1 {
+		t.Errorf("streak = %d, want 1 (só hoje; sexta quebrou a raia)", got)
+	}
+}
+
+func TestComputeStreak_TodayNotYetCounted(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC) // segunda
+	// sessão só ontem (domingo) → streak = 1 (ontem conta enquanto hoje está vazio)
+	sessions := []Session{
+		testSession(now.AddDate(0, 0, -1), now.AddDate(0, 0, -1).Add(time.Hour), "social", time.Hour),
+	}
+	if got := ComputeStreak(sessions, now); got != 1 {
+		t.Errorf("streak = %d, want 1 (ontem ainda conta)", got)
+	}
+}
+
+func TestExportCSV(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	st := Summarize([]Session{
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),
+	}, 7, now)
+
+	csv := ExportCSV(st)
+	for _, c := range []string{"day", "focus_minutes", "sessions", "2026-08-03"} {
+		if !strings.Contains(csv, c) {
+			t.Errorf("CSV deveria conter %q:\n%s", c, csv)
+		}
+	}
+}
+
+func TestExportJSON(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	st := Summarize([]Session{
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),
+	}, 7, now)
+
+	js, err := ExportJSON(st)
+	if err != nil {
+		t.Fatalf("ExportJSON: %v", err)
+	}
+	if !strings.Contains(js, "total_focus") || !strings.Contains(js, "per_day") {
+		t.Errorf("JSON deveria conter campos do Stats:\n%s", js)
+	}
+}
+
 func TestSummarize_Empty(t *testing.T) {
 	now := time.Now()
 	st := Summarize(nil, 7, now)

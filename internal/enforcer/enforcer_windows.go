@@ -367,6 +367,127 @@ func (e *windowsEnforcer) removeFirewallRule(ip string) error {
 	return nil
 }
 
+// allBlockRuleName is the stable name of the catch-all outbound block rule.
+func allBlockRuleName() string { return "FocusGuard_AllInternet" }
+
+// allowRuleName builds the per-IP allow rule name, replacing ':' so IPv6
+// addresses produce a valid rule name.
+func allowRuleName(ip string) string {
+	return "FocusGuard_Allow_" + strings.ReplaceAll(ip, ":", "_")
+}
+
+// BlockAll cuts off ALL outbound internet (panic mode) with a single catch-all
+// netsh block rule. allowlistIPs, when non-empty, get per-IP ALLOW rules
+// (deep-focus mode): Windows Firewall gives more specific rules (remoteip)
+// precedence over the broad block, so only the allowed destinations remain
+// reachable. Idempotent — previous all/allow rules are swept first.
+func (e *windowsEnforcer) BlockAll(allowlistIPs []string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := e.checkAdmin(); err != nil {
+		return err
+	}
+	if err := e.unblockAllLocked(); err != nil {
+		return err
+	}
+
+	for _, ip := range dedupeIPs(allowlistIPs) {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		args := []string{"advfirewall", "firewall", "add", "rule",
+			"name=" + allowRuleName(ip),
+			"dir=out",
+			"action=allow",
+			"remoteip=" + ip,
+		}
+		cmd := execCommandContext(ctx, "netsh", args...)
+		if out, err := cmd.CombinedOutput(); err != nil {
+			cancel()
+			return fmt.Errorf("netsh allow rule falhou para %s: %w (%s)", ip, err, strings.TrimSpace(string(out)))
+		}
+		cancel()
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	cmd := execCommandContext(ctx, "netsh", []string{"advfirewall", "firewall", "add", "rule",
+		"name=" + allBlockRuleName(),
+		"dir=out",
+		"action=block",
+	}...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("netsh block-all falhou: %w (%s)", err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// UnblockAll removes the catch-all block and every FocusGuard_Allow_* rule
+// (panic/deep-focus exit), leaving domain/DoH rules untouched.
+func (e *windowsEnforcer) UnblockAll() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := e.checkAdmin(); err != nil {
+		return err
+	}
+	return e.unblockAllLocked()
+}
+
+// unblockAllLocked deletes the catch-all block rule and sweeps every allow
+// rule (FocusGuard_Allow_*) present in the firewall. The caller must hold e.mu.
+func (e *windowsEnforcer) unblockAllLocked() error {
+	// Catch-all primeiro.
+	delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	cmd := execCommandContext(delCtx, "netsh", deleteRuleArgs(allBlockRuleName())...)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		delCancel()
+		outStr := string(out)
+		if !strings.Contains(outStr, "No rules match") && !strings.Contains(outStr, "Nenhuma regra") {
+			return fmt.Errorf("netsh delete do block-all falhou: %w (%s)", err, strings.TrimSpace(outStr))
+		}
+	}
+	delCancel()
+
+	// Sweep das allow rules: consulta única name=all e deleta cada uma.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	listCmd := execCommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	out, err := listCmd.CombinedOutput()
+	if err != nil {
+		return nil // sem consulta: nada a limpar por aqui
+	}
+	for name := range parseFocusGuardAllowRuleNames(out) {
+		dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Second)
+		dcmd := execCommandContext(dctx, "netsh", deleteRuleArgs(name)...)
+		if dout, derr := dcmd.CombinedOutput(); derr != nil {
+			dcancel()
+			doutStr := string(dout)
+			if !strings.Contains(doutStr, "No rules match") && !strings.Contains(doutStr, "Nenhuma regra") {
+				return fmt.Errorf("netsh delete da allow rule %s falhou: %w (%s)", name, derr, strings.TrimSpace(doutStr))
+			}
+		}
+		dcancel()
+	}
+	return nil
+}
+
+// parseFocusGuardAllowRuleNames extracts only the FocusGuard_Allow_* rule
+// names from a netsh show output, so UnblockAll never touches domain/DoH rules.
+func parseFocusGuardAllowRuleNames(output []byte) map[string]bool {
+	names := make(map[string]bool)
+	for _, line := range bytes.Split(output, []byte("\n")) {
+		idx := bytes.Index(line, []byte("FocusGuard_Allow_"))
+		if idx < 0 {
+			continue
+		}
+		name := string(bytes.TrimSpace(line[idx:]))
+		if name != "" {
+			names[name] = true
+		}
+	}
+	return names
+}
+
 func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -396,6 +517,9 @@ func countFocusGuardRules(output []byte) EnforcerStatus {
 			status.FirewallRules++
 			if bytes.Contains(line, []byte("FocusGuard_DoH_")) || bytes.Contains(line, []byte("FocusGuard_DoT_")) {
 				status.DoHActive = true
+			}
+			if bytes.Contains(line, []byte(allBlockRuleName())) {
+				status.AllBlocked = true
 			}
 		}
 	}

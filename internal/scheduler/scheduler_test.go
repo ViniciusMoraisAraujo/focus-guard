@@ -23,6 +23,8 @@ type mockEnforcer struct {
 	unblockedDomains map[string][]string
 	syncedBlocks     map[string][]string
 	syncCalls        int
+	allBlockCalls    [][]string
+	unblockAllCalls  int
 }
 
 func newMockEnforcer() *mockEnforcer {
@@ -60,6 +62,18 @@ func (m *mockEnforcer) Sync(activeBlocks map[string][]string) error {
 
 func (m *mockEnforcer) BlockDoH() error   { return nil }
 func (m *mockEnforcer) UnblockDoH() error { return nil }
+func (m *mockEnforcer) BlockAll(allowlist []string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.allBlockCalls = append(m.allBlockCalls, append([]string(nil), allowlist...))
+	return nil
+}
+func (m *mockEnforcer) UnblockAll() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unblockAllCalls++
+	return nil
+}
 
 func (m *mockEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
@@ -231,6 +245,10 @@ type syncFailingEnforcer struct {
 
 func (e *syncFailingEnforcer) Sync(_ map[string][]string) error {
 	return errors.New("sync failed: permission denied")
+}
+
+func (e *syncFailingEnforcer) BlockAll(_ []string) error {
+	return errors.New("block-all failed: permission denied")
 }
 
 func TestScheduler_Start_SyncError(t *testing.T) {
@@ -1075,6 +1093,124 @@ func TestScheduler_QueriesDoNotReadDisk(t *testing.T) {
 
 	if got := atomic.LoadInt32(&counting.loads); got != 0 {
 		t.Errorf("query methods must not read the disk, got %d Load calls", got)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// BlockAllInternet (modo pânico / allowlist deep-focus)
+// ---------------------------------------------------------------------------
+
+func TestScheduler_BlockAllInternet_AppliesAndExpires(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+	stubResolveFuncCtx(t, map[string][]string{
+		"docs.com":     {"1.1.1.1"},
+		"www.docs.com": {"2.2.2.2"},
+	})
+
+	blk, err := sched.BlockAllInternet([]string{"docs.com"}, 2*time.Hour)
+	if err != nil {
+		t.Fatalf("BlockAllInternet: %v", err)
+	}
+	if blk.Domain != enforcer.AllInternetDomain {
+		t.Errorf("Domain = %q, want sentinel %q", blk.Domain, enforcer.AllInternetDomain)
+	}
+
+	// enforcer.BlockAll deve ter sido chamado com os IPs resolvidos da allowlist
+	if len(enf.allBlockCalls) != 1 {
+		t.Fatalf("BlockAll chamado %d vezes, want 1", len(enf.allBlockCalls))
+	}
+	if !reflect.DeepEqual(enf.allBlockCalls[0], []string{"1.1.1.1", "2.2.2.2"}) {
+		t.Errorf("BlockAll allowlist = %v, want [1.1.1.1 2.2.2.2]", enf.allBlockCalls[0])
+	}
+
+	// HasActiveBlocks reflete o sentinela
+	if !sched.HasActiveBlocks() {
+		t.Error("BlockAllInternet deve deixar HasActiveBlocks=true")
+	}
+
+	// persistido no state.json
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := state.Blocks[enforcer.AllInternetDomain]; !ok {
+		t.Error("sentinela deveria estar persistido no state.json")
+	}
+
+	// bootstrap (RAM = fonte da verdade; o primeiro Reconcile lê o disco)
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile (bootstrap): %v", err)
+	}
+	if !sched.HasActiveBlocks() {
+		t.Fatal("sentinela deveria estar ativo após bootstrap")
+	}
+
+	// expiração: encurta o ExpiresAt na RAM (fonte da verdade) e reconcilia
+	sched.mu.Lock()
+	b := sched.blocks[enforcer.AllInternetDomain]
+	b.ExpiresAt = time.Now().Add(-time.Second)
+	sched.blocks[enforcer.AllInternetDomain] = b
+	sched.mu.Unlock()
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile (expiração): %v", err)
+	}
+
+	if enf.unblockAllCalls != 1 {
+		t.Errorf("UnblockAll chamado %d vezes após expiração, want 1", enf.unblockAllCalls)
+	}
+	if sched.HasActiveBlocks() {
+		t.Error("após expiração não deve haver bloqueios ativos")
+	}
+}
+
+func TestScheduler_BlockAllInternet_NoAllowlist(t *testing.T) {
+	sched, enf, _ := setupTestScheduler(t)
+
+	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
+		t.Fatalf("BlockAllInternet: %v", err)
+	}
+	if len(enf.allBlockCalls) != 1 || len(enf.allBlockCalls[0]) != 0 {
+		t.Errorf("BlockAll sem allowlist deve chamar com lista vazia, got %v", enf.allBlockCalls)
+	}
+}
+
+func TestScheduler_Reconcile_ReappliesActiveSentinel(t *testing.T) {
+	sched, enf, _ := setupTestScheduler(t)
+	stubResolveFuncCtx(t, map[string][]string{})
+
+	// seed: sentinela ativo direto no store (como após um restart)
+	now := time.Now()
+	sched.mu.Lock()
+	sched.blocks[enforcer.AllInternetDomain] = policy.Block{
+		Domain:      enforcer.AllInternetDomain,
+		StartedAt:   now,
+		ExpiresAt:   now.Add(time.Hour),
+		ResolvedIPs: []string{"1.1.1.1"},
+	}
+	sched.mu.Unlock()
+
+	sched.Reconcile()
+
+	// Reconcile deve reaplicar o BlockAll no enforcer (bootstrap/re-aplicação)
+	if len(enf.allBlockCalls) != 1 {
+		t.Errorf("Reconcile deveria reaplicar BlockAll com o sentinela ativo, got %d chamadas", len(enf.allBlockCalls))
+	}
+	if !reflect.DeepEqual(enf.allBlockCalls[0], []string{"1.1.1.1"}) {
+		t.Errorf("BlockAll reaplicado com %v, want [1.1.1.1]", enf.allBlockCalls[0])
+	}
+}
+
+func TestScheduler_BlockAllInternet_SyncFailureRollsBack(t *testing.T) {
+	st, _ := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	enf := &syncFailingEnforcer{mockEnforcer: newMockEnforcer()}
+	sched := NewScheduler(st, enf)
+
+	if _, err := sched.BlockAllInternet(nil, time.Hour); err == nil {
+		t.Fatal("esperava erro quando o enforcer.BlockAll falha")
+	}
+	if sched.HasActiveBlocks() {
+		t.Error("após falha não deve haver bloqueio ativo")
 	}
 }
 

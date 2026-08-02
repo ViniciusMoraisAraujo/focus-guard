@@ -730,6 +730,183 @@ func TestRemoveFirewallRule_StopsAtCap(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// BlockAll / UnblockAll (modo pânico + allowlist deep-focus)
+// ---------------------------------------------------------------------------
+
+func TestBuildBlockAllScript_AllowlistFirstThenCatchAll(t *testing.T) {
+	script := buildBlockAllScript([]string{"1.1.1.1", "8.8.8.8"}, "/32")
+
+	if !strings.HasPrefix(script, "*filter\n") || !strings.HasSuffix(script, "COMMIT\n") {
+		t.Errorf("script deve ter header *filter e footer COMMIT:\n%s", script)
+	}
+	// ACCEPT da allowlist ANTES do catch-all (ordem de avaliação do iptables)
+	allowIdx := strings.Index(script, "-A OUTPUT -d 1.1.1.1/32 -j ACCEPT -m comment --comment \""+AllowMarker)
+	catchIdx := strings.Index(script, "-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \""+AllBlockMarker)
+	if allowIdx < 0 {
+		t.Errorf("script deve conter ACCEPT da allowlist com marker:\n%s", script)
+	}
+	if catchIdx < 0 {
+		t.Errorf("script deve conter catch-all REJECT com marker:\n%s", script)
+	}
+	if allowIdx > catchIdx {
+		t.Errorf("ACCEPT da allowlist deve vir antes do catch-all:\n%s", script)
+	}
+}
+
+func TestBuildBlockAllScript_NoAllowlistOnlyCatchAll(t *testing.T) {
+	script := buildBlockAllScript(nil, "/32")
+	if !strings.Contains(script, AllBlockMarker) {
+		t.Errorf("script sem allowlist deve ter só o catch-all:\n%s", script)
+	}
+	if strings.Contains(script, AllowMarker) {
+		t.Errorf("script sem allowlist não deve conter ACCEPT rules:\n%s", script)
+	}
+}
+
+// allBlockStub records exec invocations; -S OUTPUT returns the canned rule
+// dump and restore calls succeed, so BlockAll/UnblockAll can be exercised
+// without root.
+type allBlockStub struct {
+	calls  [][]string
+	stdins []string
+	dump   map[string]string // bin -> -S OUTPUT output
+}
+
+func (a *allBlockStub) SetStdin(r io.Reader) {
+	data, _ := io.ReadAll(r)
+	a.stdins = append(a.stdins, string(data))
+}
+
+func (a *allBlockStub) CombinedOutput() ([]byte, error) {
+	if len(a.calls) == 0 {
+		return nil, errors.New("allBlockStub: sem chamadas registradas")
+	}
+	call := a.calls[len(a.calls)-1]
+	if call[0] == "iptables" || call[0] == "ip6tables" {
+		if len(call) > 1 && call[1] == "-S" {
+			return []byte(a.dump[call[0]]), nil
+		}
+	}
+	return nil, nil
+}
+
+func stubAllBlockExec(t *testing.T, a *allBlockStub) {
+	t.Helper()
+	orig := execCommandContext
+	t.Cleanup(func() { execCommandContext = orig })
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		a.calls = append(a.calls, append([]string{name}, args...))
+		return a
+	}
+}
+
+func TestBlockAll_AppliesBothFamilies(t *testing.T) {
+	a := &allBlockStub{dump: map[string]string{"iptables": "", "ip6tables": ""}}
+	stubAllBlockExec(t, a)
+
+	enf := &linuxEnforcer{}
+	if err := enf.blockAllLocked([]string{"1.1.1.1", "2001:db8::1"}); err != nil {
+		t.Fatalf("BlockAll: %v", err)
+	}
+
+	// UnblockAll inicial (2 -S) + 2 restores (iptables + ip6tables) + 2 ss
+	if len(a.calls) < 4 {
+		t.Fatalf("esperava >= 4 invocações, got %d: %v", len(a.calls), a.calls)
+	}
+	restores := 0
+	for _, c := range a.calls {
+		if c[0] == "iptables-restore" || c[0] == "ip6tables-restore" {
+			restores++
+		}
+	}
+	if restores != 2 {
+		t.Errorf("esperava 2 restores (v4+v6), got %d", restores)
+	}
+	if len(a.stdins) != 2 {
+		t.Fatalf("esperava 2 stdin scripts, got %d", len(a.stdins))
+	}
+	// v4 script: allowlist 1.1.1.1 + catch-all
+	if !strings.Contains(a.stdins[0], "1.1.1.1/32") || !strings.Contains(a.stdins[0], AllBlockMarker) {
+		t.Errorf("v4 script inesperado:\n%s", a.stdins[0])
+	}
+	if !strings.Contains(a.stdins[1], "2001:db8::1/128") {
+		t.Errorf("v6 script deveria conter 2001:db8::1:\n%s", a.stdins[1])
+	}
+}
+
+func TestBlockAll_NoAllowlistOnlyCatchAll(t *testing.T) {
+	a := &allBlockStub{dump: map[string]string{"iptables": "", "ip6tables": ""}}
+	stubAllBlockExec(t, a)
+
+	enf := &linuxEnforcer{}
+	if err := enf.blockAllLocked(nil); err != nil {
+		t.Fatalf("BlockAll: %v", err)
+	}
+	if len(a.stdins) != 2 {
+		t.Fatalf("esperava 2 scripts (v4+v6 catch-all), got %d", len(a.stdins))
+	}
+	for _, s := range a.stdins {
+		if !strings.Contains(s, AllBlockMarker) {
+			t.Errorf("script deve conter catch-all:\n%s", s)
+		}
+		if strings.Contains(s, AllowMarker) {
+			t.Errorf("script sem allowlist não deve ter ACCEPT:\n%s", s)
+		}
+	}
+}
+
+func TestUnblockAll_SweepsMarkedRules(t *testing.T) {
+	a := &allBlockStub{dump: map[string]string{
+		"iptables":  "-A OUTPUT -d 1.1.1.1/32 -j ACCEPT -m comment --comment \"FOCUSGUARD_ALLOW\"\n-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \"FOCUSGUARD_ALL\"\n-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset\n",
+		"ip6tables": "",
+	}}
+	stubAllBlockExec(t, a)
+
+	enf := &linuxEnforcer{}
+	if err := enf.unblockAllLocked(); err != nil {
+		t.Fatalf("UnblockAll: %v", err)
+	}
+
+	// 2 probes -S + 2 deletes (allow + catch-all). A regra de domínio normal
+	// (9.9.9.9, sem marker) não pode ser tocada.
+	delCalls := 0
+	for _, c := range a.calls {
+		if len(c) > 1 && c[1] == "-D" {
+			delCalls++
+			if strings.Contains(strings.Join(c, " "), "9.9.9.9") {
+				t.Errorf("regra de domínio sem marker não pode ser removida: %v", c)
+			}
+		}
+	}
+	if delCalls != 2 {
+		t.Errorf("esperava 2 deletes (allow + catch-all), got %d: %v", delCalls, a.calls)
+	}
+}
+
+func TestAllBlockedByStatus_DetectsMarker(t *testing.T) {
+	a := &allBlockStub{dump: map[string]string{
+		"iptables":  "-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \"FOCUSGUARD_ALL\"\n",
+		"ip6tables": "",
+	}}
+	stubAllBlockExec(t, a)
+
+	enf := &linuxEnforcer{}
+	if !enf.allBlockedByStatus() {
+		t.Error("allBlockedByStatus deveria detectar o catch-all")
+	}
+}
+
+func TestAllBlockedByStatus_NoMarkerFalse(t *testing.T) {
+	a := &allBlockStub{dump: map[string]string{"iptables": "-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset\n", "ip6tables": ""}}
+	stubAllBlockExec(t, a)
+
+	enf := &linuxEnforcer{}
+	if enf.allBlockedByStatus() {
+		t.Error("allBlockedByStatus não deveria detectar regra sem marker")
+	}
+}
+
 func TestBlockDomainLocked_RollbackCleansHosts(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("Skipping: running as root, firewall rules may succeed")

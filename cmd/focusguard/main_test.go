@@ -18,6 +18,7 @@ import (
 	"focusguard/internal/ipc"
 	"focusguard/internal/policy"
 	"focusguard/internal/preset"
+	"focusguard/internal/schedule"
 )
 
 type exitPanic struct {
@@ -672,6 +673,86 @@ func TestPrintUsage_IncludesPomodoro(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Presets personalizados
+// ---------------------------------------------------------------------------
+
+func TestHandlePresetAddCommand(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Preset estudo criado"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() {
+		handlePresetAddCommand(client, []string{"estudo", "khanacademy.org", "coursera.org"})
+	})
+
+	if gotReq.Action != "preset-add" {
+		t.Errorf("expected action preset-add, got %q", gotReq.Action)
+	}
+	if gotReq.PresetName != "estudo" {
+		t.Errorf("expected PresetName estudo, got %q", gotReq.PresetName)
+	}
+	if len(gotReq.PresetDomains) != 2 || gotReq.PresetDomains[0] != "khanacademy.org" {
+		t.Errorf("unexpected PresetDomains: %v", gotReq.PresetDomains)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output should contain checkmark, got: %s", output)
+	}
+}
+
+func TestHandlePresetAddCommand_MissingArgs(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handlePresetAddCommand(client, []string{"estudo"})
+	})
+
+	if !caught {
+		t.Fatal("expected osExit when no domains are given")
+	}
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestHandlePresetRemoveCommand(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Preset estudo removido"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() {
+		handlePresetRemoveCommand(client, []string{"estudo"})
+	})
+
+	if gotReq.Action != "preset-remove" {
+		t.Errorf("expected action preset-remove, got %q", gotReq.Action)
+	}
+	if gotReq.PresetName != "estudo" {
+		t.Errorf("expected PresetName estudo, got %q", gotReq.PresetName)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output should contain checkmark, got: %s", output)
+	}
+}
+
+func TestPrintUsage_IncludesPresetCommands(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	for _, c := range []string{"preset add", "preset remove"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("usage should mention %q", c)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Strict Mode & Analytics
 // ---------------------------------------------------------------------------
 
@@ -695,7 +776,7 @@ func TestHandleStatsCommand_PrintsChart(t *testing.T) {
 	})
 
 	client := ipc.NewClient()
-	output := captureStdout(t, func() { handleStatsCommand(client) })
+	output := captureStdout(t, func() { handleStatsCommand(client, nil) })
 
 	for _, c := range []string{"FocusGuard", "1", "twitter.com", "█"} {
 		if !strings.Contains(output, c) {
@@ -711,7 +792,7 @@ func TestHandleStatsCommand_FailureResponse(t *testing.T) {
 
 	client := ipc.NewClient()
 	caught, code := runWithExitMock(func() {
-		handleStatsCommand(client)
+		handleStatsCommand(client, nil)
 	})
 
 	if !caught {
@@ -812,6 +893,408 @@ func TestPrintUsage_IncludesChannelFlag(t *testing.T) {
 	output := captureStdout(t, printUsage)
 	if !strings.Contains(output, "--channel") {
 		t.Error("usage should mention --channel")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Agendamento recorrente (schedule add/list/remove)
+// ---------------------------------------------------------------------------
+
+func TestHandleScheduleAdd_DefaultFlags(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Regra abc123 criada: social das 08:00 às 12:00"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() {
+		handleScheduleAddCommand(client, []string{"--preset", "social", "--days", "mon,tue,wed", "--start", "08:00", "--end", "12:00"})
+	})
+
+	if gotReq.Action != "schedule-add" {
+		t.Errorf("expected action schedule-add, got %q", gotReq.Action)
+	}
+	r := gotReq.ScheduleRule
+	if r.Preset != "social" {
+		t.Errorf("Preset = %q, want social", r.Preset)
+	}
+	if len(r.Days) != 3 || r.Days[0] != 1 || r.Days[1] != 2 || r.Days[2] != 3 {
+		t.Errorf("Days = %v, want [1 2 3] (mon,tue,wed)", r.Days)
+	}
+	if r.Start != "08:00" || r.End != "12:00" {
+		t.Errorf("Start/End = %s/%s, want 08:00/12:00", r.Start, r.End)
+	}
+	if !r.Enabled {
+		t.Error("Enabled deveria ser true por padrão")
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output deveria conter checkmark, got: %s", output)
+	}
+}
+
+func TestHandleScheduleAdd_EnglishAndPortugueseDays(t *testing.T) {
+	cases := []struct {
+		name string
+		days string
+		want []int
+	}{
+		{"ingles completo", "sun,mon,tue,wed,thu,fri,sat", []int{0, 1, 2, 3, 4, 5, 6}},
+		{"portugues", "seg,ter,qua,qui,sex,sab,dom", []int{1, 2, 3, 4, 5, 6, 0}},
+		{"misturado case-insensitive", "MON,SEG,Sat", []int{1, 1, 6}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotReq ipc.Request
+			startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+				gotReq = req
+				return ipc.Response{Success: true, Message: "OK"}
+			})
+			client := ipc.NewClient()
+			captureStdout(t, func() {
+				handleScheduleAddCommand(client, []string{"--preset", "social", "--days", tc.days, "--start", "08:00", "--end", "12:00"})
+			})
+			got := gotReq.ScheduleRule.Days
+			if len(got) != len(tc.want) {
+				t.Errorf("Days = %v, want %v", got, tc.want)
+				return
+			}
+			for i := range got {
+				if got[i] != tc.want[i] {
+					t.Errorf("Days = %v, want %v", got, tc.want)
+					return
+				}
+			}
+		})
+	}
+}
+
+func TestHandleScheduleAdd_InvalidDay(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleScheduleAddCommand(client, []string{"--preset", "social", "--days", "xpto", "--start", "08:00", "--end", "12:00"})
+	})
+	if !caught {
+		t.Fatal("expected osExit on invalid day")
+	}
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestHandleScheduleAdd_MissingFlags(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleScheduleAddCommand(client, []string{"--preset", "social", "--start", "08:00", "--end", "12:00"})
+	})
+	if !caught {
+		t.Fatal("expected osExit when days are missing")
+	}
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestHandleScheduleList_PrintsRules(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		if req.Action != "schedule-list" {
+			t.Errorf("expected action schedule-list, got %q", req.Action)
+		}
+		return ipc.Response{
+			Success: true,
+			Schedules: []schedule.Rule{
+				{ID: "abc1", Preset: "social", Days: []int{1, 2, 3}, Start: "08:00", End: "12:00", Enabled: true},
+			},
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleScheduleListCommand(client) })
+
+	for _, c := range []string{"abc1", "social", "08:00", "12:00"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("output deveria conter %q, got: %s", c, output)
+		}
+	}
+}
+
+func TestHandleScheduleRemove(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Regra abc1 removida"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleScheduleRemoveCommand(client, []string{"abc1"}) })
+
+	if gotReq.Action != "schedule-remove" {
+		t.Errorf("expected action schedule-remove, got %q", gotReq.Action)
+	}
+	if gotReq.ScheduleID != "abc1" {
+		t.Errorf("ScheduleID = %q, want abc1", gotReq.ScheduleID)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output deveria conter checkmark, got: %s", output)
+	}
+}
+
+func TestHandleScheduleCommand_Dispatch(t *testing.T) {
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{"list", []string{"list"}, "schedule-list"},
+		{"sem subcomando lista", nil, "schedule-list"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var gotReq ipc.Request
+			startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+				gotReq = req
+				return ipc.Response{Success: true, Schedules: nil}
+			})
+			client := ipc.NewClient()
+			captureStdout(t, func() { handleScheduleCommand(client, tc.args) })
+			if gotReq.Action != tc.want {
+				t.Errorf("expected action %q, got %q", tc.want, gotReq.Action)
+			}
+		})
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Modo pânico / allowlist (block --internet / --allow)
+// ---------------------------------------------------------------------------
+
+func TestHandleBlockCommand_InternetPanicMode(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Internet bloqueada"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handleBlockCommand(client, []string{"--internet", "--duration", "30m"})
+	})
+
+	if gotReq.Action != "block-all" {
+		t.Errorf("expected action block-all, got %q", gotReq.Action)
+	}
+	if gotReq.Duration != "30m" {
+		t.Errorf("Duration = %q, want 30m", gotReq.Duration)
+	}
+	if len(gotReq.Allowlist) != 0 {
+		t.Errorf("Allowlist deve ser vazia no modo pânico, got %v", gotReq.Allowlist)
+	}
+}
+
+func TestHandleBlockCommand_InternetAllowlist(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Internet bloqueada"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handleBlockCommand(client, []string{"--internet", "--allow", "docs.google.com,drive.google.com", "--duration", "1h"})
+	})
+
+	if gotReq.Action != "block-all" {
+		t.Errorf("expected action block-all, got %q", gotReq.Action)
+	}
+	if len(gotReq.Allowlist) != 2 || gotReq.Allowlist[0] != "docs.google.com" || gotReq.Allowlist[1] != "drive.google.com" {
+		t.Errorf("Allowlist = %v, want [docs.google.com drive.google.com]", gotReq.Allowlist)
+	}
+}
+
+func TestHandleBlockCommand_InternetWithoutDuration(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleBlockCommand(client, []string{"--internet"})
+	})
+	if !caught {
+		t.Fatal("expected osExit when --internet has no duration")
+	}
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestHandleBlockCommand_InternetShortDurationFlag(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handleBlockCommand(client, []string{"--internet", "-d", "2h"})
+	})
+	if gotReq.Action != "block-all" || gotReq.Duration != "2h" {
+		t.Errorf("unexpected request: %+v", gotReq)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Meta diária (goal) e export de stats (--export)
+// ---------------------------------------------------------------------------
+
+func TestHandleGoalCommand_Show(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Goal: 4 * time.Hour}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleGoalCommand(client, nil) })
+
+	if gotReq.Action != "goal-get" {
+		t.Errorf("expected action goal-get, got %q", gotReq.Action)
+	}
+	if !strings.Contains(output, "4h") {
+		t.Errorf("output deveria mostrar a meta 4h, got: %s", output)
+	}
+}
+
+func TestHandleGoalCommand_NoGoal(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Goal: 0}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleGoalCommand(client, nil) })
+	if !strings.Contains(output, "nenhuma meta") && !strings.Contains(output, "meta") {
+		t.Errorf("output deveria indicar que não há meta, got: %s", output)
+	}
+}
+
+func TestHandleGoalCommand_Set(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Goal: 2 * time.Hour, Message: "Meta diária definida: 2h0m0s"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleGoalCommand(client, []string{"set", "2h"}) })
+
+	if gotReq.Action != "goal-set" {
+		t.Errorf("expected action goal-set, got %q", gotReq.Action)
+	}
+	if gotReq.GoalMinutes != 120 {
+		t.Errorf("GoalMinutes = %d, want 120", gotReq.GoalMinutes)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output deveria conter checkmark, got: %s", output)
+	}
+}
+
+func TestHandleGoalCommand_InvalidDuration(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleGoalCommand(client, []string{"set", "xpto"})
+	})
+	if !caught {
+		t.Fatal("expected osExit on invalid duration")
+	}
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestHandleStatsCommand_ExportCSV(t *testing.T) {
+	now := time.Now()
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{
+			Success: true,
+			Stats: &analytics.Stats{
+				TotalSessions: 1,
+				TotalFocus:    time.Hour,
+				PerDay: []analytics.DayStat{
+					{Day: now.Format("2006-01-02"), Duration: time.Hour, Sessions: 1},
+				},
+				Streak: 1,
+			},
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() {
+		handleStatsCommand(client, []string{"--export", "csv"})
+	})
+
+	if !strings.Contains(output, "day,focus_minutes,sessions") {
+		t.Errorf("export CSV deveria conter o cabeçalho, got: %s", output)
+	}
+	if strings.Contains(output, "█") {
+		t.Errorf("export CSV não deveria conter gráfico ASCII, got: %s", output)
+	}
+}
+
+func TestHandleStatsCommand_ExportJSON(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{
+			Success: true,
+			Stats:   &analytics.Stats{TotalSessions: 1, Streak: 1},
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() {
+		handleStatsCommand(client, []string{"--export", "json"})
+	})
+
+	if !strings.Contains(output, "\"total_sessions\"") || !strings.Contains(output, "\"streak\"") {
+		t.Errorf("export JSON deveria conter campos do Stats, got: %s", output)
+	}
+}
+
+func TestPrintUsage_IncludesGoal(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	for _, c := range []string{"goal", "--export"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("usage deveria mencionar %q", c)
+		}
+	}
+}
+
+func TestPrintUsage_IncludesInternet(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	for _, c := range []string{"--internet", "--allow"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("usage deveria mencionar %q", c)
+		}
+	}
+}
+
+func TestPrintUsage_IncludesSchedule(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	for _, c := range []string{"schedule add", "schedule list", "schedule remove"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("usage deveria mencionar %q", c)
+		}
 	}
 }
 

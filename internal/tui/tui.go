@@ -48,6 +48,8 @@ type model struct {
 	updateAvailable bool
 	updateVersion   string
 
+	goal time.Duration
+
 	lastStatusFetch time.Time
 
 	width  int
@@ -70,6 +72,7 @@ type statusFetchedMsg struct {
 	protectionError string
 	updateAvailable bool
 	updateVersion   string
+	goal            time.Duration
 }
 
 type fetchErrMsg struct {
@@ -258,6 +261,7 @@ func (m *model) fetchStatusCmd() tea.Cmd {
 			protectionError: resp.ProtectionError,
 			updateAvailable: resp.UpdateAvailable,
 			updateVersion:   resp.UpdateVersion,
+			goal:            resp.Goal,
 		}
 	}
 }
@@ -315,6 +319,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.protectionError = msg.protectionError
 		m.updateAvailable = msg.updateAvailable
 		m.updateVersion = msg.updateVersion
+		m.goal = msg.goal
 		m.lastStatusFetch = time.Now()
 		m.updateTableRows()
 		return m, nil
@@ -512,6 +517,11 @@ func (m *model) listView() string {
 		b.WriteString("\n")
 	}
 
+	if !m.loading && m.goal > 0 {
+		b.WriteString(m.goalLine())
+		b.WriteString("\n")
+	}
+
 	if !m.loading && m.updateAvailable {
 		b.WriteString(m.updateBanner())
 		b.WriteString("\n")
@@ -558,6 +568,15 @@ func (m *model) listView() string {
 	)))
 
 	return appStyle.Render(b.String())
+}
+
+// goalLine renders the daily focus goal as a progress hint in the TUI
+// (Feature 8): "🎯 Meta diária: 4h — bata a meta de foco hoje!"
+func (m *model) goalLine() string {
+	return lipgloss.NewStyle().
+		Foreground(highlight).
+		Bold(true).
+		Render(fmt.Sprintf("🎯 Meta diária: %s", m.goal.Round(time.Minute)))
 }
 
 // updateBanner renders the visual update indicator (Feature 5): a highlighted

@@ -79,6 +79,20 @@ func mergeWWWIPs(ips, wwwIPs []string) []string {
 	return ips
 }
 
+// dedupeIPs removes duplicate IPs while preserving order.
+func dedupeIPs(ips []string) []string {
+	seen := make(map[string]bool, len(ips))
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		if seen[ip] {
+			continue
+		}
+		seen[ip] = true
+		out = append(out, ip)
+	}
+	return out
+}
+
 // dedupeDomains removes duplicate domains while preserving order.
 func dedupeDomains(domains []string) []string {
 	seen := make(map[string]bool, len(domains))
@@ -278,7 +292,26 @@ func (s *Scheduler) Reconcile() error {
 
 	var toUnblock []unblockEntry
 	activeIPs := make(map[string][]string, len(s.blocks))
+	sentinelActive := false
+	var sentinelIPs []string
+	sentinelExpired := false
 	for domain, block := range s.blocks {
+		if isAllInternetBlock(block) {
+			if block.CanUnblock() {
+				sentinelExpired = true
+				delete(s.blocks, domain)
+				if t, ok := s.timers[domain]; ok {
+					t.Stop()
+					delete(s.timers, domain)
+				}
+				changed = true
+			} else {
+				sentinelActive = true
+				sentinelIPs = block.ResolvedIPs
+				s.setupTimerLocked(block)
+			}
+			continue
+		}
 		if block.CanUnblock() {
 			toUnblock = append(toUnblock, unblockEntry{domain, block.ResolvedIPs})
 			delete(s.blocks, domain)
@@ -308,7 +341,27 @@ func (s *Scheduler) Reconcile() error {
 	for _, e := range toUnblock {
 		_ = s.enforcer.UnblockDomain(e.domain, e.ips)
 	}
-	if len(activeIPs) > 0 {
+	if sentinelExpired {
+		_ = s.enforcer.UnblockAll()
+	}
+	if sentinelActive {
+		// Re-aplica o sentinela após restart (bootstrap) — o enforcer é
+		// idempotente e o allowlist precisa ser reestabelecido.
+		if err := s.enforcer.BlockAll(sentinelIPs); err != nil {
+			return err
+		}
+		// Domínios persistidos continuam precisando do Sync (hosts + regras
+		// por IP): o sentinela bloqueia tudo, mas ao expirar a proteção dos
+		// domínios precisa já estar no ar. Sem este Sync, um restart com
+		// pânico + domínios deixaria os domínios sem proteção após a
+		// expiração do sentinela.
+		if len(activeIPs) > 0 {
+			if err := s.enforcer.Sync(activeIPs); err != nil {
+				return err
+			}
+		}
+		_ = s.enforcer.BlockDoH()
+	} else if len(activeIPs) > 0 {
 		if err := s.enforcer.Sync(activeIPs); err != nil {
 			return err
 		}
@@ -339,6 +392,9 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 
 		var entries []refreshEntry
 		for domain, block := range s.blocks {
+			if isAllInternetBlock(block) {
+				continue // sentinela não tem domínio para re-resolver
+			}
 			if block.IsActive() {
 				entries = append(entries, refreshEntry{domain: domain, ips: block.ResolvedIPs})
 			}
@@ -511,6 +567,71 @@ func resolveEntries(domains []string) []refreshEntry {
 	return entries
 }
 
+// BlockAllInternet cuts off ALL outbound internet (panic mode) or blocks
+// everything except the allowlist domains (deep-focus mode), for the given
+// duration. The block is tracked under the enforcer.AllInternetDomain sentinel
+// key (never a real hostname, so no hosts-file entry and no per-domain IP
+// rules): it persists to the state mirror like any block and expires through
+// the same timer machinery, invoking enforcer.UnblockAll on expiry.
+func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Duration) (*policy.Block, error) {
+	// Resolve allowlist domains to IPs (best-effort per domain; failures are
+	// dropped so one bad domain never kills the whole panic block).
+	var allowlistIPs []string
+	if len(allowlistDomains) > 0 {
+		resolved := refreshResolvedIPs(resolveEntries(dedupeDomains(allowlistDomains)), dnsRefreshTimeout, resolveBlockIPsCtx)
+		for _, d := range dedupeDomains(allowlistDomains) {
+			if ips, ok := resolved[d]; ok {
+				allowlistIPs = append(allowlistIPs, ips...)
+			}
+		}
+	}
+
+	now := time.Now()
+	block := policy.Block{
+		Domain:      enforcer.AllInternetDomain,
+		StartedAt:   now,
+		ExpiresAt:   now.Add(duration),
+		ResolvedIPs: dedupeIPs(allowlistIPs),
+	}
+
+	s.mu.Lock()
+	wasEmpty := len(s.blocks) == 0
+	s.blocks[enforcer.AllInternetDomain] = block
+	if err := s.store.Save(s.ramState()); err != nil {
+		delete(s.blocks, enforcer.AllInternetDomain)
+		s.mu.Unlock()
+		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
+	}
+	s.mu.Unlock()
+
+	if err := s.enforcer.BlockAll(block.ResolvedIPs); err != nil {
+		// Reverte a RAM e o disco: um bloqueio que falhou não pode deixar o
+		// sentinela ativo sem timer (estado zumbi).
+		s.mu.Lock()
+		delete(s.blocks, enforcer.AllInternetDomain)
+		_ = s.store.Save(s.ramState())
+		s.mu.Unlock()
+		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueio de internet: %w", err)
+	}
+
+	if wasEmpty {
+		_ = s.enforcer.BlockDoH()
+	}
+
+	s.mu.Lock()
+	s.setupTimerLocked(block)
+	s.mu.Unlock()
+
+	return &block, nil
+}
+
+// isAllInternetBlock reports whether a scheduler block entry is the sentinel
+// all-internet block (panic/deep-focus), which the enforcer handles through
+// BlockAll/UnblockAll instead of per-domain hosts/firewall rules.
+func isAllInternetBlock(b policy.Block) bool {
+	return b.Domain == enforcer.AllInternetDomain
+}
+
 func (s *Scheduler) ListBlocks() ([]policy.Block, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -548,7 +669,11 @@ func (s *Scheduler) onExpire(domain string) {
 	_ = s.store.Save(s.ramState())
 	s.mu.Unlock()
 
-	_ = s.enforcer.UnblockDomain(domain, ips)
+	if isAllInternetBlock(block) {
+		_ = s.enforcer.UnblockAll()
+	} else {
+		_ = s.enforcer.UnblockDomain(domain, ips)
+	}
 
 	if remaining == 0 {
 		_ = s.enforcer.UnblockDoH()

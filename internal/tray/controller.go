@@ -5,6 +5,8 @@ import (
 	"time"
 
 	"focusguard/internal/ipc"
+	"focusguard/internal/policy"
+	"focusguard/internal/pomodoro"
 )
 
 const (
@@ -18,6 +20,10 @@ const (
 	// the background (Feature 2). 30min strikes a balance between noticing
 	// releases promptly and not hammering the daemon.
 	updatePollInterval = 30 * time.Minute
+	// pomodoroPollInterval is how often the tray samples the pomodoro state to
+	// raise native notifications on work/rest transitions (Feature 5). 10s is
+	// fine-grained enough for 25-min phases while staying cheap on IPC.
+	pomodoroPollInterval = 10 * time.Second
 )
 
 var quickBlockDomains = []string{
@@ -38,20 +44,25 @@ type Daemon interface {
 // Controller wires a Systray to a Daemon. All of its logic is plain Go and
 // fully testable with mocks.
 type Controller struct {
-	systray     Systray
-	daemon      Daemon
-	openTUI     func()
-	statusItem  MenuItem
-	blockParent MenuItem
-	updateItem  MenuItem
-	tuiItem     MenuItem
-	quitItem    MenuItem
-	quickItems  []MenuItem
+	systray      Systray
+	daemon       Daemon
+	openTUI      func()
+	statusItem   MenuItem
+	blockParent  MenuItem
+	presetParent MenuItem
+	updateItem   MenuItem
+	tuiItem      MenuItem
+	quitItem     MenuItem
+	quickItems   []MenuItem
 
 	// notifiedVersion records the last version a native notification was shown
 	// for, so the tray does not spam the user on every poll for the same
 	// release (Feature 2).
 	notifiedVersion string
+	// lastPomo/pomoSeen track the last observed pomodoro state so work/rest
+	// transitions raise exactly one native notification each (Feature 5).
+	lastPomo pomodoro.State
+	pomoSeen bool
 }
 
 // NewController builds a tray controller.
@@ -75,6 +86,8 @@ func (c *Controller) onReady() {
 		domain := quickBlockDomains[i]
 		c.quickItems = append(c.quickItems, c.blockParent.AddSubMenuItem(domain, "Bloquear "+domain))
 	}
+	c.presetParent = c.systray.AddMenuItem("🗂 Categorias", "Bloquear uma categoria (preset) por "+quickBlockDuration)
+	go c.populatePresetMenu()
 	c.systray.AddSeparator()
 	c.updateItem = c.systray.AddMenuItem("🔄 Verificar atualização", "Verificar e aplicar nova versão do daemon")
 	c.systray.AddSeparator()
@@ -116,6 +129,92 @@ func (c *Controller) onReady() {
 
 	c.refreshStatus()
 	c.startUpdatePolling()
+	c.startPomodoroPolling()
+}
+
+// populatePresetMenu fetches the preset catalog (built-ins + user presets) from
+// the daemon and fills the "Categorias" submenu. Best-effort: an unreachable
+// daemon leaves the submenu titled "indisponível" without breaking the tray.
+func (c *Controller) populatePresetMenu() {
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "presets"}, daemonTimeout)
+	if err != nil || resp == nil || !resp.Success || len(resp.Presets) == 0 {
+		c.presetParent.SetTitle("🗂 Categorias (indisponível)")
+		return
+	}
+	for i := range resp.Presets {
+		p := resp.Presets[i]
+		item := c.presetParent.AddSubMenuItem(p.Label, "Bloquear "+p.Label+" por "+quickBlockDuration)
+		go func(name string) {
+			for range item.Clicked() {
+				c.blockPreset(name)
+			}
+		}(p.Name)
+	}
+}
+
+// blockPreset blocks a whole category for the quick duration via the daemon.
+func (c *Controller) blockPreset(presetName string) {
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "block", Preset: presetName, Duration: quickBlockDuration}, daemonTimeout)
+	if err != nil || resp == nil {
+		c.systray.SetTooltip("⚠ Falha ao bloquear categoria " + presetName)
+		return
+	}
+	if !resp.Success {
+		c.systray.SetTooltip(errorTooltip("Falha ao bloquear "+presetName, resp))
+		return
+	}
+	c.refreshStatus()
+}
+
+// startPomodoroPolling samples the pomodoro state periodically so work/rest
+// transitions raise a native notification (Feature 5).
+func (c *Controller) startPomodoroPolling() {
+	ticker := time.NewTicker(pomodoroPollInterval)
+	go func() {
+		for range ticker.C {
+			c.checkPomodoroNotification()
+		}
+	}()
+}
+
+// checkPomodoroNotification observes the pomodoro state from the daemon status
+// and notifies exactly once per transition: session start (work), work→rest,
+// rest→work and session end. The first observation only sets the baseline.
+func (c *Controller) checkPomodoroNotification() {
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "status"}, daemonTimeout)
+	if err != nil || resp == nil || !resp.Success {
+		return
+	}
+	st := resp.Pomodoro
+	if st == nil {
+		st = &pomodoro.State{}
+	}
+	prev := c.lastPomo
+	c.lastPomo = *st
+	if !c.pomoSeen {
+		c.pomoSeen = true
+		return
+	}
+
+	switch {
+	case !prev.Active && st.Active:
+		c.systray.Notify("Pomodoro", fmt.Sprintf("Hora de trabalhar! Ciclo %d/%d (%s)", st.Cycle, st.Cycles, pomoPhaseLabel(st.Phase)))
+	case prev.Active && st.Active && prev.Phase != st.Phase:
+		if st.Phase == pomodoro.PhaseRest {
+			c.systray.Notify("Pomodoro", fmt.Sprintf("Pausa para descanso! Ciclo %d/%d", st.Cycle, st.Cycles))
+		} else {
+			c.systray.Notify("Pomodoro", fmt.Sprintf("Volta ao trabalho! Ciclo %d/%d", st.Cycle, st.Cycles))
+		}
+	case prev.Active && !st.Active:
+		c.systray.Notify("Pomodoro", "Sessão concluída! 🎉")
+	}
+}
+
+func pomoPhaseLabel(p pomodoro.Phase) string {
+	if p == pomodoro.PhaseRest {
+		return "descanso"
+	}
+	return "trabalho"
 }
 
 // startUpdatePolling runs the background update check (Feature 2): every
@@ -221,5 +320,48 @@ func statusTooltip(resp *ipc.Response) string {
 	if resp.UpdateAvailable {
 		tt += fmt.Sprintf(" · 🔄 v%s disponível", resp.UpdateVersion)
 	}
+	if longest := longestBlockRemaining(resp.Blocks); longest != "" {
+		tt += " · 🚫 " + longest
+	}
 	return tt
+}
+
+// longestBlockRemaining describes the active block with the most time left
+// ("domain por mais 1h30m"), or "" when there are no active blocks.
+func longestBlockRemaining(blocks []policy.Block) string {
+	var (
+		best    *policy.Block
+		bestDur time.Duration
+	)
+	for i := range blocks {
+		if !blocks[i].IsActive() {
+			continue
+		}
+		if d := blocks[i].RemainingTime(); d > bestDur {
+			bestDur = d
+			best = &blocks[i]
+		}
+	}
+	if best == nil {
+		return ""
+	}
+	return best.Domain + " por mais " + formatDuration(bestDur)
+}
+
+// formatDuration renders a duration compactly as "1h30m" / "45m" / "2h",
+// rounding up to the next minute so a 89m59s block still reads "1h30m" (the
+// time between computing RemainingTime and rendering would otherwise show
+// 1h29m for a freshly created 90-minute block).
+func formatDuration(d time.Duration) string {
+	d += time.Minute - time.Nanosecond // ceil até o minuto seguinte
+	h := int(d.Hours())
+	m := int(d.Minutes()) % 60
+	switch {
+	case h > 0 && m > 0:
+		return fmt.Sprintf("%dh%dm", h, m)
+	case h > 0:
+		return fmt.Sprintf("%dh", h)
+	default:
+		return fmt.Sprintf("%dm", m)
+	}
 }

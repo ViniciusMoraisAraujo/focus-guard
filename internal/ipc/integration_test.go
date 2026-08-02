@@ -36,6 +36,8 @@ func (m *integrationMockEnforcer) UnblockDomain(_ string, _ []string) error {
 func (m *integrationMockEnforcer) Sync(_ map[string][]string) error { return nil }
 func (m *integrationMockEnforcer) BlockDoH() error                  { return nil }
 func (m *integrationMockEnforcer) UnblockDoH() error                { return nil }
+func (m *integrationMockEnforcer) BlockAll(_ []string) error        { return nil }
+func (m *integrationMockEnforcer) UnblockAll() error                { return nil }
 func (m *integrationMockEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }

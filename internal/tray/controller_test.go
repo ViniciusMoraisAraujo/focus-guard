@@ -8,6 +8,9 @@ import (
 	"time"
 
 	"focusguard/internal/ipc"
+	"focusguard/internal/policy"
+	"focusguard/internal/pomodoro"
+	"focusguard/internal/preset"
 )
 
 // --- mocks ---
@@ -235,18 +238,25 @@ func TestController_StatusClickRefreshesTooltip(t *testing.T) {
 	c := NewController(s, d, nil)
 	c.Run()
 
-	if got := d.requests(); len(got) != 1 || got[0].Action != "status" {
-		t.Fatalf("esperava fetch inicial de status, got %+v", got)
+	// o polling de presets em background também fala com o daemon; contamos
+	// apenas as requests status para não depender da ordem das goroutines
+	statusCount := func() int {
+		n := 0
+		for _, req := range d.requests() {
+			if req.Action == "status" {
+				n++
+			}
+		}
+		return n
+	}
+	if got := statusCount(); got != 1 {
+		t.Fatalf("esperava fetch inicial de status, got %d requests status", got)
 	}
 
 	status := s.itemByTitle("📊 Status")
 	status.click()
 
-	waitFor(t, func() bool { return len(d.requests()) >= 2 })
-	reqs := d.requests()
-	if reqs[len(reqs)-1].Action != "status" {
-		t.Errorf("esperava novo request status, got %+v", reqs)
-	}
+	waitFor(t, func() bool { return statusCount() >= 2 })
 }
 
 func TestController_QuickBlockSendsRequest(t *testing.T) {
@@ -354,6 +364,17 @@ func TestStatusTooltip(t *testing.T) {
 		{"inativa", &ipc.Response{DoHActive: false}, "DoH/DoT INATIVA · 0 regras"},
 		{"atualizacao", &ipc.Response{DoHActive: true, FirewallRules: 3, UpdateAvailable: true, UpdateVersion: "0.3.0"}, "v0.3.0 disponível"},
 		{"erro firewall", &ipc.Response{ProtectionError: "elevacao"}, "Não foi possível consultar o firewall"},
+		{"bloqueio ativo", &ipc.Response{
+			DoHActive: true, FirewallRules: 4,
+			Blocks: []policy.Block{
+				{Domain: "twitter.com", StartedAt: time.Now(), ExpiresAt: time.Now().Add(90 * time.Minute)},
+				{Domain: "youtube.com", StartedAt: time.Now(), ExpiresAt: time.Now().Add(30 * time.Minute)},
+			},
+		}, "twitter.com por mais 1h30m"},
+		{"bloqueio curto", &ipc.Response{
+			DoHActive: true, FirewallRules: 4,
+			Blocks: []policy.Block{{Domain: "reddit.com", StartedAt: time.Now(), ExpiresAt: time.Now().Add(5 * time.Minute)}},
+		}, "reddit.com por mais 5m"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -362,6 +383,13 @@ func TestStatusTooltip(t *testing.T) {
 				t.Errorf("statusTooltip = %q, want contains %q", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestStatusTooltip_NoBlockNoExtra(t *testing.T) {
+	got := statusTooltip(&ipc.Response{DoHActive: true, FirewallRules: 2})
+	if strings.Contains(got, "por mais") {
+		t.Errorf("no block remaining info expected, got %q", got)
 	}
 }
 
@@ -514,6 +542,149 @@ func TestCheckForUpdateNotification_NotifiesAgainOnNewerVersion(t *testing.T) {
 
 	if got := len(s.notifications()); got != 2 {
 		t.Errorf("expected a new notification for v1.2.0, got %d: %v", got, s.notifications())
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Categorias no tray (presets personalizados + builtins)
+// ---------------------------------------------------------------------------
+
+func TestController_PresetSubmenu_BlocksPreset(t *testing.T) {
+	s := newMockSystray()
+	// os presets entram na resposta ANTES do Run(): populatePresetMenu roda em
+	// goroutine e o mock responde o mesmo para tudo — injetar depois deixaria
+	// o submenu em "(indisponível)" por causa do race
+	d := &mockDaemon{resp: &ipc.Response{Success: true, Presets: []preset.Preset{
+		{Name: "social", Label: "Redes sociais", Domains: []string{"twitter.com"}},
+		{Name: "estudo", Label: "Estudo", Domains: []string{"khanacademy.org"}},
+	}}}
+	c := NewController(s, d, nil)
+	c.Run()
+
+	presetParent := s.itemByTitle("🗂 Categorias")
+	if presetParent == nil {
+		t.Fatal("menu Categorias não criado")
+	}
+	// espera o submenu ser populado em background
+	waitFor(t, func() bool { return len(presetParent.children) == 2 })
+
+	presetParent.children[0].click()
+
+	waitFor(t, func() bool {
+		for _, req := range d.requests() {
+			if req.Action == "block" && req.Preset == "social" {
+				return true
+			}
+		}
+		return false
+	})
+	for _, req := range d.requests() {
+		if req.Action == "block" && req.Preset == "social" {
+			if req.Duration != quickBlockDuration {
+				t.Errorf("duration = %q, want %q", req.Duration, quickBlockDuration)
+			}
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Notificações de transição do pomodoro (Feature 5)
+// ---------------------------------------------------------------------------
+
+func TestPomodoroNotify_WorkStart(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{
+		Success:  true,
+		Pomodoro: nil, // baseline: sem sessão ativa
+	}}
+	c := NewController(s, d, nil)
+
+	// primeira observação define o baseline — sem notificação
+	c.checkPomodoroNotification()
+	if got := len(s.notifications()); got != 0 {
+		t.Fatalf("primeira observação não deve notificar, got %d", got)
+	}
+
+	// transição inativa → trabalho notifica
+	d.mu.Lock()
+	d.resp.Pomodoro = &pomodoro.State{Active: true, Phase: pomodoro.PhaseWork, Cycle: 1, Cycles: 4}
+	d.mu.Unlock()
+	c.checkPomodoroNotification()
+
+	notifs := s.notifications()
+	if len(notifs) != 1 {
+		t.Fatalf("esperava 1 notificação de trabalho, got %d: %v", len(notifs), notifs)
+	}
+	if !strings.Contains(notifs[0], "trabalhar") || !strings.Contains(notifs[0], "1/4") {
+		t.Errorf("notificação de trabalho inesperada: %q", notifs[0])
+	}
+}
+
+func TestPomodoroNotify_WorkToRest(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{
+		Success:  true,
+		Pomodoro: &pomodoro.State{Active: true, Phase: pomodoro.PhaseWork, Cycle: 1, Cycles: 4},
+	}}
+	c := NewController(s, d, nil)
+	c.checkPomodoroNotification() // baseline: trabalho
+
+	d.mu.Lock()
+	d.resp.Pomodoro = &pomodoro.State{Active: true, Phase: pomodoro.PhaseRest, Cycle: 1, Cycles: 4}
+	d.mu.Unlock()
+	c.checkPomodoroNotification()
+
+	notifs := s.notifications()
+	if len(notifs) != 1 || !strings.Contains(notifs[0], "descanso") {
+		t.Errorf("esperava notificação de descanso, got %v", notifs)
+	}
+}
+
+func TestPomodoroNotify_SessionEnd(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{
+		Success:  true,
+		Pomodoro: &pomodoro.State{Active: true, Phase: pomodoro.PhaseWork, Cycle: 4, Cycles: 4},
+	}}
+	c := NewController(s, d, nil)
+	c.checkPomodoroNotification() // baseline: ativo
+
+	d.mu.Lock()
+	d.resp.Pomodoro = &pomodoro.State{Active: false}
+	d.mu.Unlock()
+	c.checkPomodoroNotification()
+
+	notifs := s.notifications()
+	if len(notifs) != 1 || !strings.Contains(notifs[0], "concluída") {
+		t.Errorf("esperava notificação de conclusão, got %v", notifs)
+	}
+}
+
+func TestPomodoroNotify_NoSpamOnSamePhase(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{
+		Success:  true,
+		Pomodoro: &pomodoro.State{Active: true, Phase: pomodoro.PhaseWork, Cycle: 2, Cycles: 4},
+	}}
+	c := NewController(s, d, nil)
+	c.checkPomodoroNotification()
+	c.checkPomodoroNotification()
+	c.checkPomodoroNotification()
+
+	if got := len(s.notifications()); got != 0 {
+		t.Errorf("sem transição não deve notificar, got %d", got)
+	}
+}
+
+func TestPomodoroNotify_NoNotifyWhenDaemonDown(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{err: errDaemonDown}
+	c := NewController(s, d, nil)
+	c.checkPomodoroNotification()
+	c.checkPomodoroNotification()
+
+	if got := len(s.notifications()); got != 0 {
+		t.Errorf("sem daemon não deve notificar, got %d", got)
 	}
 }
 

@@ -452,6 +452,7 @@ func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 	if queried == 0 {
 		return EnforcerStatus{}, fmt.Errorf("falha ao consultar as regras de firewall (iptables/ip6tables)")
 	}
+	status.AllBlocked = e.allBlockedByStatus()
 
 	return status, nil
 }
@@ -491,6 +492,141 @@ func availableDoTBins() []string {
 
 func doHRuleArgs(jump, ip string, port int) []string {
 	return []string{jump, "OUTPUT", "-d", ip, "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "DROP"}
+}
+
+// BlockAll cuts off ALL outbound internet with a single catch-all REJECT rule
+// per family (tagged with the AllBlockMarker comment). allowlistIPs, when
+// non-empty, get ACCEPT rules BEFORE the catch-all (deep-focus mode: only the
+// allowed destinations remain reachable). Idempotent: a previous all-block is
+// swept first, then re-applied, so repeated calls never stack rules.
+func (e *linuxEnforcer) BlockAll(allowlistIPs []string) error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := checkRoot(); err != nil {
+		return err
+	}
+	return e.blockAllLocked(allowlistIPs)
+}
+
+// blockAllLocked applies the all-internet block while holding the lock. The
+// caller must hold e.mu.
+func (e *linuxEnforcer) blockAllLocked(allowlistIPs []string) error {
+	// Re-application: remove whatever previous all/allow rules exist so the
+	// allowlist changes take effect without stacking duplicates.
+	if err := e.unblockAllLocked(); err != nil {
+		return err
+	}
+
+	v4, v6 := groupIPsByFamily(dedupeIPs(allowlistIPs))
+	// Um restore por família: ACCEPT rules da allowlist (marcadas) ANTES do
+	// catch-all REJECT, tudo no mesmo script --noflush (ordem de avaliação
+	// do iptables: a primeira regra que casa decide). Sem allowlist, o script
+	// contém apenas o catch-all.
+	if err := e.restoreBlockAllScript("iptables-restore", v4, "/32"); err != nil {
+		return fmt.Errorf("enforcer: block-all v4: %w", err)
+	}
+	if err := e.restoreBlockAllScript("ip6tables-restore", v6, "/128"); err != nil {
+		return fmt.Errorf("enforcer: block-all v6: %w", err)
+	}
+
+	// NÃO mata sockets da allowlist: são exatamente os destinos que o
+	// deep-focus quer manter vivos (docs.google.com, etc.). O catch-all
+	// REJECT já derruba o resto no próximo pacote.
+	return nil
+}
+
+// restoreBlockAllScript feeds the all-block restore payload (allowlist ACCEPTs
+// + catch-all REJECT with markers) to a single iptables-restore --noflush
+// process via stdin.
+func (e *linuxEnforcer) restoreBlockAllScript(bin string, allowlistIPs []string, mask string) error {
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := execCommandContext(ctx, bin, "--noflush")
+	cmd.SetStdin(strings.NewReader(buildBlockAllScript(allowlistIPs, mask)))
+	if out, err := cmd.CombinedOutput(); err != nil {
+		return fmt.Errorf("%s restore (block-all) falhou: %w (%s)", bin, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// UnblockAll removes the all-internet catch-all rules and every allowlist
+// exception, sweeping both families by their marker comments.
+func (e *linuxEnforcer) UnblockAll() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := checkRoot(); err != nil {
+		return err
+	}
+	return e.unblockAllLocked()
+}
+
+// unblockAllLocked sweeps every OUTPUT rule carrying the all/allow markers in
+// both families. A rule listed with -S is deleted by replaying its spec with
+// -D (the marker guarantees only FocusGuard all/allow rules are touched).
+func (e *linuxEnforcer) unblockAllLocked() error {
+	for _, bin := range []string{"iptables", "ip6tables"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := execCommandContext(ctx, bin, "-S", "OUTPUT")
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			continue // binário ausente ou sem privilégio: nada a limpar por aqui
+		}
+
+		for _, line := range bytes.Split(out, []byte("\n")) {
+			if !bytes.Contains(line, []byte(AllBlockMarker)) && !bytes.Contains(line, []byte(AllowMarker)) {
+				continue
+			}
+			spec := bytes.TrimSpace(line)
+			if !bytes.HasPrefix(spec, []byte("-A OUTPUT")) {
+				continue
+			}
+			// -S emite "-A OUTPUT ..."; -D aceita a mesma spec de regra.
+			delArgs := []string{"-D", "OUTPUT"}
+			delArgs = append(delArgs, fieldsOf(spec[len("-A OUTPUT"):])...)
+
+			dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Second)
+			dcmd := execCommandContext(dctx, bin, delArgs...)
+			if dout, derr := dcmd.CombinedOutput(); derr != nil {
+				if !strings.Contains(string(dout), "does a matching rule exist") {
+					dcancel()
+					return fmt.Errorf("%s -D do block-all falhou: %w (%s)", bin, derr, strings.TrimSpace(string(dout)))
+				}
+			}
+			dcancel()
+		}
+	}
+	return nil
+}
+
+// fieldsOf tokenizes a byte slice into string arguments (iptables spec replay).
+func fieldsOf(b []byte) []string {
+	var out []string
+	for _, f := range bytes.Fields(b) {
+		out = append(out, string(f))
+	}
+	return out
+}
+
+// allBlockedByStatus reports whether the catch-all all-internet rule is
+// present, by scanning the OUTPUT rules for the AllBlockMarker comment.
+func (e *linuxEnforcer) allBlockedByStatus() bool {
+	for _, bin := range []string{"iptables", "ip6tables"} {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		cmd := execCommandContext(ctx, bin, "-S", "OUTPUT")
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			continue
+		}
+		if bytes.Contains(out, []byte(AllBlockMarker)) {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *linuxEnforcer) BlockDoH() error {

@@ -17,13 +17,26 @@ type Enforcer interface {
 	Sync(activeBlocks map[string][]string) error
 	BlockDoH() error
 	UnblockDoH() error
+	// BlockAll cuts off ALL outbound internet (panic mode). allowlistIPs, when
+	// non-empty, are the only destinations still reachable (deep-focus mode:
+	// block everything except the allowed sites). Idempotent.
+	BlockAll(allowlistIPs []string) error
+	// UnblockAll removes the all-internet block and every allowlist exception.
+	UnblockAll() error
 	Status() (EnforcerStatus, error)
 }
 
 type EnforcerStatus struct {
 	DoHActive     bool
 	FirewallRules int
+	AllBlocked    bool
 }
+
+// AllInternetDomain is the sentinel scheduler block key for the all-internet
+// block (panic/deep-focus mode). It never touches the hosts file; the enforcer
+// applies a catch-all firewall rule instead. Kept as a stable identifier used
+// by the scheduler, server and CLI.
+const AllInternetDomain = "*all-internet*"
 
 const (
 	HeaderMarker = "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
@@ -197,6 +210,35 @@ func groupIPsByFamily(ips []string) (v4, v6 []string) {
 		}
 	}
 	return v4, v6
+}
+
+// AllBlockMarker is the iptables comment tagging the catch-all REJECT rule
+// that implements the all-internet block. Removal sweeps by this marker.
+const AllBlockMarker = "FOCUSGUARD_ALL"
+
+// AllowMarker tags the per-IP ACCEPT exceptions of the deep-focus allowlist.
+const AllowMarker = "FOCUSGUARD_ALLOW"
+
+// buildBlockAllScript renders the iptables-restore payload for BlockAll: one
+// ACCEPT per allowlisted IP first (so exceptions are evaluated before the
+// catch-all) and then a single catch-all REJECT for the family mask. The
+// markers let UnblockAll sweep both kinds of rule by comment.
+func buildBlockAllScript(allowlistIPs []string, mask string) string {
+	var b strings.Builder
+	b.WriteString("*filter\n")
+	for _, ip := range allowlistIPs {
+		b.WriteString("-A OUTPUT -d ")
+		b.WriteString(ip)
+		b.WriteString(mask)
+		b.WriteString(" -j ACCEPT -m comment --comment \"")
+		b.WriteString(AllowMarker)
+		b.WriteString("\"\n")
+	}
+	b.WriteString("-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \"")
+	b.WriteString(AllBlockMarker)
+	b.WriteString("\"\n")
+	b.WriteString("COMMIT\n")
+	return b.String()
 }
 
 // buildRestoreScript renders the stdin payload for iptables-restore/ip6tables

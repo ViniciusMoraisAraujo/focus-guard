@@ -16,10 +16,13 @@ import (
 
 	"focusguard/internal/analytics"
 	"focusguard/internal/enforcer"
+	"focusguard/internal/goal"
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
 	"focusguard/internal/pomodoro"
+	"focusguard/internal/preset"
 	"focusguard/internal/processguard"
+	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
 	"focusguard/internal/store"
@@ -35,6 +38,11 @@ const (
 )
 
 var updateCheckInterval = 24 * time.Hour
+
+// scheduleCheckInterval is how often the daemon re-evaluates recurring rules:
+// fine enough to start a block within a minute of its window opening, cheap
+// enough to never matter (a no-op ListBlocks when no rule is due).
+var scheduleCheckInterval = 30 * time.Second
 
 var goos = runtime.GOOS
 var newHostswatch = hostswatch.New
@@ -69,6 +77,48 @@ func startProcessGuard(sched processguard.ActivityChecker) processGuardStarter {
 	}
 	pg.Start(sched.HasActiveBlocks)
 	return pg
+}
+
+// presetResolver adapts *preset.Store to schedule.Resolver (preset name → the
+// store's domain list), so the schedule worker and the IPC catalog share the
+// same user-customizable source of truth.
+type presetResolver struct{ store *preset.Store }
+
+func (p presetResolver) Resolve(name string) ([]string, error) {
+	pr, err := p.store.Resolve(name)
+	if err != nil {
+		return nil, err
+	}
+	return pr.Domains, nil
+}
+
+// startScheduleWorker runs the recurring-rule evaluator in the background: on
+// every tick it blocks the preset domains of every rule whose window is active
+// (ApplyActiveRules skips domains already blocked). The first tick runs
+// immediately, so a window that opened while the daemon was down is applied
+// right at boot. Returns a stop func.
+func startScheduleWorker(mgr *schedule.Manager, resolver schedule.Resolver, b schedule.Blocker, interval time.Duration) func() {
+	stop := make(chan struct{})
+	go func() {
+		apply := func() {
+			if _, err := schedule.ApplyActiveRules(mgr, resolver, b, time.Now()); err != nil {
+				log.Printf("[FocusGuard Daemon] Agendamento: %v", err)
+			}
+		}
+		apply()
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				apply()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
 }
 
 var serviceStopCh = make(chan struct{})
@@ -347,12 +397,31 @@ func runDaemon() bool {
 	pomo := pomodoro.New(sched)
 	server.SetPomodoro(pomo)
 
+	// Presets personalizados do usuário: catálogo persistido (builtins + custom)
+	// ao lado do state.json — "focusguard preset add/remove".
+	presetStore := preset.NewStore(filepath.Join(filepath.Dir(statePath), "presets.json"))
+	server.SetPresets(presetStore)
+
+	// Agendamento recorrente: regras "bloquear social seg-sex 08:00-12:00"
+	// persistidas em schedules.json. O worker de background aplica as janelas
+	// vencidas a cada 30s (e no boot); o IPC expõe schedule add/list/remove.
+	scheduleMgr := schedule.NewManager(filepath.Join(filepath.Dir(statePath), "schedules.json"))
+	server.SetSchedules(scheduleMgr)
+	stopSchedule := startScheduleWorker(scheduleMgr, presetResolver{store: presetStore}, sched, scheduleCheckInterval)
+	if stopSchedule != nil {
+		defer stopSchedule()
+	}
+
 	// Strict Mode & Analytics: histórico de sessões em JSONL ao lado do
 	// state.json (best-effort — sem o arquivo o recorder fica em memória e
 	// apenas perde o histórico entre restarts).
 	rec := analytics.NewRecorder(filepath.Join(filepath.Dir(statePath), "analytics.jsonl"))
 	pomo.SetRecorder(rec)
 	server.SetAnalytics(rec)
+
+	// Meta diária de foco (ex: 4h/dia) persistida em goal.json — alimenta o
+	// "focusguard goal" e o status da TUI.
+	server.SetGoal(goal.NewStore(filepath.Join(filepath.Dir(statePath), "goal.json")))
 
 	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
 		defer stopUpdate()

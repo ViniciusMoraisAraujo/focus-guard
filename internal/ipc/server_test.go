@@ -14,7 +14,9 @@ import (
 	"focusguard/internal/analytics"
 	"focusguard/internal/enforcer"
 	"focusguard/internal/pomodoro"
+
 	"focusguard/internal/preset"
+	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/store"
 )
@@ -39,6 +41,8 @@ func (m *mockEnforcer) UnblockDomain(_ string, _ []string) error { return nil }
 func (m *mockEnforcer) Sync(_ map[string][]string) error         { return nil }
 func (m *mockEnforcer) BlockDoH() error                          { return nil }
 func (m *mockEnforcer) UnblockDoH() error                        { return nil }
+func (m *mockEnforcer) BlockAll(_ []string) error                { return nil }
+func (m *mockEnforcer) UnblockAll() error                        { return nil }
 func (m *mockEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
@@ -617,7 +621,363 @@ func (f *fakePomodoroRunner) Stop() (pomodoro.State, error) {
 	f.stopped = true
 	return f.state, nil
 }
+
+// ---------------------------------------------------------------------------
+// Presets personalizados (preset-add / preset-remove)
+// ---------------------------------------------------------------------------
+
+// fakePresetManager is a stubbable PresetManager used to test the server's
+// catalog wiring without touching disk.
+type fakePresetManager struct {
+	list    []preset.Preset
+	added   []preset.Preset
+	removed []string
+	addErr  error
+	remErr  error
+}
+
+func (f *fakePresetManager) List() []preset.Preset                      { return f.list }
+func (f *fakePresetManager) Resolve(name string) (preset.Preset, error) { return preset.Preset{}, nil }
+func (f *fakePresetManager) Add(p preset.Preset) error {
+	f.added = append(f.added, p)
+	return f.addErr
+}
+func (f *fakePresetManager) Remove(name string) error {
+	f.removed = append(f.removed, name)
+	return f.remErr
+}
+
+func TestServer_PresetAdd_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePresetManager{}
+	server.SetPresets(fake)
+
+	resp := executeRequest(t, server, Request{
+		Action:        "preset-add",
+		PresetName:    "estudo",
+		PresetLabel:   "Estudo",
+		PresetDomains: []string{"khanacademy.org", "coursera.org"},
+	})
+	if !resp.Success {
+		t.Fatalf("preset-add falhou: %s", resp.Message)
+	}
+	if len(fake.added) != 1 {
+		t.Fatalf("added = %d, want 1", len(fake.added))
+	}
+	if fake.added[0].Name != "estudo" || len(fake.added[0].Domains) != 2 {
+		t.Errorf("preset adicionado inesperado: %+v", fake.added[0])
+	}
+}
+
+func TestServer_PresetAdd_ValidationError(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePresetManager{addErr: errors.New("preset: nome não pode ser vazio")}
+	server.SetPresets(fake)
+
+	resp := executeRequest(t, server, Request{Action: "preset-add", PresetName: ""})
+	if resp.Success {
+		t.Fatal("expected failure when the store rejects the preset")
+	}
+	if !strings.Contains(resp.Message, "nome não pode ser vazio") {
+		t.Errorf("message deveria carregar o erro do store, got %q", resp.Message)
+	}
+}
+
+func TestServer_PresetAdd_WithoutStore(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "preset-add", PresetName: "x", PresetDomains: []string{"a.com"}})
+	if resp.Success {
+		t.Fatal("expected failure without a preset store")
+	}
+}
+
+func TestServer_PresetRemove_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePresetManager{}
+	server.SetPresets(fake)
+
+	resp := executeRequest(t, server, Request{Action: "preset-remove", PresetName: "estudo"})
+	if !resp.Success {
+		t.Fatalf("preset-remove falhou: %s", resp.Message)
+	}
+	if len(fake.removed) != 1 || fake.removed[0] != "estudo" {
+		t.Errorf("removed = %v, want [estudo]", fake.removed)
+	}
+}
+
+func TestServer_Presets_UsesConfiguredStore(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPresets(&fakePresetManager{
+		list: []preset.Preset{{Name: "estudo", Label: "Estudo", Domains: []string{"a.com"}}},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "presets"})
+	if !resp.Success || len(resp.Presets) != 1 || resp.Presets[0].Name != "estudo" {
+		t.Errorf("presets deveria vir do store configurado, got %+v", resp.Presets)
+	}
+}
+
 func (f *fakePomodoroRunner) Status() pomodoro.State { return f.state }
+
+// ---------------------------------------------------------------------------
+// Agendamento recorrente (schedule-list / schedule-add / schedule-remove)
+// ---------------------------------------------------------------------------
+
+// fakeScheduleManager is a stubbable ScheduleManager used to test the server's
+// schedule wiring without touching disk.
+type fakeScheduleManager struct {
+	list    []schedule.Rule
+	added   []schedule.Rule
+	removed []string
+	addErr  error
+	remErr  error
+}
+
+func (f *fakeScheduleManager) List() []schedule.Rule { return f.list }
+func (f *fakeScheduleManager) Add(r schedule.Rule) (schedule.Rule, error) {
+	f.added = append(f.added, r)
+	if r.ID == "" {
+		r.ID = "abc123"
+	}
+	return r, f.addErr
+}
+func (f *fakeScheduleManager) Remove(id string) error {
+	f.removed = append(f.removed, id)
+	return f.remErr
+}
+
+// ---------------------------------------------------------------------------
+// Block-all (modo pânico / allowlist deep-focus)
+// ---------------------------------------------------------------------------
+
+func TestServer_BlockAll_PanicMode(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "block-all", Duration: "30m"})
+	if !resp.Success {
+		t.Fatalf("block-all falhou: %s", resp.Message)
+	}
+	if !strings.Contains(resp.Message, "toda a internet") {
+		t.Errorf("mensagem deveria indicar modo pânico, got %q", resp.Message)
+	}
+
+	// O sentinela deve aparecer no status
+	status := executeRequest(t, server, Request{Action: "status"})
+	if !status.Success {
+		t.Fatalf("status falhou: %s", status.Message)
+	}
+	found := false
+	for _, b := range status.Blocks {
+		if b.Domain == enforcer.AllInternetDomain {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("sentinela do block-all deveria aparecer no status: %+v", status.Blocks)
+	}
+}
+
+func TestServer_BlockAll_DeepFocusMode(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "block-all", Duration: "1h", Allowlist: []string{"docs.google.com"}})
+	if !resp.Success {
+		t.Fatalf("block-all falhou: %s", resp.Message)
+	}
+	if !strings.Contains(resp.Message, "docs.google.com") {
+		t.Errorf("mensagem deveria mencionar a allowlist, got %q", resp.Message)
+	}
+}
+
+func TestServer_BlockAll_InvalidDuration(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "block-all", Duration: "0s"})
+	if resp.Success {
+		t.Fatal("block-all com duração inválida deve falhar")
+	}
+	if !strings.HasPrefix(resp.Message, "Duration invalid") {
+		t.Errorf("mensagem inesperada: %q", resp.Message)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Meta diária (goal-get / goal-set)
+// ---------------------------------------------------------------------------
+
+// fakeGoalStore is a stubbable daily-goal provider.
+type fakeGoalStore struct {
+	goal    time.Duration
+	setGoal time.Duration
+}
+
+func (f *fakeGoalStore) Get() time.Duration { return f.goal }
+func (f *fakeGoalStore) Set(d time.Duration) error {
+	f.setGoal = d
+	f.goal = d
+	return nil
+}
+
+func TestServer_GoalGet_ReturnsGoal(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetGoal(&fakeGoalStore{goal: 4 * time.Hour})
+
+	resp := executeRequest(t, server, Request{Action: "goal-get"})
+	if !resp.Success {
+		t.Fatalf("goal-get falhou: %s", resp.Message)
+	}
+	if resp.Goal != 4*time.Hour {
+		t.Errorf("Goal = %v, want 4h", resp.Goal)
+	}
+}
+
+func TestServer_GoalGet_WithoutStore(t *testing.T) {
+	server := setupTestServer(t)
+	resp := executeRequest(t, server, Request{Action: "goal-get"})
+	if resp.Success {
+		t.Fatal("goal-get sem store deveria falhar")
+	}
+}
+
+func TestServer_GoalSet_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeGoalStore{}
+	server.SetGoal(fake)
+
+	resp := executeRequest(t, server, Request{Action: "goal-set", GoalMinutes: 240})
+	if !resp.Success {
+		t.Fatalf("goal-set falhou: %s", resp.Message)
+	}
+	if fake.setGoal != 4*time.Hour {
+		t.Errorf("Set chamado com %v, want 4h", fake.setGoal)
+	}
+}
+
+func TestServer_GoalSet_InvalidMinutes(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetGoal(&fakeGoalStore{})
+
+	resp := executeRequest(t, server, Request{Action: "goal-set", GoalMinutes: -30})
+	if resp.Success {
+		t.Fatal("goal-set com minutos negativos deve falhar")
+	}
+}
+
+func TestServer_Stats_IncludesStreak(t *testing.T) {
+	server := setupTestServer(t)
+	now := time.Now()
+	server.SetAnalytics(&fakeAnalyticsProvider{
+		sessions: []analytics.Session{
+			{
+				Start:  now.Add(-time.Hour),
+				End:    now,
+				Preset: "social",
+				Focus:  time.Hour,
+			},
+			{
+				Start:  now.AddDate(0, 0, -1),
+				End:    now.AddDate(0, 0, -1).Add(time.Hour),
+				Preset: "social",
+				Focus:  time.Hour,
+			},
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "stats"})
+	if !resp.Success {
+		t.Fatalf("stats falhou: %s", resp.Message)
+	}
+	if resp.Stats == nil {
+		t.Fatal("Stats nulo")
+	}
+	if resp.Stats.Streak < 1 {
+		t.Errorf("Streak = %d, want >= 1 (sessões hoje e ontem)", resp.Stats.Streak)
+	}
+}
+
+func TestServer_ScheduleList_ReturnsRules(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetSchedules(&fakeScheduleManager{
+		list: []schedule.Rule{{ID: "abc1", Preset: "social", Days: []int{1, 2}, Start: "08:00", End: "12:00", Enabled: true}},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "schedule-list"})
+	if !resp.Success {
+		t.Fatalf("schedule-list falhou: %s", resp.Message)
+	}
+	if len(resp.Schedules) != 1 || resp.Schedules[0].Preset != "social" {
+		t.Errorf("Schedules inesperado: %+v", resp.Schedules)
+	}
+}
+
+func TestServer_ScheduleAdd_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeScheduleManager{}
+	server.SetSchedules(fake)
+
+	resp := executeRequest(t, server, Request{
+		Action:       "schedule-add",
+		ScheduleRule: schedule.Rule{Preset: "video", Days: []int{6}, Start: "20:00", End: "23:00", Enabled: true},
+	})
+	if !resp.Success {
+		t.Fatalf("schedule-add falhou: %s", resp.Message)
+	}
+	if len(fake.added) != 1 {
+		t.Fatalf("added = %d, want 1", len(fake.added))
+	}
+	if fake.added[0].Preset != "video" || fake.added[0].Start != "20:00" {
+		t.Errorf("regra adicionada inesperada: %+v", fake.added[0])
+	}
+}
+
+func TestServer_ScheduleAdd_ValidationError(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeScheduleManager{addErr: errors.New("schedule: informe um preset")}
+	server.SetSchedules(fake)
+
+	resp := executeRequest(t, server, Request{Action: "schedule-add"})
+	if resp.Success {
+		t.Fatal("expected failure when the manager rejects the rule")
+	}
+	if !strings.Contains(resp.Message, "informe um preset") {
+		t.Errorf("message deveria carregar o erro do manager, got %q", resp.Message)
+	}
+}
+
+func TestServer_ScheduleAdd_WithoutManager(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "schedule-add"})
+	if resp.Success {
+		t.Fatal("expected failure without a schedule manager")
+	}
+}
+
+func TestServer_ScheduleRemove_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeScheduleManager{}
+	server.SetSchedules(fake)
+
+	resp := executeRequest(t, server, Request{Action: "schedule-remove", ScheduleID: "abc1"})
+	if !resp.Success {
+		t.Fatalf("schedule-remove falhou: %s", resp.Message)
+	}
+	if len(fake.removed) != 1 || fake.removed[0] != "abc1" {
+		t.Errorf("removed = %v, want [abc1]", fake.removed)
+	}
+}
+
+func TestServer_ScheduleRemove_Error(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeScheduleManager{remErr: errors.New("schedule: regra não encontrada")}
+	server.SetSchedules(fake)
+
+	resp := executeRequest(t, server, Request{Action: "schedule-remove", ScheduleID: "zzz"})
+	if resp.Success {
+		t.Fatal("expected failure when the manager rejects the removal")
+	}
+}
 
 func TestServer_Presets_ReturnsCatalog(t *testing.T) {
 	server := setupTestServer(t)

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -16,6 +17,7 @@ import (
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
 	"focusguard/internal/policy"
+	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
 	"focusguard/internal/store"
@@ -1143,8 +1145,10 @@ func (f *fakeDaemonEnforcer) Sync(_ map[string][]string) error {
 	atomic.AddInt32(&f.syncCalls, 1)
 	return nil
 }
-func (f *fakeDaemonEnforcer) BlockDoH() error   { return nil }
-func (f *fakeDaemonEnforcer) UnblockDoH() error { return nil }
+func (f *fakeDaemonEnforcer) BlockDoH() error           { return nil }
+func (f *fakeDaemonEnforcer) UnblockDoH() error         { return nil }
+func (f *fakeDaemonEnforcer) BlockAll(_ []string) error { return nil }
+func (f *fakeDaemonEnforcer) UnblockAll() error         { return nil }
 func (f *fakeDaemonEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
@@ -1253,6 +1257,93 @@ func TestStartProcessGuard_NilGuardIsNoOp(t *testing.T) {
 	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
 	if pg := startProcessGuard(&fakeActivityScheduler{}); pg != nil {
 		t.Error("expected nil guard when the constructor returns nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Agendamento recorrente (wiring no daemon)
+// ---------------------------------------------------------------------------
+
+// fakeScheduleBlocker implements schedule.Blocker recording BlockDomains calls.
+type fakeScheduleBlocker struct {
+	mu    sync.Mutex
+	calls []string
+}
+
+func (f *fakeScheduleBlocker) ListBlocks() ([]policy.Block, error) { return nil, nil }
+
+func (f *fakeScheduleBlocker) BlockDomains(domains []string, _ time.Duration) ([]policy.Block, error) {
+	f.mu.Lock()
+	f.calls = append(f.calls, strings.Join(domains, ","))
+	f.mu.Unlock()
+	return nil, nil
+}
+
+func (f *fakeScheduleBlocker) blockCalls() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]string(nil), f.calls...)
+}
+
+// fakeScheduleResolver maps preset names to domains (stands in for preset.Store).
+type fakeScheduleResolver map[string][]string
+
+func (f fakeScheduleResolver) Resolve(name string) ([]string, error) {
+	domains, ok := f[name]
+	if !ok {
+		return nil, fmt.Errorf("preset desconhecido %q", name)
+	}
+	return domains, nil
+}
+
+// TestStartScheduleWorker_AppliesActiveRule verifies the daemon's schedule
+// worker applies an active recurring rule on startup (first tick runs
+// immediately, so the daemon catches a window that began while it was down).
+func TestStartScheduleWorker_AppliesActiveRule(t *testing.T) {
+	mgr := schedule.NewManager(filepath.Join(t.TempDir(), "schedules.json"))
+	// regra ativa em qualquer horário: todos os dias, 00:00-23:59
+	if _, err := mgr.Add(schedule.Rule{
+		Preset:  "social",
+		Days:    []int{0, 1, 2, 3, 4, 5, 6},
+		Start:   "00:00",
+		End:     "23:59",
+		Enabled: true,
+	}); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+
+	b := &fakeScheduleBlocker{}
+	resolver := fakeScheduleResolver{"social": {"twitter.com", "facebook.com"}}
+
+	stop := startScheduleWorker(mgr, resolver, b, time.Hour)
+	defer stop()
+
+	// o primeiro tick é imediato; aguarda a aplicação da regra
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if calls := b.blockCalls(); len(calls) > 0 {
+			if !strings.Contains(calls[0], "twitter.com") || !strings.Contains(calls[0], "facebook.com") {
+				t.Errorf("BlockDomains inesperado: %v", calls)
+			}
+			return
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatal("worker não aplicou a regra ativa dentro do timeout")
+}
+
+// TestStartScheduleWorker_NoActiveRuleNoCalls verifies the worker stays quiet
+// when no rule window is active (no spurious BlockDomains).
+func TestStartScheduleWorker_NoActiveRuleNoCalls(t *testing.T) {
+	mgr := schedule.NewManager("")
+	b := &fakeScheduleBlocker{}
+
+	stop := startScheduleWorker(mgr, fakeScheduleResolver{}, b, 30*time.Millisecond)
+	defer stop()
+
+	time.Sleep(150 * time.Millisecond)
+	if calls := b.blockCalls(); len(calls) != 0 {
+		t.Errorf("sem regras ativas não deve bloquear nada, got %v", calls)
 	}
 }
 

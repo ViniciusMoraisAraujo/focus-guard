@@ -13,6 +13,7 @@ import (
 	"focusguard/internal/analytics"
 	"focusguard/internal/autostart"
 	"focusguard/internal/ipc"
+	"focusguard/internal/schedule"
 	"focusguard/internal/tui"
 )
 
@@ -33,12 +34,18 @@ func main() {
 		handleBlockCommand(client, os.Args[2:])
 	case "presets":
 		handlePresetsCommand(client)
+	case "preset":
+		handlePresetCommand(client, os.Args[2:])
+	case "schedule":
+		handleScheduleCommand(client, os.Args[2:])
 	case "pomodoro":
 		handlePomodoroCommand(client, os.Args[2:])
 	case "pomodoro-stop":
 		handlePomodoroStopCommand(client)
 	case "stats":
-		handleStatsCommand(client)
+		handleStatsCommand(client, os.Args[2:])
+	case "goal":
+		handleGoalCommand(client, os.Args[2:])
 	case "status":
 		handleStatusCommand(client)
 	case "update":
@@ -235,13 +242,15 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	durationFlag := blockCmd.String("duration", "", "Duração do bloqueio (ex: 4h, 30m, 1h30m)")
 	durationShortFlag := blockCmd.String("d", "", "Duração do bloqueio (shorthand)")
 	presetFlag := blockCmd.String("preset", "", "Bloquear uma categoria inteira (ex: social, video, news, games)")
+	internetFlag := blockCmd.Bool("internet", false, "Bloquear toda a internet (modo pânico) por um período")
+	allowFlag := blockCmd.String("allow", "", "No modo --internet: domínios permitidos (allowlist), separados por vírgula")
 
 	_ = blockCmd.Parse(args)
 
 	domain := blockCmd.Arg(0)
-	if domain == "" && *presetFlag == "" {
-		fmt.Println("Erro: Informe um domínio ou --preset para bloquear.")
-		fmt.Println("Uso: focusguard block <dominio> --duration <tempo>  |  focusguard block --preset <categoria> --duration <tempo>")
+	if domain == "" && *presetFlag == "" && !*internetFlag {
+		fmt.Println("Erro: Informe um domínio, --preset ou --internet para bloquear.")
+		fmt.Println("Uso: focusguard block <dominio> --duration <tempo>  |  focusguard block --preset <categoria> --duration <tempo>  |  focusguard block --internet [--allow <dominios>] --duration <tempo>")
 		osExit(1)
 	}
 
@@ -264,6 +273,16 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 		Domain:   domain,
 		Preset:   *presetFlag,
 		Duration: durationStr,
+	}
+	if *internetFlag {
+		req.Action = "block-all"
+		if *allowFlag != "" {
+			for _, d := range strings.Split(*allowFlag, ",") {
+				if d = strings.TrimSpace(d); d != "" {
+					req.Allowlist = append(req.Allowlist, d)
+				}
+			}
+		}
 	}
 
 	resp, err := client.Send(req)
@@ -342,8 +361,242 @@ func handlePomodoroCommand(client *ipc.Client, args []string) {
 	fmt.Printf("✔ %s\n", resp.Message)
 }
 
-// handleStatsCommand fetches the focus analytics and renders the ASCII chart.
-func handleStatsCommand(client *ipc.Client) {
+// handlePresetCommand dispatches the preset subcommands (add/remove).
+func handlePresetCommand(client *ipc.Client, args []string) {
+	if len(args) == 0 {
+		fmt.Println("Erro: Informe um subcomando (add | remove).")
+		fmt.Println("Uso: focusguard preset add <nome> <dominio...>  |  focusguard preset remove <nome>")
+		osExit(1)
+	}
+	switch args[0] {
+	case "add":
+		handlePresetAddCommand(client, args[1:])
+	case "remove", "rm":
+		handlePresetRemoveCommand(client, args[1:])
+	default:
+		fmt.Printf("Subcomando desconhecido: %s\n", args[0])
+		fmt.Println("Uso: focusguard preset add <nome> <dominio...>  |  focusguard preset remove <nome>")
+		osExit(1)
+	}
+}
+
+// handlePresetAddCommand creates a user-defined preset with the given name and
+// domains (merged with the built-ins for block --preset / pomodoro).
+func handlePresetAddCommand(client *ipc.Client, args []string) {
+	if len(args) < 2 {
+		fmt.Println("Erro: Informe o nome e ao menos um domínio.")
+		fmt.Println("Uso: focusguard preset add <nome> <dominio...>")
+		osExit(1)
+	}
+
+	req := ipc.Request{
+		Action:        "preset-add",
+		PresetName:    args[0],
+		PresetLabel:   args[0],
+		PresetDomains: args[1:],
+	}
+
+	resp, err := client.Send(req)
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao criar preset: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+// handlePresetRemoveCommand removes a user-defined preset.
+func handlePresetRemoveCommand(client *ipc.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Println("Erro: Informe o nome do preset.")
+		fmt.Println("Uso: focusguard preset remove <nome>")
+		osExit(1)
+	}
+
+	resp, err := client.Send(ipc.Request{Action: "preset-remove", PresetName: args[0]})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao remover preset: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+// ---------------------------------------------------------------------------
+// Agendamento recorrente (schedule add/list/remove)
+// ---------------------------------------------------------------------------
+
+// handleScheduleCommand dispatches the schedule subcommands (add/list/remove).
+// With no subcommand it lists the current rules.
+func handleScheduleCommand(client *ipc.Client, args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "add":
+			handleScheduleAddCommand(client, args[1:])
+			return
+		case "remove", "rm":
+			handleScheduleRemoveCommand(client, args[1:])
+			return
+		}
+	}
+	handleScheduleListCommand(client)
+}
+
+// scheduleDayNames maps English and Portuguese weekday abbreviations to
+// time.Weekday values (0=Sunday), case-insensitively.
+var scheduleDayNames = map[string]int{
+	"sun": 0, "dom": 0,
+	"mon": 1, "seg": 1,
+	"tue": 2, "ter": 2,
+	"wed": 3, "qua": 3,
+	"thu": 4, "qui": 4,
+	"fri": 5, "sex": 5,
+	"sat": 6, "sab": 6,
+}
+
+// parseScheduleDays converts a comma-separated list of day abbreviations into
+// time.Weekday ints (0=Sunday), rejecting unknown names.
+func parseScheduleDays(raw string) ([]int, error) {
+	var days []int
+	for _, tok := range strings.Split(raw, ",") {
+		tok = strings.TrimSpace(strings.ToLower(tok))
+		d, ok := scheduleDayNames[tok]
+		if !ok {
+			return nil, fmt.Errorf("dia inválido %q (use mon..sun ou seg..dom)", tok)
+		}
+		days = append(days, d)
+	}
+	return days, nil
+}
+
+// handleScheduleAddCommand creates a recurring block rule for a preset.
+// Example: focusguard schedule add --preset social --days mon-fri --start 08:00 --end 12:00
+func handleScheduleAddCommand(client *ipc.Client, args []string) {
+	addCmd := flag.NewFlagSet("schedule-add", flag.ExitOnError)
+	presetFlag := addCmd.String("preset", "", "Categoria a bloquear (ex: social, video)")
+	daysFlag := addCmd.String("days", "", "Dias da semana (ex: mon,tue,wed ou seg,ter,qua)")
+	startFlag := addCmd.String("start", "", "Início no formato HH:MM (ex: 08:00)")
+	endFlag := addCmd.String("end", "", "Fim no formato HH:MM (ex: 12:00)")
+	labelFlag := addCmd.String("label", "", "Rótulo opcional (ex: Estudo matinal)")
+
+	_ = addCmd.Parse(args)
+
+	if *presetFlag == "" || *daysFlag == "" || *startFlag == "" || *endFlag == "" {
+		fmt.Println("Erro: Informe --preset, --days, --start e --end.")
+		fmt.Println("Uso: focusguard schedule add --preset <categoria> --days <dias> --start HH:MM --end HH:MM [--label \"...\"]")
+		osExit(1)
+	}
+
+	days, err := parseScheduleDays(*daysFlag)
+	if err != nil {
+		fmt.Printf("Erro: %v\n", err)
+		osExit(1)
+	}
+
+	req := ipc.Request{
+		Action: "schedule-add",
+		ScheduleRule: schedule.Rule{
+			Preset:  *presetFlag,
+			Label:   *labelFlag,
+			Days:    days,
+			Start:   *startFlag,
+			End:     *endFlag,
+			Enabled: true,
+		},
+	}
+
+	resp, err := client.Send(req)
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao criar agendamento: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+// handleScheduleListCommand prints the recurring rules.
+func handleScheduleListCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "schedule-list"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao listar agendamentos: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	if len(resp.Schedules) == 0 {
+		fmt.Println("Nenhum agendamento recorrente configurado.")
+		fmt.Println("Crie um com: focusguard schedule add --preset <categoria> --days <dias> --start HH:MM --end HH:MM")
+		return
+	}
+
+	fmt.Println("📅 Agendamentos recorrentes:")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "ID\tPRESET\tDIAS\tJANELA")
+	fmt.Fprintln(w, "--\t------\t----\t------")
+	for _, r := range resp.Schedules {
+		fmt.Fprintf(w, "%s\t%s\t%s\t%s-%s%s\n", r.ID, r.Preset, scheduleDaysString(r.Days), r.Start, r.End, scheduleStateSuffix(r))
+	}
+	w.Flush()
+}
+
+// scheduleDaysString renders weekday ints as abbreviations (seg..dom).
+func scheduleDaysString(days []int) string {
+	names := []string{"dom", "seg", "ter", "qua", "qui", "sex", "sab"}
+	var out []string
+	for _, d := range days {
+		if d >= 0 && d < 7 {
+			out = append(out, names[d])
+		}
+	}
+	return strings.Join(out, ",")
+}
+
+func scheduleStateSuffix(r schedule.Rule) string {
+	if !r.Enabled {
+		return " (desativada)"
+	}
+	return ""
+}
+
+// handleScheduleRemoveCommand deletes a recurring rule by ID.
+func handleScheduleRemoveCommand(client *ipc.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Println("Erro: Informe o ID da regra.")
+		fmt.Println("Uso: focusguard schedule remove <id>")
+		osExit(1)
+	}
+
+	resp, err := client.Send(ipc.Request{Action: "schedule-remove", ScheduleID: args[0]})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao remover agendamento: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+// handleStatsCommand fetches the focus analytics and renders the ASCII chart
+// (default), or exports the report as CSV/JSON with --export.
+func handleStatsCommand(client *ipc.Client, args []string) {
+	statsCmd := flag.NewFlagSet("stats", flag.ExitOnError)
+	exportFlag := statsCmd.String("export", "", "Exportar como csv ou json")
+	_ = statsCmd.Parse(args)
+
 	resp, err := client.Send(ipc.Request{Action: "stats"})
 	if err != nil {
 		fmt.Printf("Erro de comunicação: %v\n", err)
@@ -358,7 +611,71 @@ func handleStatsCommand(client *ipc.Client) {
 		fmt.Println("Sem estatísticas registradas ainda — faça uma sessão de foco primeiro.")
 		return
 	}
-	fmt.Print(analytics.RenderStats(resp.Stats, 30))
+
+	switch strings.ToLower(*exportFlag) {
+	case "csv":
+		fmt.Print(analytics.ExportCSV(resp.Stats))
+	case "json":
+		if out, err := analytics.ExportJSON(resp.Stats); err != nil {
+			fmt.Printf("Falha ao exportar JSON: %v\n", err)
+			osExit(1)
+		} else {
+			fmt.Println(out)
+		}
+	default:
+		fmt.Print(analytics.RenderStats(resp.Stats, 30))
+	}
+}
+
+// handleGoalCommand shows or sets the daily focus goal.
+// Usage: focusguard goal [set <duração>]
+func handleGoalCommand(client *ipc.Client, args []string) {
+	if len(args) > 0 && args[0] == "set" {
+		handleGoalSetCommand(client, args[1:])
+		return
+	}
+
+	resp, err := client.Send(ipc.Request{Action: "goal-get"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao consultar a meta: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	if resp.Goal <= 0 {
+		fmt.Println("Nenhuma meta diária definida.")
+		fmt.Println("Defina uma com: focusguard goal set <duração> (ex: focusguard goal set 4h)")
+		return
+	}
+	fmt.Printf("🎯 Meta diária de foco: %s\n", resp.Goal.Round(time.Minute))
+}
+
+// handleGoalSetCommand sets the daily focus goal from a duration string
+// (e.g. "4h", "90m").
+func handleGoalSetCommand(client *ipc.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Println("Erro: Informe a duração (ex: focusguard goal set 4h).")
+		osExit(1)
+	}
+	d, err := time.ParseDuration(args[0])
+	if err != nil || d <= 0 {
+		fmt.Println("Erro: Duração inválida (use ex: 4h, 90m, 1h30m).")
+		osExit(1)
+	}
+
+	resp, err := client.Send(ipc.Request{Action: "goal-set", GoalMinutes: int(d.Minutes())})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao definir meta: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
 }
 
 // handlePomodoroStopCommand ends the active pomodoro session.
@@ -482,10 +799,18 @@ func printUsage() {
 	fmt.Println("  focusguard                        Modo interativo (TUI)")
 	fmt.Println("  focusguard block <dominio> --duration <tempo>")
 	fmt.Println("  focusguard block --preset <categoria> --duration <tempo>")
+	fmt.Println("  focusguard block --internet [--allow <dominios>] --duration <tempo>   Modo pânico / allowlist")
 	fmt.Println("  focusguard presets                     Listar categorias de bloqueio")
+	fmt.Println("  focusguard preset add <nome> <dominio...>   Criar preset personalizado")
+	fmt.Println("  focusguard preset remove <nome>         Remover preset personalizado")
+	fmt.Println("  focusguard schedule add --preset <cat> --days <dias> --start HH:MM --end HH:MM")
+	fmt.Println("  focusguard schedule list                Listar agendamentos recorrentes")
+	fmt.Println("  focusguard schedule remove <id>         Remover um agendamento")
 	fmt.Println("  focusguard pomodoro --preset <categoria> [--work 25] [--rest 5] [--cycles 4] [--strict]")
 	fmt.Println("  focusguard pomodoro-stop               Encerrar a sessão pomodoro")
-	fmt.Println("  focusguard stats                       Gráfico de foco em arte ASCII")
+	fmt.Println("  focusguard stats [--export csv|json]   Gráfico de foco / exportar relatório")
+	fmt.Println("  focusguard goal                        Mostrar a meta diária de foco")
+	fmt.Println("  focusguard goal set <duracao>         Definir a meta diária (ex: 4h)")
 	fmt.Println("  focusguard status")
 	fmt.Println("  focusguard update [--channel beta]  Verificar e aplicar atualizações do daemon")
 	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
@@ -501,7 +826,11 @@ func printUsage() {
 	fmt.Println("  focusguard block twitter.com --duration 4h")
 	fmt.Println("  focusguard block youtube.com 30m")
 	fmt.Println("  focusguard block --preset social --duration 2h")
+	fmt.Println("  focusguard block --internet --duration 30m")
+	fmt.Println("  focusguard block --internet --allow docs.google.com,drive.google.com --duration 2h")
 	fmt.Println("  focusguard pomodoro --preset social --work 25 --rest 5 --cycles 4 --strict")
+	fmt.Println("  focusguard schedule add --preset social --days seg,ter,qua,qui,sex --start 08:00 --end 12:00")
+	fmt.Println("  focusguard schedule")
 	fmt.Println("  focusguard stats")
 	fmt.Println("  focusguard presets")
 	fmt.Println("  focusguard status")

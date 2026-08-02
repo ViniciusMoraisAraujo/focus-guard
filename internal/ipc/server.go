@@ -13,6 +13,7 @@ import (
 	"focusguard/internal/analytics"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
+	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 )
 
@@ -22,10 +23,85 @@ type Server struct {
 	updateChecker   UpdateChecker
 	pomodoro        PomodoroRunner
 	analytics       AnalyticsProvider
+	presets         PresetManager
+	schedules       ScheduleManager
+	goalStore       GoalManager
 	onUpdateApplied func()
 
 	mu           sync.RWMutex
 	updateStatus UpdateStatus
+}
+
+// PresetManager is the preset catalog used by the block/pomodoro/presets
+// actions. The daemon wires a *preset.Store (built-ins + user presets); when
+// no manager is configured the server falls back to the built-in catalog.
+type PresetManager interface {
+	List() []preset.Preset
+	Resolve(name string) (preset.Preset, error)
+	Add(p preset.Preset) error
+	Remove(name string) error
+}
+
+// builtinCatalog serves the read-only built-in presets when no user store is
+// configured (tests and dev builds); Add/Remove are unavailable.
+type builtinCatalog struct{}
+
+func (builtinCatalog) List() []preset.Preset                      { return preset.List() }
+func (builtinCatalog) Resolve(name string) (preset.Preset, error) { return preset.Resolve(name) }
+func (builtinCatalog) Add(preset.Preset) error {
+	return errors.New("presets personalizados não configurados")
+}
+func (builtinCatalog) Remove(string) error {
+	return errors.New("presets personalizados não configurados")
+}
+
+// SetPresets wires the preset catalog (built-ins + user-defined) into the
+// server. Nil resets to the built-in-only fallback.
+func (s *Server) SetPresets(m PresetManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.presets = m
+}
+
+// ScheduleManager is the recurring-rule catalog used by the schedule-*
+// actions. The daemon wires a *schedule.Manager (file-backed); tests stub it.
+type ScheduleManager interface {
+	List() []schedule.Rule
+	Add(r schedule.Rule) (schedule.Rule, error)
+	Remove(id string) error
+}
+
+// GoalManager is the daily focus goal store used by goal-get/goal-set. The
+// daemon wires a *goal.Store; tests stub it.
+type GoalManager interface {
+	Get() time.Duration
+	Set(d time.Duration) error
+}
+
+// SetGoal wires the daily goal store into the server. Nil makes goal-*
+// actions fail with a clear message.
+func (s *Server) SetGoal(g GoalManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.goalStore = g
+}
+
+// SetSchedules wires the recurring-rule manager into the server. Nil makes the
+// schedule-* actions fail with a clear message.
+func (s *Server) SetSchedules(m ScheduleManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.schedules = m
+}
+
+// catalog returns the configured PresetManager or the built-in fallback.
+func (s *Server) catalog() PresetManager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.presets != nil {
+		return s.presets
+	}
+	return builtinCatalog{}
 }
 
 // PomodoroRunner is what the server uses to start/stop/query pomodoro
@@ -158,7 +234,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 		if req.Preset != "" {
-			p, perr := preset.Resolve(req.Preset)
+			p, perr := s.catalog().Resolve(req.Preset)
 			if perr != nil {
 				resp = Response{Success: false, Message: perr.Error()}
 				break
@@ -193,7 +269,84 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 	case "presets":
-		resp = Response{Success: true, Presets: preset.List()}
+		resp = Response{Success: true, Presets: s.catalog().List()}
+
+	case "preset-add":
+		c := s.catalog()
+		err := c.Add(preset.Preset{
+			Name:    req.PresetName,
+			Label:   req.PresetLabel,
+			Domains: req.PresetDomains,
+		})
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Preset %s criado (%d domínios)", req.PresetName, len(req.PresetDomains))}
+		}
+
+	case "preset-remove":
+		c := s.catalog()
+		if err := c.Remove(req.PresetName); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Preset %s removido", req.PresetName)}
+		}
+
+	case "block-all":
+		d, err := time.ParseDuration(req.Duration)
+		if err != nil || d <= 0 {
+			resp = Response{
+				Success: false,
+				Message: "Duration invalid. Ex: --duration 4h, 30m"}
+			break
+		}
+		block, err := s.scheduler.BlockAllInternet(req.Allowlist, d)
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{
+				Success: true,
+				Message: fmt.Sprintf("Internet bloqueada até %s%s", block.ExpiresAt.Local().Format("15:04:05 02/01/2006"), blockAllModeSuffix(req.Allowlist)),
+			}
+		}
+
+	case "schedule-list":
+		s.mu.RLock()
+		sm := s.schedules
+		s.mu.RUnlock()
+		if sm == nil {
+			resp = Response{Success: false, Message: "agendamento não configurado"}
+			break
+		}
+		resp = Response{Success: true, Schedules: sm.List()}
+
+	case "schedule-add":
+		s.mu.RLock()
+		sm := s.schedules
+		s.mu.RUnlock()
+		if sm == nil {
+			resp = Response{Success: false, Message: "agendamento não configurado"}
+			break
+		}
+		if r, err := sm.Add(req.ScheduleRule); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Regra %s criada: %s das %s às %s", r.ID, r.Preset, r.Start, r.End)}
+		}
+
+	case "schedule-remove":
+		s.mu.RLock()
+		sm := s.schedules
+		s.mu.RUnlock()
+		if sm == nil {
+			resp = Response{Success: false, Message: "agendamento não configurado"}
+			break
+		}
+		if err := sm.Remove(req.ScheduleID); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Regra %s removida", req.ScheduleID)}
+		}
 
 	case "pomodoro":
 		resp = handlePomodoro(s, req)
@@ -210,6 +363,34 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: false, Message: err.Error()}
 		} else {
 			resp = Response{Success: true, Message: "Pomodoro encerrado", Pomodoro: &st}
+		}
+
+	case "goal-get":
+		s.mu.RLock()
+		g := s.goalStore
+		s.mu.RUnlock()
+		if g == nil {
+			resp = Response{Success: false, Message: "meta diária não configurada"}
+			break
+		}
+		resp = Response{Success: true, Goal: g.Get()}
+
+	case "goal-set":
+		s.mu.RLock()
+		g := s.goalStore
+		s.mu.RUnlock()
+		if g == nil {
+			resp = Response{Success: false, Message: "meta diária não configurada"}
+			break
+		}
+		if req.GoalMinutes <= 0 || req.GoalMinutes > 24*60 {
+			resp = Response{Success: false, Message: "meta inválida (entre 1 e 1440 minutos)"}
+			break
+		}
+		if err := g.Set(time.Duration(req.GoalMinutes) * time.Minute); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Goal: g.Get(), Message: fmt.Sprintf("Meta diária definida: %s", (time.Duration(req.GoalMinutes) * time.Minute).Round(time.Minute))}
 		}
 
 	case "stats":
@@ -245,6 +426,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		s.mu.RLock()
 		us := s.updateStatus
 		pg := s.pomodoro
+		gs := s.goalStore
 		s.mu.RUnlock()
 		resp.UpdateAvailable = us.Available
 		resp.UpdateVersion = us.NewVersion
@@ -252,6 +434,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if pg != nil {
 			st := pg.Status()
 			resp.Pomodoro = &st
+		}
+		if gs != nil {
+			resp.Goal = gs.Get()
 		}
 
 	case "ping":
@@ -313,6 +498,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 }
 
+// blockAllModeSuffix describes the block-all flavor for the success message:
+// panic mode (all internet) vs deep-focus mode (only the allowlist reachable).
+func blockAllModeSuffix(allowlist []string) string {
+	if len(allowlist) == 0 {
+		return " (toda a internet)"
+	}
+	return fmt.Sprintf(" (apenas %s permitido)", strings.Join(allowlist, ", "))
+}
+
 // handlePomodoro validates a pomodoro request, resolves the preset to domains
 // and hands the session to the runner.
 func handlePomodoro(s *Server, req Request) Response {
@@ -343,7 +537,7 @@ func handlePomodoro(s *Server, req Request) Response {
 		return Response{Success: false, Message: fmt.Sprintf("Parâmetros de pomodoro inválidos (--rest entre 0 e %d minutos, --cycles entre 1 e %d).", maxPomodoroMinutes, maxPomodoroCycles)}
 	}
 
-	p, err := preset.Resolve(req.Preset)
+	p, err := s.catalog().Resolve(req.Preset)
 	if err != nil {
 		return Response{Success: false, Message: err.Error()}
 	}
