@@ -6,9 +6,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strings"
 	"sync"
 	"time"
 
+	"focusguard/internal/analytics"
+	"focusguard/internal/pomodoro"
+	"focusguard/internal/preset"
 	"focusguard/internal/scheduler"
 )
 
@@ -16,9 +20,46 @@ type Server struct {
 	scheduler     *scheduler.Scheduler
 	listener      net.Listener
 	updateChecker UpdateChecker
+	pomodoro      PomodoroRunner
+	analytics     AnalyticsProvider
 
 	mu           sync.RWMutex
 	updateStatus UpdateStatus
+}
+
+// PomodoroRunner is what the server uses to start/stop/query pomodoro
+// sessions. The daemon wires a *pomodoro.Controller; tests stub it.
+type PomodoroRunner interface {
+	Start(pomodoro.Session) (pomodoro.State, error)
+	Stop() (pomodoro.State, error)
+	Status() pomodoro.State
+}
+
+func (s *Server) SetPomodoro(r PomodoroRunner) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pomodoro = r
+}
+
+// AnalyticsProvider supplies the recorded sessions for the stats action. The
+// daemon wires the analytics recorder; tests stub it.
+type AnalyticsProvider interface {
+	Sessions() ([]analytics.Session, error)
+}
+
+func (s *Server) SetAnalytics(p AnalyticsProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.analytics = p
+}
+
+// HasActiveSession reports whether a pomodoro session is currently running, so
+// the daemon can refuse to shut down mid-session (strict or not).
+func (s *Server) HasActiveSession() bool {
+	s.mu.RLock()
+	r := s.pomodoro
+	s.mu.RUnlock()
+	return r != nil && r.Status().Active
 }
 
 func NewServer(sched *scheduler.Scheduler) *Server {
@@ -100,6 +141,31 @@ func (s *Server) handleConnection(conn net.Conn) {
 				Message: "Duration invalid. Ex: --duration 4h, 30m"}
 			break
 		}
+		if req.Preset != "" {
+			p, perr := preset.Resolve(req.Preset)
+			if perr != nil {
+				resp = Response{Success: false, Message: perr.Error()}
+				break
+			}
+			blocks, berr := s.scheduler.BlockDomains(p.Domains, d)
+			if berr != nil {
+				resp = Response{Success: false, Message: berr.Error()}
+			} else if len(blocks) == 0 {
+				// Defensivo: nunca indexar blocks[0] — evita pânico no servidor se
+				// o scheduler um dia retornar sucesso sem blocos.
+				resp = Response{Success: true, Message: fmt.Sprintf("Preset %s: nenhum domínio novo bloqueado", p.Name)}
+			} else {
+				resp = Response{
+					Success: true,
+					Message: fmt.Sprintf("Preset %s bloqueado (%d domínios) até %s", p.Name, len(blocks), blocks[0].ExpiresAt.Local().Format("15:04:05 02/01/2006")),
+				}
+			}
+			break
+		}
+		if req.Domain == "" {
+			resp = Response{Success: false, Message: "Informe um domínio ou --preset para bloquear."}
+			break
+		}
 		block, err := s.scheduler.Block(req.Domain, d)
 		if err != nil {
 			resp = Response{Success: false, Message: err.Error()}
@@ -109,6 +175,42 @@ func (s *Server) handleConnection(conn net.Conn) {
 				Message: fmt.Sprintf("Domain %s blocked  %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006")),
 			}
 		}
+
+	case "presets":
+		resp = Response{Success: true, Presets: preset.List()}
+
+	case "pomodoro":
+		resp = handlePomodoro(s, req)
+
+	case "pomodoro-stop":
+		s.mu.RLock()
+		r := s.pomodoro
+		s.mu.RUnlock()
+		if r == nil {
+			resp = Response{Success: false, Message: "pomodoro não configurado"}
+			break
+		}
+		if st, err := r.Stop(); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: "Pomodoro encerrado", Pomodoro: &st}
+		}
+
+	case "stats":
+		s.mu.RLock()
+		p := s.analytics
+		s.mu.RUnlock()
+		if p == nil {
+			resp = Response{Success: false, Message: "analytics não configurado"}
+			break
+		}
+		sessions, err := p.Sessions()
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		st := analytics.Summarize(sessions, 7, time.Now())
+		resp = Response{Success: true, Stats: st}
 
 	case "status":
 		blocks, err := s.scheduler.ListBlocks()
@@ -126,10 +228,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		s.mu.RLock()
 		us := s.updateStatus
+		pg := s.pomodoro
 		s.mu.RUnlock()
 		resp.UpdateAvailable = us.Available
 		resp.UpdateVersion = us.NewVersion
 		resp.CurrentVersion = us.CurrentVersion
+		if pg != nil {
+			st := pg.Status()
+			resp.Pomodoro = &st
+		}
 
 	case "ping":
 		if err := s.scheduler.Ping(); err != nil {
@@ -173,4 +280,48 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	_ = json.NewEncoder(conn).Encode(resp)
+}
+
+// handlePomodoro validates a pomodoro request, resolves the preset to domains
+// and hands the session to the runner.
+func handlePomodoro(s *Server, req Request) Response {
+	s.mu.RLock()
+	r := s.pomodoro
+	s.mu.RUnlock()
+	if r == nil {
+		return Response{Success: false, Message: "pomodoro não configurado"}
+	}
+
+	if strings.TrimSpace(req.Preset) == "" {
+		return Response{Success: false, Message: "Informe um preset (ex: --preset social)."}
+	}
+	if req.WorkMin <= 0 {
+		return Response{Success: false, Message: "Duração de trabalho inválida (--work >= 1)."}
+	}
+	if req.RestMin < 0 || req.Cycles < 1 {
+		return Response{Success: false, Message: "Parâmetros de pomodoro inválidos (--rest >= 0, --cycles >= 1)."}
+	}
+
+	p, err := preset.Resolve(req.Preset)
+	if err != nil {
+		return Response{Success: false, Message: err.Error()}
+	}
+
+	sess := pomodoro.Session{
+		Preset:  p.Name,
+		Domains: p.Domains,
+		Work:    time.Duration(req.WorkMin) * time.Minute,
+		Rest:    time.Duration(req.RestMin) * time.Minute,
+		Cycles:  req.Cycles,
+		Strict:  req.Strict,
+	}
+	st, err := r.Start(sess)
+	if err != nil {
+		return Response{Success: false, Message: err.Error()}
+	}
+	return Response{
+		Success:  true,
+		Message:  fmt.Sprintf("Pomodoro %s iniciado: %d ciclos de %dm trabalho / %dm descanso", p.Name, sess.Cycles, req.WorkMin, req.RestMin),
+		Pomodoro: &st,
+	}
 }

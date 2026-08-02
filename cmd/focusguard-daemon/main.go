@@ -14,9 +14,12 @@ import (
 	"syscall"
 	"time"
 
+	"focusguard/internal/analytics"
 	"focusguard/internal/enforcer"
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
+	"focusguard/internal/pomodoro"
+	"focusguard/internal/processguard"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
 	"focusguard/internal/store"
@@ -38,6 +41,34 @@ var newHostswatch = hostswatch.New
 var newStatewatch = statewatch.New
 var newUpdater = func(owner, repo string) updaterAPI {
 	return update.NewUpdater(owner, repo, update.WithVersion(daemonVersion))
+}
+
+// processGuardStarter is the subset of *processguard.Guard the daemon needs,
+// kept as an interface so tests can stub the constructor without killing real
+// processes.
+type processGuardStarter interface {
+	Start(isActive func() bool)
+	Stop()
+}
+
+// newProcessGuard is stubbable (mirrors newHostswatch/newStatewatch) so daemon
+// integration tests can disable the guard — a live guard would pkill real
+// games/chat apps during the test.
+var newProcessGuard = func(denylist []string) processGuardStarter {
+	return processguard.New(denylist)
+}
+
+// defaultProcessDenylist: executáveis de entretenimento/comunicação encerrados
+// enquanto houver sessão de foco ativa.
+var defaultProcessDenylist = []string{"steam.exe", "discord.exe"}
+
+func startProcessGuard(sched processguard.ActivityChecker) processGuardStarter {
+	pg := newProcessGuard(defaultProcessDenylist)
+	if pg == nil {
+		return nil
+	}
+	pg.Start(sched.HasActiveBlocks)
+	return pg
 }
 
 var serviceStopCh = make(chan struct{})
@@ -193,6 +224,16 @@ func runDaemon() bool {
 		return false
 	}
 
+	// Réplicas criptografadas atreladas ao hardware: auto-healing de um
+	// state.json apagado/vazio/corrompido a partir do backup oculto. A
+	// ativação é best-effort — sem ID de hardware as réplicas apenas ficam
+	// desativadas e o boot segue o fluxo histórico.
+	if err := st.EnableReplica(nil); err != nil {
+		log.Printf("[FocusGuard Daemon] Réplicas criptografadas desativadas: %v", err)
+	} else if _, err := st.LoadAndHeal(); err != nil {
+		log.Printf("[FocusGuard Daemon] LoadAndHeal: %v", err)
+	}
+
 	enf := enforcer.NewEnforcer()
 	sched := scheduler.NewScheduler(st, enf)
 
@@ -220,7 +261,31 @@ func runDaemon() bool {
 		st.SetOnSave(sw.MarkSelfWrite)
 	}
 
+	// Process Guard: encerra executáveis da denylist (steam, discord) enquanto
+	// houver sessão de foco ativa — a checagem de atividade é o HasActiveBlocks
+	// do scheduler.
+	pg := startProcessGuard(sched)
+	if pg != nil {
+		defer pg.Stop()
+	}
+
 	server := ipc.NewServer(sched)
+
+	// Modo Pomodoro & Presets: ciclos de trabalho/descanso sobre as categorias
+	// (--preset social, video, news, games). O controller bloqueia via o
+	// scheduler; os blocos de trabalho expiram sozinhos pelos timers. Sessões
+	// estritas (--strict) não podem ser encerradas antecipadamente e, ao
+	// terminar, são registradas no analytics para o "focusguard stats".
+	pomo := pomodoro.New(sched)
+	server.SetPomodoro(pomo)
+
+	// Strict Mode & Analytics: histórico de sessões em JSONL ao lado do
+	// state.json (best-effort — sem o arquivo o recorder fica em memória e
+	// apenas perde o histórico entre restarts).
+	rec := analytics.NewRecorder(filepath.Join(filepath.Dir(statePath), "analytics.jsonl"))
+	pomo.SetRecorder(rec)
+	server.SetAnalytics(rec)
+
 	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
 		defer stopUpdate()
 	}
@@ -232,14 +297,14 @@ func runDaemon() bool {
 		for {
 			select {
 			case sig := <-sigChan:
-				if sched.HasActiveBlocks() {
-					log.Printf("[FocusGuard Daemon] Sinal %v ignorado: existem bloqueios ativos.", sig)
+				if sched.HasActiveBlocks() || server.HasActiveSession() {
+					log.Printf("[FocusGuard Daemon] Sinal %v ignorado: existem bloqueios/sessão ativos.", sig)
 					continue
 				}
-				log.Println("[FocusGuard Daemon] Nenhum bloqueio ativo. Encerrando servidor IPC...")
+				log.Println("[FocusGuard Daemon] Nenhum bloqueio/sessão ativo. Encerrando servidor IPC...")
 			case <-serviceStopCh:
-				if sched.HasActiveBlocks() {
-					log.Println("[FocusGuard Daemon] Parada do serviço ignorada: existem bloqueios ativos.")
+				if sched.HasActiveBlocks() || server.HasActiveSession() {
+					log.Println("[FocusGuard Daemon] Parada do serviço ignorada: existem bloqueios/sessão ativos.")
 					continue
 				}
 				log.Println("[FocusGuard Daemon] Serviço parando. Encerrando servidor IPC...")

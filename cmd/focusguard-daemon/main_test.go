@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -244,6 +245,12 @@ func TestRunDaemon_StatewatchIntegration(t *testing.T) {
 	}
 	defer func() { newStatewatch = origNewStatewatch }()
 
+	// Process Guard desativado nos testes de integração: um guard ativo
+	// encerraria processos reais (steam/discord) durante a suíte.
+	origNewProcessGuard := newProcessGuard
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	defer func() { newProcessGuard = origNewProcessGuard }()
+
 	origServiceStopCh := serviceStopCh
 	newStopCh := make(chan struct{})
 	serviceStopCh = newStopCh
@@ -293,6 +300,12 @@ func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
 	}
 	defer func() { newStatewatch = origNewStatewatch }()
 
+	// Process Guard desativado nos testes de integração: um guard ativo
+	// encerraria processos reais (steam/discord) durante a suíte.
+	origNewProcessGuard := newProcessGuard
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	defer func() { newProcessGuard = origNewProcessGuard }()
+
 	origServiceStopCh := serviceStopCh
 	newStopCh := make(chan struct{})
 	serviceStopCh = newStopCh
@@ -317,6 +330,44 @@ func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for runDaemon")
+	}
+}
+
+// TestVersionInfo_GoWinresFormat verifies the root versioninfo.json follows
+// the go-winres schema: an application icon (RT_GROUP_ICON referencing the
+// generated .ico), the version metadata (RT_VERSION with product/description)
+// and the admin manifest (RT_MANIFEST). This is what go-winres make consumes
+// to emit rsrc_windows_*.syso for the daemon and CLI executables.
+func TestVersionInfo_GoWinresFormat(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("..", "..", "versioninfo.json"))
+	if err != nil {
+		t.Fatalf("leitura do versioninfo.json: %v", err)
+	}
+
+	var v struct {
+		GroupIcon map[string]map[string]json.RawMessage `json:"RT_GROUP_ICON"`
+		Manifest  map[string]map[string]string          `json:"RT_MANIFEST"`
+		Version   map[string]map[string]struct {
+			Info map[string]map[string]string `json:"info"`
+		} `json:"RT_VERSION"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		t.Fatalf("versioninfo.json não é JSON válido: %v", err)
+	}
+
+	if len(v.GroupIcon) == 0 {
+		t.Error("RT_GROUP_ICON ausente — o .exe não terá ícone")
+	}
+	if len(v.Manifest) == 0 {
+		t.Error("RT_MANIFEST ausente — o daemon perde o manifest requireAdministrator")
+	}
+
+	info := v.Version["#1"]["0000"].Info["0409"]
+	if info["ProductName"] == "" || info["OriginalFilename"] == "" {
+		t.Errorf("RT_VERSION.info.0409 incompleto: %+v", info)
+	}
+	if info["FileDescription"] == "" {
+		t.Error("FileDescription vazio — aba de detalhes do Explorer sem descrição")
 	}
 }
 
@@ -445,6 +496,12 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 	}
 	defer func() { newStatewatch = origNewStatewatch }()
 
+	// Process Guard desativado nos testes de integração: um guard ativo
+	// encerraria processos reais (steam/discord) durante a suíte.
+	origNewProcessGuard := newProcessGuard
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	defer func() { newProcessGuard = origNewProcessGuard }()
+
 	origServiceStopCh := serviceStopCh
 	newStopCh := make(chan struct{})
 	serviceStopCh = newStopCh
@@ -514,6 +571,12 @@ func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 	}
 	defer func() { newStatewatch = origNewStatewatch }()
 
+	// Process Guard desativado nos testes de integração: um guard ativo
+	// encerraria processos reais (steam/discord) durante a suíte.
+	origNewProcessGuard := newProcessGuard
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	defer func() { newProcessGuard = origNewProcessGuard }()
+
 	origServiceStopCh := serviceStopCh
 	newStopCh := make(chan struct{})
 	serviceStopCh = newStopCh
@@ -551,6 +614,12 @@ func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
 		return statewatch.New(rec, statePath)
 	}
 	defer func() { newStatewatch = origNewStatewatch }()
+
+	// Process Guard desativado nos testes de integração: um guard ativo
+	// encerraria processos reais (steam/discord) durante a suíte.
+	origNewProcessGuard := newProcessGuard
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	defer func() { newProcessGuard = origNewProcessGuard }()
 
 	origServiceStopCh := serviceStopCh
 	newStopCh := make(chan struct{})
@@ -601,6 +670,12 @@ func TestDaemonDoneCh_NotClosedInRunDaemon(t *testing.T) {
 		return statewatch.New(rec, statePath)
 	}
 	defer func() { newStatewatch = origNewStatewatch }()
+
+	// Process Guard desativado nos testes de integração: um guard ativo
+	// encerraria processos reais (steam/discord) durante a suíte.
+	origNewProcessGuard := newProcessGuard
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	defer func() { newProcessGuard = origNewProcessGuard }()
 
 	origServiceStopCh := serviceStopCh
 	newStopCh := make(chan struct{})
@@ -935,6 +1010,67 @@ func newRealWatcherChain(t *testing.T) (*store.Store, *scheduler.Scheduler, *fak
 		t.Fatalf("scheduler.Start: %v", err)
 	}
 	return st, sched, enf, statePath
+}
+
+// ---------------------------------------------------------------------------
+// Process Guard wiring
+// ---------------------------------------------------------------------------
+
+type fakeProcessGuard struct {
+	onStart func(func() bool)
+	stopped bool
+}
+
+func (f *fakeProcessGuard) Start(isActive func() bool) {
+	if f.onStart != nil {
+		f.onStart(isActive)
+	}
+}
+
+func (f *fakeProcessGuard) Stop() { f.stopped = true }
+
+type fakeActivityScheduler struct{ active bool }
+
+func (f *fakeActivityScheduler) HasActiveBlocks() bool { return f.active }
+
+// TestStartProcessGuard_WiresSchedulerChecker verifies startProcessGuard calls
+// guard.Start with the scheduler's HasActiveBlocks as the activity checker, so
+// the guard only kills processes while a focus session is active.
+func TestStartProcessGuard_WiresSchedulerChecker(t *testing.T) {
+	origNew := newProcessGuard
+	defer func() { newProcessGuard = origNew }()
+
+	var captured func() bool
+	newProcessGuard = func(denylist []string) processGuardStarter {
+		return &fakeProcessGuard{onStart: func(fn func() bool) { captured = fn }}
+	}
+
+	sched := &fakeActivityScheduler{active: true}
+	pg := startProcessGuard(sched)
+	if pg == nil {
+		t.Fatal("startProcessGuard should return a guard")
+	}
+	if captured == nil {
+		t.Fatal("guard.Start should be called with the scheduler checker")
+	}
+	if !captured() {
+		t.Error("checker should report true when the scheduler has active blocks")
+	}
+	sched.active = false
+	if captured() {
+		t.Error("checker should report false when the scheduler has no active blocks")
+	}
+	pg.Stop()
+}
+
+func TestStartProcessGuard_NilGuardIsNoOp(t *testing.T) {
+	origNew := newProcessGuard
+	defer func() { newProcessGuard = origNew }()
+
+	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
+	if pg := startProcessGuard(&fakeActivityScheduler{}); pg != nil {
+		t.Error("expected nil guard when the constructor returns nil")
+	}
 }
 
 // waitForFileContains polls path until its content contains want or times out.

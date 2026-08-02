@@ -6,11 +6,15 @@ import (
 	"errors"
 	"net"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
 
+	"focusguard/internal/analytics"
 	"focusguard/internal/enforcer"
+	"focusguard/internal/pomodoro"
+	"focusguard/internal/preset"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/store"
 )
@@ -456,6 +460,259 @@ func TestServer_RefreshUpdateStatus_NoChecker(t *testing.T) {
 	}
 	if st.Available {
 		t.Error("expected no update when checker is nil")
+	}
+}
+
+// fakePomodoroRunner records Start/Stop calls and returns canned state.
+type fakePomodoroRunner struct {
+	state    pomodoro.State
+	started  pomodoro.Session
+	startErr error
+	stopped  bool
+}
+
+func (f *fakePomodoroRunner) Start(s pomodoro.Session) (pomodoro.State, error) {
+	f.started = s
+	return f.state, f.startErr
+}
+func (f *fakePomodoroRunner) Stop() (pomodoro.State, error) {
+	f.stopped = true
+	return f.state, nil
+}
+func (f *fakePomodoroRunner) Status() pomodoro.State { return f.state }
+
+func TestServer_Presets_ReturnsCatalog(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "presets"})
+	if !resp.Success {
+		t.Fatalf("presets falhou: %s", resp.Message)
+	}
+	if len(resp.Presets) == 0 {
+		t.Fatal("expected a non-empty preset catalog")
+	}
+	found := false
+	for _, p := range resp.Presets {
+		if p.Name == "social" && len(p.Domains) > 0 {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected the social preset in the catalog, got %+v", resp.Presets)
+	}
+}
+
+func TestServer_Pomodoro_NotConfigured(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 4})
+	if resp.Success {
+		t.Error("expected failure when no pomodoro runner is configured")
+	}
+	if !strings.Contains(resp.Message, "não configurado") {
+		t.Errorf("expected 'não configurado' message, got %q", resp.Message)
+	}
+}
+
+func TestServer_Pomodoro_StartsSessionWithPresetDomains(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 4})
+	if !resp.Success {
+		t.Fatalf("pomodoro falhou: %s", resp.Message)
+	}
+
+	social, err := preset.Resolve("social")
+	if err != nil {
+		t.Fatalf("Resolve(social): %v", err)
+	}
+	if fake.started.Preset != "social" {
+		t.Errorf("started.Preset = %q, want social", fake.started.Preset)
+	}
+	if !reflect.DeepEqual(fake.started.Domains, social.Domains) {
+		t.Errorf("started.Domains = %v, want preset domains %v", fake.started.Domains, social.Domains)
+	}
+	if fake.started.Work != 25*time.Minute {
+		t.Errorf("started.Work = %v, want 25m", fake.started.Work)
+	}
+	if fake.started.Rest != 5*time.Minute {
+		t.Errorf("started.Rest = %v, want 5m", fake.started.Rest)
+	}
+	if fake.started.Cycles != 4 {
+		t.Errorf("started.Cycles = %d, want 4", fake.started.Cycles)
+	}
+	if resp.Pomodoro == nil {
+		t.Error("expected pomodoro state in response")
+	}
+}
+
+func TestServer_Pomodoro_UnknownPreset(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "nonexistent", WorkMin: 25, RestMin: 5, Cycles: 4})
+	if resp.Success {
+		t.Error("expected failure for unknown preset")
+	}
+	if !strings.Contains(strings.ToLower(resp.Message), "preset") {
+		t.Errorf("error should mention the preset, got %q", resp.Message)
+	}
+}
+
+func TestServer_Pomodoro_InvalidParams(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 0, RestMin: 5, Cycles: 4})
+	if resp.Success {
+		t.Error("expected failure for WorkMin=0")
+	}
+}
+
+func TestServer_PomodoroStop(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro-stop"})
+	if !resp.Success {
+		t.Fatalf("pomodoro-stop falhou: %s", resp.Message)
+	}
+	if !fake.stopped {
+		t.Error("expected the runner Stop to be called")
+	}
+}
+
+func TestServer_Status_IncludesPomodoro(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{state: pomodoro.State{Active: true, Preset: "social", Phase: pomodoro.PhaseWork, Cycle: 1, Cycles: 4}}
+	server.SetPomodoro(fake)
+
+	resp := executeRequest(t, server, Request{Action: "status"})
+	if !resp.Success {
+		t.Fatalf("status falhou: %s", resp.Message)
+	}
+	if resp.Pomodoro == nil || !resp.Pomodoro.Active {
+		t.Errorf("expected active pomodoro in status, got %+v", resp.Pomodoro)
+	}
+	if resp.Pomodoro.Preset != "social" || resp.Pomodoro.Phase != pomodoro.PhaseWork {
+		t.Errorf("unexpected pomodoro state: %+v", resp.Pomodoro)
+	}
+}
+
+func TestServer_Block_WithUnknownPreset(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "block", Preset: "nonexistent", Duration: "1h"})
+	if resp.Success {
+		t.Error("expected failure for unknown preset")
+	}
+}
+
+func TestServer_Block_RequiresDomainOrPreset(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "block", Duration: "1h"})
+	if resp.Success {
+		t.Error("expected failure when neither domain nor preset is given")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Strict Mode & Analytics
+// ---------------------------------------------------------------------------
+
+// fakeAnalyticsProvider returns canned sessions to the stats action.
+type fakeAnalyticsProvider struct {
+	sessions []analytics.Session
+}
+
+func (f *fakeAnalyticsProvider) Sessions() ([]analytics.Session, error) {
+	return f.sessions, nil
+}
+
+func TestServer_Stats_NotConfigured(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "stats"})
+	if resp.Success {
+		t.Error("expected failure when no analytics provider is configured")
+	}
+	if !strings.Contains(resp.Message, "não configurado") {
+		t.Errorf("expected 'não configurado' message, got %q", resp.Message)
+	}
+}
+
+func TestServer_Stats_ReturnsSummary(t *testing.T) {
+	server := setupTestServer(t)
+	now := time.Now()
+	server.SetAnalytics(&fakeAnalyticsProvider{
+		sessions: []analytics.Session{
+			{
+				Start:   now.Add(-time.Hour),
+				End:     now,
+				Preset:  "social",
+				Domains: []string{"twitter.com"},
+				WorkMin: 25,
+				RestMin: 5,
+				Cycles:  4,
+				Focus:   time.Hour,
+				Strict:  false,
+			},
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "stats"})
+	if !resp.Success {
+		t.Fatalf("stats falhou: %s", resp.Message)
+	}
+	if resp.Stats == nil {
+		t.Fatal("expected Stats in response")
+	}
+	if resp.Stats.TotalSessions != 1 {
+		t.Errorf("TotalSessions = %d, want 1", resp.Stats.TotalSessions)
+	}
+	if resp.Stats.TotalFocus != time.Hour {
+		t.Errorf("TotalFocus = %v, want 1h", resp.Stats.TotalFocus)
+	}
+}
+
+func TestServer_Pomodoro_StrictPassthrough(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 4, Strict: true})
+	if !resp.Success {
+		t.Fatalf("pomodoro falhou: %s", resp.Message)
+	}
+	if !fake.started.Strict {
+		t.Error("Strict flag should be passed through to the session")
+	}
+}
+
+func TestServer_HasActiveSession_NoRunner(t *testing.T) {
+	server := setupTestServer(t)
+	if server.HasActiveSession() {
+		t.Error("expected false when no pomodoro runner is configured")
+	}
+}
+
+func TestServer_HasActiveSession_Active(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{state: pomodoro.State{Active: true}})
+	if !server.HasActiveSession() {
+		t.Error("expected true when the pomodoro session is active")
+	}
+}
+
+func TestServer_HasActiveSession_Inactive(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+	if server.HasActiveSession() {
+		t.Error("expected false when the pomodoro session is inactive")
 	}
 }
 

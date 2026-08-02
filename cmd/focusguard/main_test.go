@@ -14,8 +14,10 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/analytics"
 	"focusguard/internal/ipc"
 	"focusguard/internal/policy"
+	"focusguard/internal/preset"
 )
 
 type exitPanic struct {
@@ -524,6 +526,257 @@ func TestRunInteractive_MockedTUI(t *testing.T) {
 	}
 	if !strings.Contains(stderr, "simulated terminal error") {
 		t.Errorf("stderr should contain simulated error, got: %s", stderr)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Presets & Pomodoro
+// ---------------------------------------------------------------------------
+
+func TestHandlePresetsCommand_ListsPresets(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		if req.Action != "presets" {
+			t.Errorf("expected action presets, got %q", req.Action)
+		}
+		return ipc.Response{
+			Success: true,
+			Presets: []preset.Preset{{Name: "social", Label: "Redes sociais", Domains: []string{"twitter.com"}}},
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handlePresetsCommand(client) })
+
+	for _, c := range []string{"social", "Redes sociais", "twitter.com"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("output should contain %q, got: %s", c, output)
+		}
+	}
+}
+
+func TestHandlePomodoroCommand_DefaultFlags(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Pomodoro iniciado"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() {
+		handlePomodoroCommand(client, []string{"--preset", "social"})
+	})
+
+	if gotReq.Action != "pomodoro" {
+		t.Errorf("expected action pomodoro, got %q", gotReq.Action)
+	}
+	if gotReq.Preset != "social" {
+		t.Errorf("expected preset social, got %q", gotReq.Preset)
+	}
+	if gotReq.WorkMin != 25 {
+		t.Errorf("default WorkMin = %d, want 25", gotReq.WorkMin)
+	}
+	if gotReq.RestMin != 5 {
+		t.Errorf("default RestMin = %d, want 5", gotReq.RestMin)
+	}
+	if gotReq.Cycles != 4 {
+		t.Errorf("default Cycles = %d, want 4", gotReq.Cycles)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output should contain checkmark, got: %s", output)
+	}
+}
+
+func TestHandlePomodoroCommand_CustomFlags(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handlePomodoroCommand(client, []string{"--preset", "video", "--work", "50", "--rest", "10", "--cycles", "2"})
+	})
+
+	if gotReq.Preset != "video" || gotReq.WorkMin != 50 || gotReq.RestMin != 10 || gotReq.Cycles != 2 {
+		t.Errorf("unexpected request: %+v", gotReq)
+	}
+}
+
+func TestHandlePomodoroCommand_MissingPreset(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handlePomodoroCommand(client, []string{"--work", "25"})
+	})
+
+	if !caught {
+		t.Fatal("expected osExit when preset is missing")
+	}
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestHandlePomodoroStopCommand(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Pomodoro encerrado"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handlePomodoroStopCommand(client) })
+
+	if gotReq.Action != "pomodoro-stop" {
+		t.Errorf("expected action pomodoro-stop, got %q", gotReq.Action)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output should contain checkmark, got: %s", output)
+	}
+}
+
+func TestHandleBlockCommand_WithPreset(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Preset social bloqueado"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handleBlockCommand(client, []string{"--preset", "social", "--duration", "2h"})
+	})
+
+	if gotReq.Action != "block" {
+		t.Errorf("expected action block, got %q", gotReq.Action)
+	}
+	if gotReq.Preset != "social" {
+		t.Errorf("expected preset social, got %q", gotReq.Preset)
+	}
+	if gotReq.Duration != "2h" {
+		t.Errorf("expected duration 2h, got %q", gotReq.Duration)
+	}
+}
+
+func TestPrintUsage_IncludesPomodoro(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	for _, c := range []string{"pomodoro", "presets", "pomodoro-stop"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("usage should mention %q", c)
+		}
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Strict Mode & Analytics
+// ---------------------------------------------------------------------------
+
+func TestHandleStatsCommand_PrintsChart(t *testing.T) {
+	now := time.Now()
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		if req.Action != "stats" {
+			t.Errorf("expected action stats, got %q", req.Action)
+		}
+		return ipc.Response{
+			Success: true,
+			Stats: &analytics.Stats{
+				TotalSessions: 1,
+				TotalFocus:    time.Hour,
+				PerDay: []analytics.DayStat{
+					{Day: now.Format("2006-01-02"), Duration: time.Hour, Sessions: 1},
+				},
+				PerDomain: []analytics.DomainStat{{Domain: "twitter.com", Duration: time.Hour}},
+			},
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleStatsCommand(client) })
+
+	for _, c := range []string{"FocusGuard", "1", "twitter.com", "█"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("output should contain %q, got: %s", c, output)
+		}
+	}
+}
+
+func TestHandleStatsCommand_FailureResponse(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: false, Message: "analytics não configurado"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleStatsCommand(client)
+	})
+
+	if !caught {
+		t.Fatal("expected osExit to be called")
+	}
+	if code != 1 {
+		t.Errorf("expected exit code 1, got %d", code)
+	}
+}
+
+func TestMain_StatsCommand(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true, Stats: &analytics.Stats{TotalSessions: 0}}
+	})
+
+	origArgs := os.Args
+	os.Args = []string{"focusguard", "stats"}
+	defer func() { os.Args = origArgs }()
+
+	output := captureStdout(t, main)
+	if !strings.Contains(output, "FocusGuard") {
+		t.Errorf("output should contain FocusGuard chart header, got: %s", output)
+	}
+}
+
+func TestHandlePomodoroCommand_StrictFlag(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Pomodoro estrito iniciado"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handlePomodoroCommand(client, []string{"--preset", "social", "--strict"})
+	})
+
+	if !gotReq.Strict {
+		t.Error("expected Strict=true when --strict is passed")
+	}
+}
+
+func TestHandlePomodoroCommand_NoStrictByDefault(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handlePomodoroCommand(client, []string{"--preset", "social"})
+	})
+
+	if gotReq.Strict {
+		t.Error("expected Strict=false by default")
+	}
+}
+
+func TestPrintUsage_IncludesStats(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	for _, c := range []string{"stats", "--strict"} {
+		if !strings.Contains(output, c) {
+			t.Errorf("usage should mention %q", c)
+		}
 	}
 }
 

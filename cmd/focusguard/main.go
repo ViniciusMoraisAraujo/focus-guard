@@ -6,9 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"text/tabwriter"
 	"time"
 
+	"focusguard/internal/analytics"
 	"focusguard/internal/autostart"
 	"focusguard/internal/ipc"
 	"focusguard/internal/tui"
@@ -29,6 +31,14 @@ func main() {
 	switch command {
 	case "block":
 		handleBlockCommand(client, os.Args[2:])
+	case "presets":
+		handlePresetsCommand(client)
+	case "pomodoro":
+		handlePomodoroCommand(client, os.Args[2:])
+	case "pomodoro-stop":
+		handlePomodoroStopCommand(client)
+	case "stats":
+		handleStatsCommand(client)
 	case "status":
 		handleStatusCommand(client)
 	case "update":
@@ -224,13 +234,14 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	blockCmd := flag.NewFlagSet("block", flag.ExitOnError)
 	durationFlag := blockCmd.String("duration", "", "Duração do bloqueio (ex: 4h, 30m, 1h30m)")
 	durationShortFlag := blockCmd.String("d", "", "Duração do bloqueio (shorthand)")
+	presetFlag := blockCmd.String("preset", "", "Bloquear uma categoria inteira (ex: social, video, news, games)")
 
 	_ = blockCmd.Parse(args)
 
 	domain := blockCmd.Arg(0)
-	if domain == "" {
-		fmt.Println("Erro: É necessário informar o domínio a ser bloqueado.")
-		fmt.Println("Uso: focusguard block <dominio> --duration <tempo>")
+	if domain == "" && *presetFlag == "" {
+		fmt.Println("Erro: Informe um domínio ou --preset para bloquear.")
+		fmt.Println("Uso: focusguard block <dominio> --duration <tempo>  |  focusguard block --preset <categoria> --duration <tempo>")
 		osExit(1)
 	}
 
@@ -251,6 +262,7 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	req := ipc.Request{
 		Action:   "block",
 		Domain:   domain,
+		Preset:   *presetFlag,
 		Duration: durationStr,
 	}
 
@@ -265,6 +277,101 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 		osExit(1)
 	}
 
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+// handlePresetsCommand lists the available preset categories from the daemon.
+func handlePresetsCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "presets"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao listar presets: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	fmt.Println("Presets disponíveis (use --preset <nome>):")
+	w := tabwriter.NewWriter(os.Stdout, 0, 0, 3, ' ', 0)
+	fmt.Fprintln(w, "NOME\tDESCRIÇÃO\tDOMÍNIOS")
+	fmt.Fprintln(w, "----\t----------\t--------")
+	for _, p := range resp.Presets {
+		fmt.Fprintf(w, "%s\t%s\t%s\n", p.Name, p.Label, strings.Join(p.Domains, ", "))
+	}
+	w.Flush()
+}
+
+// handlePomodoroCommand starts a pomodoro session over a preset's domains.
+// Defaults follow the classic pomodoro: 25m work / 5m rest / 4 cycles.
+func handlePomodoroCommand(client *ipc.Client, args []string) {
+	pomCmd := flag.NewFlagSet("pomodoro", flag.ExitOnError)
+	presetFlag := pomCmd.String("preset", "", "Categoria de domínios (ex: social, video)")
+	workFlag := pomCmd.Int("work", 25, "Minutos de trabalho por ciclo")
+	restFlag := pomCmd.Int("rest", 5, "Minutos de descanso entre ciclos")
+	cyclesFlag := pomCmd.Int("cycles", 4, "Número de ciclos")
+	strictFlag := pomCmd.Bool("strict", false, "Sessão estrita (não pode ser encerrada antecipadamente)")
+
+	_ = pomCmd.Parse(args)
+
+	if *presetFlag == "" {
+		fmt.Println("Erro: Informe um preset (ex: --preset social).")
+		fmt.Println("Uso: focusguard pomodoro --preset <categoria> [--work 25] [--rest 5] [--cycles 4] [--strict]")
+		osExit(1)
+	}
+
+	req := ipc.Request{
+		Action:  "pomodoro",
+		Preset:  *presetFlag,
+		WorkMin: *workFlag,
+		RestMin: *restFlag,
+		Cycles:  *cyclesFlag,
+		Strict:  *strictFlag,
+	}
+
+	resp, err := client.Send(req)
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao iniciar pomodoro: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+// handleStatsCommand fetches the focus analytics and renders the ASCII chart.
+func handleStatsCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "stats"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao obter estatísticas: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	if resp.Stats == nil {
+		fmt.Println("Sem estatísticas registradas ainda — faça uma sessão de foco primeiro.")
+		return
+	}
+	fmt.Print(analytics.RenderStats(resp.Stats, 30))
+}
+
+// handlePomodoroStopCommand ends the active pomodoro session.
+func handlePomodoroStopCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "pomodoro-stop"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao encerrar pomodoro: %s\n", resp.Message)
+		osExit(1)
+	}
 	fmt.Printf("✔ %s\n", resp.Message)
 }
 
@@ -369,6 +476,11 @@ func printUsage() {
 	fmt.Println("\nUso:")
 	fmt.Println("  focusguard                        Modo interativo (TUI)")
 	fmt.Println("  focusguard block <dominio> --duration <tempo>")
+	fmt.Println("  focusguard block --preset <categoria> --duration <tempo>")
+	fmt.Println("  focusguard presets                     Listar categorias de bloqueio")
+	fmt.Println("  focusguard pomodoro --preset <categoria> [--work 25] [--rest 5] [--cycles 4] [--strict]")
+	fmt.Println("  focusguard pomodoro-stop               Encerrar a sessão pomodoro")
+	fmt.Println("  focusguard stats                       Gráfico de foco em arte ASCII")
 	fmt.Println("  focusguard status")
 	fmt.Println("  focusguard update                  Verificar e aplicar atualizações do daemon")
 	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
@@ -383,6 +495,10 @@ func printUsage() {
 	fmt.Println("  focusguard install-watchdog")
 	fmt.Println("  focusguard block twitter.com --duration 4h")
 	fmt.Println("  focusguard block youtube.com 30m")
+	fmt.Println("  focusguard block --preset social --duration 2h")
+	fmt.Println("  focusguard pomodoro --preset social --work 25 --rest 5 --cycles 4 --strict")
+	fmt.Println("  focusguard stats")
+	fmt.Println("  focusguard presets")
 	fmt.Println("  focusguard status")
 	fmt.Println("  focusguard")
 	fmt.Println("\nNota: Não existe comando de unblock manual por design.")
