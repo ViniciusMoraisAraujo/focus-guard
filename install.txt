@@ -1,0 +1,128 @@
+================================================================
+ FocusGuard - Guia de Instalação
+ (Linux e Windows)
+================================================================
+
+O que é o FocusGuard?
+  Bloqueio focado de distrações: bloqueia sites e aplicativos por
+  tempo determinado (hosts + firewall), com TUI, CLI, bandeja do
+  sistema, sessões Pomodoro, Presets e auto-atualização.
+
+Índice:
+  1. Linux  (instalação e serviço online)
+  2. Windows (instalação e serviço online)
+  3. Serviços online (pós-instalação)
+  4. Comandos essenciais
+  5. Atualização
+  6. Desinstalação
+
+Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
+
+------------------------------------------------------------
+ 1. LINUX (Debian/Ubuntu e derivados com systemd)
+------------------------------------------------------------
+
+ 1) Baixe o pacote da sua arquitetura:
+      - focusguard_X.Y.Z_linux_amd64.tar.gz   (x86_64)
+      - focusguard_X.Y.Z_linux_arm64.tar.gz   (ARM64)
+
+ 2) Extraia o arquivo:
+      tar -xzf focusguard_X.Y.Z_linux_amd64.tar.gz
+
+ 3) Execute o instalador como root:
+      sudo ./install-linux.sh install
+
+    O script:
+      - instala os binários em /usr/local/bin (focusguard,
+        focusguard-daemon, focusguard-watchdog e focusguard-tray);
+      - instala a unit systemd "focusguard" (Restart=always);
+      - habilita o serviço na inicialização (systemctl enable);
+      - INICIA o daemon imediatamente (systemctl start);
+      - registra o autostart do tray no login do usuário e cria o
+        atalho do FocusGuard no Desktop (quando presentes).
+
+ 4) Confirme que o serviço está ONLINE:
+      focusguard status
+      systemctl status focusguard
+      sudo ./install-linux.sh status
+
+------------------------------------------------------------
+ 2. WINDOWS (Windows 10/11, amd64 ou arm64)
+------------------------------------------------------------
+
+ 1) Baixe o pacote da sua arquitetura:
+      - focusguard_X.Y.Z_windows_amd64.zip
+      - focusguard_X.Y.Z_windows_arm64.zip
+
+ 2) Extraia o ZIP em uma pasta (ex.: C:\FocusGuard).
+
+ 3) Abra o PowerShell como ADMINISTRADOR dentro da pasta extraída:
+      Set-ExecutionPolicy -Scope Process Bypass
+      .\install-daemon.ps1 install
+
+    O script:
+      - cria o serviço Windows "FocusGuard" com início automático
+        (start=auto) e recovery configurada (o daemon reinicia
+        sozinho em 5s/10s/30s após uma falha ou atualização);
+      - INICIA o serviço imediatamente (sc start);
+      - cria o atalho do FocusGuard no Desktop.
+
+ 4) Confirme que o serviço está ONLINE:
+      .\install-daemon.ps1 status
+      sc query FocusGuard
+
+ 5) Componentes opcionais (com a CLI elevada):
+      focusguard install-watchdog   -> watchdog externo
+      focusguard install-tray       -> tray na inicialização (login)
+      focusguard                    -> interface interativa (TUI)
+
+------------------------------------------------------------
+ 3. SERVIÇOS ONLINE (pós-instalação)
+------------------------------------------------------------
+
+ Após a instalação, o daemon JÁ fica RODANDO - nada de passos
+ manuais:
+
+   - Linux:   unit systemd habilitada (inicia no boot) e INICIADA
+              na instalação, com Restart=always.
+   - Windows: serviço SCM "FocusGuard" com start=auto, INICIADO na
+              instalação e recovery restart/5000/10000/30000.
+
+ Dica: o "focusguard status" responde a qualquer momento enquanto
+ o daemon estiver online; se não responder, verifique o serviço
+ (systemctl status focusguard / sc query FocusGuard).
+
+------------------------------------------------------------
+ 4. COMANDOS ESSENCIAIS
+------------------------------------------------------------
+
+   focusguard status                                Estado da proteção
+   focusguard block twitter.com --duration 4h       Bloqueia por 4 horas
+   focusguard block --preset social --duration 2h   Bloqueia a categoria social
+   focusguard presets                               Lista categorias (social, video, news, games)
+   focusguard pomodoro --preset social              Sessão de foco (25/5 x 4 ciclos)
+   focusguard pomodoro-stop                         Encerra a sessão pomodoro
+   focusguard stats                                 Gráfico de foco em ASCII
+   focusguard                                       Modo interativo (TUI)
+
+------------------------------------------------------------
+ 5. ATUALIZAÇÃO
+------------------------------------------------------------
+
+   focusguard update                    Atualiza daemon + CLI + tray + watchdog
+   focusguard update --channel beta     Opta por prereleases (canal beta)
+
+   O daemon verifica novas versões a cada 24h em segundo plano e,
+   ao aplicar um update, reinicia sozinho - a versão nova fica
+   ativa sem precisar reiniciar o computador.
+
+------------------------------------------------------------
+ 6. DESINSTALAÇÃO
+------------------------------------------------------------
+
+   Linux:   sudo ./install-linux.sh uninstall
+   Windows: .\install-daemon.ps1 uninstall   (como Administrador)
+
+   O estado (bloqueios e configuração) é preservado em
+   /var/lib/focusguard (Linux) ou C:\ProgramData\FocusGuard
+   (Windows) - remova manualmente se quiser apagar tudo.

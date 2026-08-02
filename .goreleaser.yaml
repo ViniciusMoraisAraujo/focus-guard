@@ -135,7 +135,11 @@ archives:
     formats:
       - zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_windows_{{ .Arch }}'
-    files: []
+    files:
+      - src: install.txt
+        dst: install.txt
+      - src: scripts/install-daemon.ps1
+        dst: install-daemon.ps1
 
   - id: linux
     ids:
@@ -148,6 +152,8 @@ archives:
     allow_different_binary_count: true
     name_template: '{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}'
     files:
+      - src: install.txt
+        dst: install.txt
       - src: README.md
       - src: CHANGELOG.md
       - src: focusguard.png
