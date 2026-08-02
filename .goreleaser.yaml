@@ -6,6 +6,12 @@ project_name: focusguard
 before:
   hooks:
     - go mod tidy
+    # Regenera o ícone multi-tamanho (focusguard.ico/.png) consumido pelo
+    # go-winres (metadados do .exe) e pelo atalho do Desktop nos installers.
+    - go run ./cmd/focusguard-icon
+    # go-winres make lê versioninfo.json (--in) e emite rsrc_windows_*.syso
+    # na pasta do package, embedados automaticamente pelo go build no Windows.
+    - if command -v go-winres >/dev/null 2>&1; then cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64; cd ../../cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64; fi
 
 env:
   - CGO_ENABLED=0
@@ -143,6 +149,10 @@ archives:
     files:
       - src: README.md
       - src: CHANGELOG.md
+      - src: focusguard.png
+        dst: focusguard.png
+      - src: focusguard.ico
+        dst: focusguard.ico
       - src: scripts/focusguard.service
         dst: focusguard.service
       - src: scripts/focusguard-tray.desktop

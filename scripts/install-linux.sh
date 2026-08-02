@@ -126,6 +126,75 @@ remove_tray_autostart() {
   fi
 }
 
+# install_desktop_shortcut cria o atalho do FocusGuard no Desktop do usuário
+# (.desktop) e instala o ícone no hicolor do usuário (256px, espelho do atalho
+# .lnk do Windows). Best-effort: qualquer falha aqui NÃO aborta a instalação do
+# daemon — sem o ícone ou sem home, apenas avisa e segue.
+install_desktop_shortcut() {
+  local dir user home gid icons_dir desktop_file
+  dir="$(script_dir)"
+
+  if [[ ! -f "${dir}/focusguard.png" ]]; then
+    echo "[FocusGuard] Aviso: focusguard.png não encontrado. Atalho do Desktop não criado." >&2
+    return 0
+  fi
+
+  user="$(tray_user)"
+  if ! home="$(tray_user_home)"; then
+    echo "[FocusGuard] Aviso: não foi possível determinar o home do usuário ${user}. Atalho do Desktop não criado." >&2
+    return 0
+  fi
+  gid="$(id -gn "${user}" 2>/dev/null || echo "${user}")"
+
+  echo "[FocusGuard] Criando atalho do FocusGuard no Desktop do usuário ${user}..."
+  if ! install -d -m 0755 -o "${user}" -g "${gid}" "${home}/.local/share/icons/hicolor/256x256/apps"; then
+    echo "[FocusGuard] Aviso: não foi possível criar o diretório de ícones. Atalho não criado." >&2
+    return 0
+  fi
+  install -m 0644 "${dir}/focusguard.png" "${home}/.local/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
+
+  desktop_dir="${home}/Desktop"
+  if ! install -d -m 0755 -o "${user}" -g "${gid}" "${desktop_dir}"; then
+    # Sem diretório Desktop, tenta ~/Área de Trabalho (pt-BR) e cai fora se falhar.
+    desktop_dir="${home}/Área de Trabalho"
+    if ! install -d -m 0755 -o "${user}" -g "${gid}" "${desktop_dir}"; then
+      echo "[FocusGuard] Aviso: sem diretório Desktop. Atalho não criado." >&2
+      return 0
+    fi
+  fi
+
+  desktop_file="${desktop_dir}/focusguard.desktop"
+  # Terminal=true: a CLI sem argumentos abre a TUI (que exige um terminal).
+  # Sem isso, clicar no atalho não mostraria nada ao usuário.
+  cat > "${desktop_file}" <<EOF
+[Desktop Entry]
+Type=Application
+Name=FocusGuard
+Comment=Bloqueio focado de distrações
+Exec=${BIN_DIR}/focusguard
+Icon=focusguard
+Terminal=true
+Categories=Utility;Security;
+EOF
+  chmod 0755 "${desktop_file}" 2>/dev/null || true
+  chown "${user}:${gid}" "${desktop_file}" 2>/dev/null || true
+  echo "[FocusGuard] ✔ Atalho do FocusGuard criado (${desktop_file})."
+}
+
+remove_desktop_shortcut() {
+  local home desktop
+  if ! home="$(tray_user_home)"; then
+    return 0
+  fi
+  for desktop in "${home}/Desktop/focusguard.desktop" "${home}/Área de Trabalho/focusguard.desktop"; do
+    if [[ -f "${desktop}" ]]; then
+      rm -f "${desktop}"
+      echo "[FocusGuard] Atalho do FocusGuard removido (${desktop})."
+    fi
+  done
+  rm -f "${home}/.local/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
+}
+
 install_service() {
   local dir
   dir="$(script_dir)"
@@ -151,6 +220,7 @@ do_install() {
   fi
   install_binaries
   install_service
+  install_desktop_shortcut
 }
 
 do_uninstall() {
@@ -163,6 +233,7 @@ do_uninstall() {
   echo "[FocusGuard] Removendo binários..."
   rm -f "${BIN_DIR}/focusguard" "${BIN_DIR}/focusguard-daemon" "${BIN_DIR}/focusguard-watchdog" "${BIN_DIR}/focusguard-tray"
   remove_tray_autostart
+  remove_desktop_shortcut
   echo "[FocusGuard] ✔ FocusGuard removido. Estado preservado em ${STATE_DIR}"
 }
 

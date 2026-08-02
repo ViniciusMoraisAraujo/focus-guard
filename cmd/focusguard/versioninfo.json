@@ -1,12 +1,7 @@
 {
   "RT_GROUP_ICON": {
     "#1": {
-      "0000": "focusguard.ico"
-    }
-  },
-  "RT_MANIFEST": {
-    "#1": {
-      "0409": "focusguard-daemon.exe.manifest"
+      "0000": "../../focusguard.ico"
     }
   },
   "RT_VERSION": {
@@ -19,11 +14,11 @@
         "info": {
           "0409": {
             "CompanyName": "FocusGuard",
-            "FileDescription": "FocusGuard daemon — bloqueio focado de distrações",
+            "FileDescription": "FocusGuard CLI — controle de bloqueio focado",
             "FileVersion": "0.2.6",
-            "InternalName": "focusguard-daemon",
+            "InternalName": "focusguard",
             "LegalCopyright": "© FocusGuard",
-            "OriginalFilename": "focusguard-daemon.exe",
+            "OriginalFilename": "focusguard.exe",
             "ProductName": "FocusGuard",
             "ProductVersion": "0.2.6"
           }

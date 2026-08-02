@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon test vet clean install uninstall help fmt tidy
+.PHONY: all build build-cli build-daemon icon winres test vet clean install uninstall help fmt tidy
 
 GO       := go
 BIN_DIR  := bin
@@ -10,7 +10,18 @@ UNAME_S  := $(shell uname -s 2>/dev/null || echo Windows)
 
 all: build test vet
 
-build: build-cli build-daemon
+build: icon build-cli build-daemon
+
+# icon regenera o ícone multi-tamanho (.ico Windows + .png Linux) usado pelo
+# go-winres (metadados .exe) e pelo atalho do Desktop nos installers.
+icon:
+	$(GO) run ./cmd/focusguard-icon
+
+# winres gera os resource .syso (rsrc_windows_*.syso) que o go build embeda
+# nos .exe — requer o go-winres instalado (go install github.com/tc-hib/go-winres@latest).
+winres:
+	cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64
+	cd cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64
 
 build-cli:
 	$(GO) build -o $(CLI_BIN) ./cmd/focusguard

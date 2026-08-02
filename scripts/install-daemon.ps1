@@ -10,6 +10,26 @@ param(
 $ServiceName = "FocusGuard"
 $StateDir = "$env:PROGRAMDATA\FocusGuard"
 
+# Get-CliExePath localiza o focusguard.exe (CLI) ao lado do daemon — é o alvo
+# do atalho do Desktop e quem carrega o ícone embedado via go-winres.
+# NOTA: NÃO reutiliza $ExePath de propósito — esse parâmetro é o caminho do
+# daemon (Get-ExePath); o atalho deve sempre mirar a CLI, nunca o daemon.
+function Get-CliExePath {
+    $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
+    $parentDir = Split-Path -Parent $scriptDir
+    $candidates = @(
+        "$parentDir\focusguard.exe",
+        "$parentDir\bin\focusguard.exe",
+        "$parentDir\cmd\focusguard\focusguard.exe"
+    )
+    foreach ($c in $candidates) {
+        if (Test-Path $c) {
+            return (Resolve-Path $c).Path
+        }
+    }
+    return ""
+}
+
 function Get-ExePath {
     if ($ExePath -and (Test-Path $ExePath)) {
         return $ExePath
@@ -91,6 +111,50 @@ function Uninstall-Daemon {
         Write-Host "[FocusGuard] Diretório de estado preservado: $StateDir" -ForegroundColor Cyan
         Write-Host "[FocusGuard] Para remover completamente, exclua manualmente o diretório." -ForegroundColor Gray
     }
+
+    Remove-DesktopShortcut
+}
+
+# Install-DesktopShortcut cria um atalho .lnk no Desktop apontando para o
+# focusguard.exe (CLI), com o ícone embedado no próprio executável via
+# go-winres (IconLocation=focusguard.exe,0). Best-effort: falha não aborta.
+function Install-DesktopShortcut {
+    $cli = Get-CliExePath
+    if (-not $cli) {
+        Write-Host "[FocusGuard] Aviso: focusguard.exe não encontrado. Atalho do Desktop não criado." -ForegroundColor Yellow
+        return
+    }
+
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    if (-not $desktop) {
+        Write-Host "[FocusGuard] Aviso: sem pasta Desktop. Atalho não criado." -ForegroundColor Yellow
+        return
+    }
+
+    try {
+        $lnk = Join-Path $desktop "FocusGuard.lnk"
+        $ws = New-Object -ComObject WScript.Shell
+        $sc = $ws.CreateShortcut($lnk)
+        $sc.TargetPath = $cli
+        $sc.WorkingDirectory = Split-Path -Parent $cli
+        $sc.IconLocation = "$cli,0"
+        $sc.Description = "FocusGuard - bloqueio focado de distrações"
+        $sc.Save()
+        Write-Host "[FocusGuard] ✔ Atalho do FocusGuard criado no Desktop ($lnk)." -ForegroundColor Green
+    } catch {
+        Write-Host "[FocusGuard] Aviso: não foi possível criar o atalho do Desktop: $($_.Exception.Message)" -ForegroundColor Yellow
+    }
+}
+
+# Remove-DesktopShortcut apaga o atalho .lnk do Desktop.
+function Remove-DesktopShortcut {
+    $desktop = [Environment]::GetFolderPath("Desktop")
+    if (-not $desktop) { return }
+    $lnk = Join-Path $desktop "FocusGuard.lnk"
+    if (Test-Path $lnk) {
+        Remove-Item $lnk -Force
+        Write-Host "[FocusGuard] Atalho do FocusGuard removido do Desktop." -ForegroundColor Cyan
+    }
 }
 
 function Get-Status {
@@ -105,7 +169,7 @@ function Get-Status {
 }
 
 switch ($Action) {
-    "install"   { Install-Daemon }
+    "install"   { Install-Daemon; Install-DesktopShortcut }
     "uninstall" { Uninstall-Daemon }
     "status"    { Get-Status }
 }
