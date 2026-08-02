@@ -17,9 +17,11 @@ type State struct {
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	filePath string
-	onSave   func()
+	mu          sync.RWMutex
+	filePath    string
+	onSave      func()
+	replicaPath string
+	replicaKey  *[32]byte
 }
 
 // SetOnSave registers a callback invoked after each save, so external watchers
@@ -53,36 +55,47 @@ func NewStore(filePath string) (*Store, error) {
 
 func (s *Store) Load() (*State, error) {
 	s.mu.RLock()
-
 	data, err := os.ReadFile(s.filePath)
-	if os.IsNotExist(err) {
-		s.mu.RUnlock()
-		return cleanState(), nil
-	}
-	if err != nil {
-		s.mu.RUnlock()
-		return nil, fmt.Errorf("failed to read state file: %w", err)
-	}
-
-	var state State
-	if err := json.Unmarshal(data, &state); err != nil {
-		s.mu.RUnlock()
-		// Arquivo corrompido ou vazio (0 bytes — ex.: crash no meio da escrita
-		// ou edição manual quebrada): em vez de abortar o boot, re-inicializa um
-		// estado limpo e cura o disco imediatamente. Sem essa cura, um Reconcile
-		// com RAM vazia veria o arquivo corrompido como "em sincronia" (ambos
-		// vazios) e ele ficaria corrompido até o próximo restart. Se a RAM tiver
-		// bloqueios, o Reconcile seguinte sobrescreve com o estado real — a RAM
-		// continua sendo a fonte da verdade.
-		s.healCorrupted()
-		return cleanState(), nil
-	}
 	s.mu.RUnlock()
 
-	if state.Blocks == nil {
-		state.Blocks = make(map[string]policy.Block)
+	var state State
+	valid := false
+	switch {
+	case os.IsNotExist(err):
+		// Apagado — tenta a réplica abaixo antes de devolver estado limpo.
+	case err != nil:
+		return nil, fmt.Errorf("failed to read state file: %w", err)
+	default:
+		valid = json.Unmarshal(data, &state) == nil
 	}
-	return &state, nil
+
+	if valid {
+		if state.Blocks == nil {
+			state.Blocks = make(map[string]policy.Block)
+		}
+		return &state, nil
+	}
+
+	// Arquivo corrompido, vazio (0 bytes) ou apagado: tenta a réplica
+	// criptografada ANTES de curar com estado limpo. Curar primeiro destruiria
+	// o único backup válido — writeReplicaLocked sobrescreveria a réplica boa
+	// com o estado limpo. Sem essa ordem, qualquer chamador de Load() direto
+	// (ex.: boot do scheduler) tornaria a réplica inútil.
+	if st, ok := s.loadFromReplicaIfEnabled(); ok {
+		return st, nil
+	}
+
+	if os.IsNotExist(err) {
+		return cleanState(), nil
+	}
+
+	// Sem réplica: re-inicializa um estado limpo e cura o disco imediatamente.
+	// Sem essa cura, um Reconcile com RAM vazia veria o arquivo corrompido
+	// como "em sincronia" (ambos vazios) e ele ficaria corrompido até o
+	// próximo restart. Se a RAM tiver bloqueios, o Reconcile seguinte
+	// sobrescreve com o estado real — a RAM continua sendo a fonte da verdade.
+	s.healCorrupted()
+	return cleanState(), nil
 }
 
 // healCorrupted rewrites a corrupted or empty state file with a clean state.
@@ -180,6 +193,10 @@ func (s *Store) saveLocked(state *State) error {
 	if s.onSave != nil {
 		s.onSave()
 	}
+
+	// Réplica criptografada oculta (auto-healing): best-effort, nunca falha
+	// o Save principal — uma falha aqui só adia o backup para o próximo save.
+	s.writeReplicaLocked(data)
 
 	return nil
 }
