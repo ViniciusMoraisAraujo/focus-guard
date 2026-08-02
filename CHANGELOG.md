@@ -7,6 +7,71 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-02
+
+### 🍅 Presets personalizados
+
+- **`focusguard preset add <nome> <dominio...>`** — cria um preset próprio com
+  os domínios que você quiser (ex.: `focusguard preset add estudos
+  github.com stackoverflow.com docs.google.com`); o preset passa a aparecer em
+  `focusguard presets` e pode ser usado em `block --preset`, `pomodoro
+  --preset` e no agendamento recorrente.
+- **`focusguard preset remove <nome>`** — remove um preset personalizado
+  (presets embutidos `social`, `video`, `news` e `games` não podem ser
+  removidos; remover um preset em uso por um agendamento é rejeitado).
+- Persistidos pelo daemon ao lado do state.json (best-effort, mesmo padrão do
+  resto do estado).
+
+### ⏰ Agendamento recorrente (schedules)
+
+- **`focusguard schedule add --preset <categoria> --days <dias> --start HH:MM
+  --end HH:MM`** — bloqueia uma categoria em horários fixos dos dias da semana
+  (ex.: `--days seg,ter,qua,qui,sex --start 08:00 --end 12:00`). O worker do
+  daemon aplica a regra quando o horário chega e desbloqueia no fim da janela,
+  todos os dias, sem intervenção.
+- **`focusguard schedule list` / `focusguard schedule remove <id>`** —
+  consulta e gerencia as regras recorrentes.
+- **Validação robusta (TDD)**: dias e horários validados, janelas overnight
+  (`start 22:00 → end 06:00`) tratadas corretamente, aplicação idempotente e
+  persistência entre restarts do daemon.
+
+### 🚨 Modo pânico e allowlist (`block --internet`)
+
+- **`focusguard block --internet --duration <tempo>`** — corta **toda** a
+  internet de uma vez: regra catch-all de firewall (REJECT com
+  `--reject-with tcp-reset` no Linux via iptables/ip6tables, `netsh
+  advfirewall` bloqueando qualquer endereço no Windows) + teardown de sockets
+  ativos. Expira sozinho pelo timer do scheduler, como qualquer bloqueio.
+- **`focusguard block --internet --allow docs.google.com,drive.google.com`**
+  — **allowlist**: os domínios permitidos continuam acessíveis (e seus sockets
+  não são derrubados) enquanto todo o resto fica bloqueado — deep focus em
+  ferramentas de trabalho sem distração.
+- **Reconcile ciente do modo pânico (bug fix da revisão)**: ao reiniciar o
+  daemon com um `--internet` ativo, os blocos de domínio persistidos também
+  são reaplicados — quando o pânico expira, os domínios continuam protegidos
+  (antes, o sync de domínios era pulado enquanto o catch-all estivesse ativo).
+
+### 🎯 Metas diárias, streak e exportação de analytics
+
+- **`focusguard goal set 4h` / `focusguard goal`** — define uma meta diária de
+  foco persistida; o `status` e a TUI mostram quanto falta (ex.: `Meta: 2h de
+  4h`).
+- **Streak de dias consecutivos** — o `focusguard stats` agora mostra a sequência
+  de dias com foco registrado (dias consecutivos até ontem/hj).
+- **`focusguard stats --export csv|json`** — exporta o histórico completo de
+  sessões para `focusguard-stats.csv`/`.json` no diretório atual, para
+  planilhas ou relatórios.
+
+### 🪟 Tray: presets, pomodoro e tooltip
+
+- **Submenu de presets** — o menu do tray agora lista as categorias
+  disponíveis (incluindo os presets personalizados) para bloquear com um
+  clique.
+- **Notificações de pomodoro** — o tray avisa quando um ciclo de trabalho
+  termina e o descanso começa (notificação nativa com dedup por fase).
+- **Tooltip com tempo restante** — o tooltip do ícone mostra o tempo restante
+  do bloqueio/sessão ativa, em vez de apenas o estado.
+
 ## [0.3.0] - 2026-08-02
 
 ### 📦 Instalação em pasta protegida (anti-exclusão acidental)
