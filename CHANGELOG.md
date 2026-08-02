@@ -5,6 +5,26 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+### 🛡️ Regras de rede e firewall: robustez (enforcer)
+
+- **Sanitização de domínios** — antes de gravar no `/etc/hosts`, o domínio
+  recebido é limpo e validado (`sanitizeDomain`): remove scheme
+  (`http://`/`https://`) e path, elimina quebras de linha (`\r`, `\n`),
+  espaços e tabs (vetores de injeção no arquivo hosts), normaliza para
+  minúsculas, colapsa prefixos `www.` repetidos (`www.www.site.com` →
+  `site.com`, evitando entradas redundantes) e rejeita caracteres inválidos —
+  um domínio malformado não injeta linhas nem aborta o bloqueio.
+- **Sweep de regras órfãs no Linux** — `removeFirewallRule` agora executa
+  `iptables -D` em loop até o iptables reportar `does a matching rule exist`,
+  removendo regras duplicadas/órfãs acumuladas de crashes/races anteriores
+  (com teto defensivo de 100 remoções para nunca travar).
+- **Testes (TDD)** — 8 novos testes cobrindo sanitização (scheme maiúsculo,
+  injeção CRLF/espaço/tab, collapse de `www.`), rejeição de injeção no hosts,
+  remoção de duplicatas, no-op sem regras, propagação de erros reais e o teto
+  do loop.
+
 ## [0.2.5] - 2026-08-01
 
 ### 🪟 System Tray: correções de confiabilidade
