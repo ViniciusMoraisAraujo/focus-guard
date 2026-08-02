@@ -1,6 +1,7 @@
 package scheduler
 
 import (
+	"context"
 	"fmt"
 	"slices"
 	"sync"
@@ -13,10 +14,24 @@ import (
 
 var resolveFunc = enforcer.ResolveIPs
 
+// resolveFuncCtx resolves a domain honoring a context, so the periodic refresh
+// can bound each individual DNS lookup with a timeout. Kept as a package var
+// so tests can stub it.
+var resolveFuncCtx = enforcer.ResolveIPsContext
+
+// maxConcurrentDNSResolutions bounds how many DNS lookups the periodic refresh
+// runs at the same time, avoiding a socket storm when many domains are blocked.
+const maxConcurrentDNSResolutions = 8
+
+// dnsRefreshTimeout bounds each individual DNS lookup in the periodic refresh,
+// so one stalled resolver cannot hold the worker indefinitely.
+const dnsRefreshTimeout = 3 * time.Second
+
 // resolveBlockIPs resolves a domain and its www subdomain, merging both into a
 // single de-duplicated list. This keeps the enforcer free of its own DNS
 // lookups (G2) while preserving firewall coverage for the www addresses that
-// the previous collectAllIPs provided.
+// the previous collectAllIPs provided. It uses resolveFunc (the non-ctx
+// resolver) so benchmarks and tests that stub resolveFunc keep working.
 func resolveBlockIPs(domain string) ([]string, error) {
 	ips, err := resolveFunc(domain)
 	if err != nil {
@@ -28,6 +43,29 @@ func resolveBlockIPs(domain string) ([]string, error) {
 		return ips, nil
 	}
 
+	return mergeWWWIPs(ips, wwwIPs), nil
+}
+
+// resolveBlockIPsCtx is the context-aware counterpart of resolveBlockIPs used
+// by the batched BlockDomains path: it resolves a domain and its www subdomain
+// with a per-call context (so each DNS lookup in the batch can be bounded by a
+// timeout) and merges both into a single de-duplicated list.
+func resolveBlockIPsCtx(ctx context.Context, domain string) ([]string, error) {
+	ips, err := resolveFuncCtx(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+
+	wwwIPs, wwwErr := resolveFuncCtx(ctx, "www."+domain)
+	if wwwErr != nil {
+		return ips, nil
+	}
+
+	return mergeWWWIPs(ips, wwwIPs), nil
+}
+
+// mergeWWWIPs appends the www subdomain's IPs to the base list, de-duplicating.
+func mergeWWWIPs(ips, wwwIPs []string) []string {
 	seen := make(map[string]bool, len(ips)+len(wwwIPs))
 	for _, ip := range ips {
 		seen[ip] = true
@@ -38,7 +76,29 @@ func resolveBlockIPs(domain string) ([]string, error) {
 			seen[ip] = true
 		}
 	}
-	return ips, nil
+	return ips
+}
+
+// dedupeDomains removes duplicate domains while preserving order.
+func dedupeDomains(domains []string) []string {
+	seen := make(map[string]bool, len(domains))
+	out := make([]string, 0, len(domains))
+	for _, d := range domains {
+		if seen[d] {
+			continue
+		}
+		seen[d] = true
+		out = append(out, d)
+	}
+	return out
+}
+
+// stateStore is the disk persistence contract the scheduler needs. It is an
+// interface so tests can substitute a spy that counts Load calls and prove
+// query methods are served 100% from RAM (no disk I/O under the lock).
+type stateStore interface {
+	Load() (*store.State, error)
+	Save(*store.State) error
 }
 
 // Scheduler treats the in-memory blocks map as the source of truth. The
@@ -46,9 +106,13 @@ func resolveBlockIPs(domain string) ([]string, error) {
 // restore the RAM after a daemon restart, and afterwards any divergence from
 // the in-memory state is treated as external tampering and the disk copy is
 // overwritten to match the RAM.
+//
+// The mutex is an RWMutex so query methods (ListBlocks, HasActiveBlocks, Ping)
+// run concurrently with each other and never block on disk I/O — they only
+// read the RAM map.
 type Scheduler struct {
-	mu           sync.Mutex
-	store        *store.Store
+	mu           sync.RWMutex
+	store        stateStore
 	enforcer     enforcer.Enforcer
 	blocks       map[string]policy.Block
 	timers       map[string]*time.Timer
@@ -56,7 +120,7 @@ type Scheduler struct {
 	refreshStop  chan struct{}
 }
 
-func NewScheduler(st *store.Store, enf enforcer.Enforcer) *Scheduler {
+func NewScheduler(st stateStore, enf enforcer.Enforcer) *Scheduler {
 	return &Scheduler{
 		store:       st,
 		enforcer:    enf,
@@ -84,6 +148,71 @@ type unblockEntry struct {
 type refreshEntry struct {
 	domain string
 	ips    []string
+}
+
+// mergeResolvedIPs merges the newly resolved IPs into the existing list,
+// de-duplicating, and reports whether anything new was added.
+func mergeResolvedIPs(existing, newIPs []string) ([]string, bool) {
+	ipMap := make(map[string]bool, len(existing)+len(newIPs))
+	merged := make([]string, 0, len(existing)+len(newIPs))
+	for _, ip := range existing {
+		ipMap[ip] = true
+		merged = append(merged, ip)
+	}
+	hasNew := false
+	for _, ip := range newIPs {
+		if !ipMap[ip] {
+			ipMap[ip] = true
+			merged = append(merged, ip)
+			hasNew = true
+		}
+	}
+	return merged, hasNew
+}
+
+// refreshResolvedIPs resolves every entry's IPs in parallel with an individual
+// per-domain timeout, returning the domains that gained at least one new
+// address. A bounded worker pool (maxConcurrentDNSResolutions) avoids opening
+// one DNS socket per blocked domain at once, while the timeout ensures one
+// stalled resolver cannot hold the whole refresh cycle.
+func refreshResolvedIPs(entries []refreshEntry, timeout time.Duration, resolve func(ctx context.Context, domain string) ([]string, error)) map[string][]string {
+	refreshed := make(map[string][]string)
+	if len(entries) == 0 {
+		return refreshed
+	}
+
+	var (
+		wg  sync.WaitGroup
+		mu  sync.Mutex
+		sem = make(chan struct{}, maxConcurrentDNSResolutions)
+	)
+
+	for _, entry := range entries {
+		wg.Add(1)
+		go func(e refreshEntry) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+
+			ctx, cancel := context.WithTimeout(context.Background(), timeout)
+			defer cancel()
+
+			newIPs, err := resolve(ctx, e.domain)
+			if err != nil || len(newIPs) == 0 {
+				return
+			}
+
+			merged, hasNew := mergeResolvedIPs(e.ips, newIPs)
+			if hasNew {
+				mu.Lock()
+				refreshed[e.domain] = merged
+				mu.Unlock()
+			}
+		}(entry)
+	}
+
+	wg.Wait()
+	return refreshed
 }
 
 // statesEqual reports whether two states are semantically identical. Any
@@ -136,12 +265,15 @@ func (s *Scheduler) Reconcile() error {
 		}
 		s.bootstrapped = true
 		changed = true
-	}
-
-	// The disk is only a mirror: if it diverges from RAM (edited, emptied,
-	// deleted or corrupted), it is overwritten with the in-memory state.
-	if disk, err := s.store.Load(); err != nil || !statesEqual(disk, s.ramState()) {
-		changed = true
+	} else {
+		// The disk is only a mirror: if it diverges from RAM (edited, emptied,
+		// deleted or corrupted), it is overwritten with the in-memory state.
+		// This comparison only runs after bootstrap — the boot path already
+		// loaded the disk into RAM, so reading it a second time would be a
+		// needless disk access under the exclusive lock.
+		if disk, err := s.store.Load(); err != nil || !statesEqual(disk, s.ramState()) {
+			changed = true
+		}
 	}
 
 	var toUnblock []unblockEntry
@@ -217,31 +349,7 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 			continue
 		}
 
-		refreshed := make(map[string][]string)
-		for _, entry := range entries {
-			newIPs, err := resolveFunc(entry.domain)
-			if err != nil || len(newIPs) == 0 {
-				continue
-			}
-
-			ipMap := make(map[string]bool, len(entry.ips)+len(newIPs))
-			for _, ip := range entry.ips {
-				ipMap[ip] = true
-			}
-
-			var hasNewIP bool
-			for _, ip := range newIPs {
-				if !ipMap[ip] {
-					entry.ips = append(entry.ips, ip)
-					ipMap[ip] = true
-					hasNewIP = true
-				}
-			}
-
-			if hasNewIP {
-				refreshed[entry.domain] = entry.ips
-			}
-		}
+		refreshed := refreshResolvedIPs(entries, dnsRefreshTimeout, resolveFuncCtx)
 
 		if len(refreshed) == 0 {
 			continue
@@ -311,9 +419,101 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	return &block, nil
 }
 
-func (s *Scheduler) ListBlocks() ([]policy.Block, error) {
+// BlockDomains blocks several domains at once, resolving all of them in
+// parallel (with a per-domain timeout) and then persisting the whole batch
+// with a single store.Save and applying it with a single enforcer.Sync — one
+// hosts-file rewrite for N sites instead of N+1. RAM remains the source of
+// truth; the disk is written once for the entire batch.
+func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]policy.Block, error) {
+	unique := dedupeDomains(domains)
+	if len(unique) == 0 {
+		return nil, fmt.Errorf("scheduler: nenhum domínio para bloquear")
+	}
+
+	// Resolve all domains in parallel with an individual timeout each.
+	resolved := refreshResolvedIPs(resolveEntries(unique), dnsRefreshTimeout, resolveBlockIPsCtx)
+	if len(resolved) != len(unique) {
+		for _, d := range unique {
+			if _, ok := resolved[d]; !ok {
+				return nil, fmt.Errorf("scheduler: falha ao resolver %s", d)
+			}
+		}
+	}
+
+	now := time.Now()
+	blocks := make([]policy.Block, 0, len(unique))
+	activeIPs := make(map[string][]string, len(unique))
+	for _, d := range unique {
+		b := policy.Block{
+			Domain:      d,
+			StartedAt:   now,
+			ExpiresAt:   now.Add(duration),
+			ResolvedIPs: resolved[d],
+		}
+		blocks = append(blocks, b)
+		activeIPs[d] = resolved[d]
+	}
+
 	s.mu.Lock()
-	defer s.mu.Unlock()
+	wasEmpty := len(s.blocks) == 0
+	for _, b := range blocks {
+		s.blocks[b.Domain] = b
+	}
+	if err := s.store.Save(s.ramState()); err != nil {
+		// Reverte a RAM: sem o disco persistido, os domínios não podem ficar
+		// ativos sem timer (estado zumbi) — o lote inteiro é descartado.
+		for _, b := range blocks {
+			delete(s.blocks, b.Domain)
+		}
+		s.mu.Unlock()
+		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
+	}
+	s.mu.Unlock()
+
+	// A single batched Sync writes the hosts file once for the whole batch.
+	if err := s.enforcer.Sync(activeIPs); err != nil {
+		// Reverte a RAM e o disco: um lote que falhou não pode deixar os
+		// domínios ativos sem timer (estado zumbi).
+		s.mu.Lock()
+		for _, b := range blocks {
+			delete(s.blocks, b.Domain)
+			if t, ok := s.timers[b.Domain]; ok {
+				t.Stop()
+				delete(s.timers, b.Domain)
+			}
+		}
+		_ = s.store.Save(s.ramState())
+		s.mu.Unlock()
+		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueios: %w", err)
+	}
+
+	if wasEmpty {
+		_ = s.enforcer.BlockDoH()
+	}
+
+	s.mu.Lock()
+	for _, b := range blocks {
+		s.setupTimerLocked(b)
+	}
+	s.mu.Unlock()
+
+	return blocks, nil
+}
+
+// resolveEntries converts a list of domains into refresh entries with no
+// existing IPs, so refreshResolvedIPs returns every successfully resolved
+// domain (empty merges are skipped, failures are absent from the result).
+func resolveEntries(domains []string) []refreshEntry {
+	entries := make([]refreshEntry, 0, len(domains))
+	for _, d := range domains {
+		entries = append(entries, refreshEntry{domain: d})
+	}
+	return entries
+}
+
+func (s *Scheduler) ListBlocks() ([]policy.Block, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	list := make([]policy.Block, 0, len(s.blocks))
 	for _, b := range s.blocks {
@@ -356,8 +556,8 @@ func (s *Scheduler) onExpire(domain string) {
 }
 
 func (s *Scheduler) HasActiveBlocks() bool {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	for _, block := range s.blocks {
 		if block.IsActive() {
@@ -389,8 +589,8 @@ func (s *Scheduler) ProtectionStatus() (ProtectionStatus, error) {
 }
 
 func (s *Scheduler) Ping() error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+	s.mu.RLock()
+	defer s.mu.RUnlock()
 
 	return nil
 }
