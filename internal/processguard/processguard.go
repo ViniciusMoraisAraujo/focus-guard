@@ -36,6 +36,7 @@ type Guard struct {
 	denylist []string
 	interval time.Duration
 	stop     chan struct{}
+	done     chan struct{}
 }
 
 // New returns a Guard with the given denylist and the default scan interval.
@@ -71,11 +72,14 @@ func (g *Guard) Start(isActive func() bool) {
 		return
 	}
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	g.stop = stop
+	g.done = done
 	interval := g.interval
 	g.mu.Unlock()
 
 	go func() {
+		defer close(done)
 		ticker := time.NewTicker(interval)
 		defer ticker.Stop()
 		for {
@@ -92,15 +96,24 @@ func (g *Guard) Start(isActive func() bool) {
 	}()
 }
 
-// Stop halts the background scan loop. It is safe to call more than once.
+// Stop halts the background scan loop and waits for it to fully exit, so no
+// scan is in flight after Stop returns (a test or shutdown can safely restore
+// package globals / tear down resources afterwards). The done channel is
+// captured locally, mirroring stop: a second Stop is a no-op. Safe to call more
+// than once.
 func (g *Guard) Stop() {
 	g.mu.Lock()
-	defer g.mu.Unlock()
 	if g.stop == nil {
+		g.mu.Unlock()
 		return
 	}
 	close(g.stop)
+	done := g.done
 	g.stop = nil
+	g.done = nil
+	g.mu.Unlock()
+
+	<-done
 }
 
 // RunOnce performs a single scan: it lists running processes, kills the ones

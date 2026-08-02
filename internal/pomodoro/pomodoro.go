@@ -110,8 +110,9 @@ func (c *Controller) Start(s Session) (State, error) {
 		return State{}, errors.New("pomodoro: sessão já ativa (use pomodoro-stop para encerrar)")
 	}
 	stop := make(chan struct{})
+	done := make(chan struct{})
 	c.stop = stop
-	c.done = make(chan struct{})
+	c.done = done
 	c.strict = s.Strict
 	c.state = State{
 		Active:     true,
@@ -124,7 +125,13 @@ func (c *Controller) Start(s Session) (State, error) {
 	}
 	c.mu.Unlock()
 
-	go c.run(s, startedAt, stop)
+	// done é capturado localmente (como stop): cada sessão fecha o SEU canal.
+	// Fechar c.done direto aqui criaria uma corrida com o Start de uma nova
+	// sessão — se B começasse entre o reset de estado e o close, o goroutine
+	// de A fecharia o canal de B e o run de B panicaria com "close of closed
+	// channel" ao terminar (além de travar um Stop concorrente esperando o
+	// done antigo).
+	go c.run(s, startedAt, stop, done)
 	return c.Status(), nil
 }
 
@@ -133,7 +140,10 @@ func (c *Controller) Start(s Session) (State, error) {
 // cycle. Stopping aborts the loop; any block still active expires on its own
 // scheduler timer (there is intentionally no forced unblock). On completion
 // (natural or stopped) the session is pushed to the analytics recorder.
-func (c *Controller) run(s Session, startedAt time.Time, stop chan struct{}) {
+// stop and done are this session's OWN channels (captured by Start) — run
+// must close done, never the controller field, so a concurrently started
+// session B cannot have its channel closed by session A's finalizer.
+func (c *Controller) run(s Session, startedAt time.Time, stop, done chan struct{}) {
 	var focus time.Duration
 	for cycle := 1; cycle <= s.Cycles; cycle++ {
 		c.setPhase(PhaseWork, cycle, s, s.Work)
@@ -153,10 +163,11 @@ func (c *Controller) run(s Session, startedAt time.Time, stop chan struct{}) {
 	c.mu.Lock()
 	c.state = State{}
 	c.stop = nil
+	c.done = nil // simétrico a c.stop: o canal foi capturado localmente
 	c.mu.Unlock()
 
 	c.record(s, startedAt, focus)
-	close(c.done)
+	close(done)
 }
 
 // record pushes the completed session to the analytics recorder, exactly once.
