@@ -415,7 +415,7 @@ func TestHandleUpdateCommand_Applied(t *testing.T) {
 	})
 
 	client := ipc.NewClient()
-	output := captureStdout(t, func() { handleUpdateCommand(client) })
+	output := captureStdout(t, func() { handleUpdateCommand(client, nil) })
 
 	for _, c := range []string{"✔", "1.1.0", "próxima reinicialização"} {
 		if !strings.Contains(output, c) {
@@ -430,7 +430,7 @@ func TestHandleUpdateCommand_UpToDate(t *testing.T) {
 	})
 
 	client := ipc.NewClient()
-	output := captureStdout(t, func() { handleUpdateCommand(client) })
+	output := captureStdout(t, func() { handleUpdateCommand(client, nil) })
 
 	if !strings.Contains(output, "versão mais recente") {
 		t.Errorf("expected up-to-date message, got: %s", output)
@@ -447,7 +447,7 @@ func TestHandleUpdateCommand_FailureResponse(t *testing.T) {
 
 	client := ipc.NewClient()
 	caught, code := runWithExitMock(func() {
-		handleUpdateCommand(client)
+		handleUpdateCommand(client, nil)
 	})
 
 	if !caught {
@@ -768,6 +768,50 @@ func TestHandlePomodoroCommand_NoStrictByDefault(t *testing.T) {
 
 	if gotReq.Strict {
 		t.Error("expected Strict=false by default")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Update channels
+// ---------------------------------------------------------------------------
+
+func TestHandleUpdateCommand_ChannelBetaFlag(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, CurrentVersion: "1.0.0", UpdateVersion: "1.1.0-rc1", UpdateAvailable: true}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() { handleUpdateCommand(client, []string{"--channel", "beta"}) })
+
+	if gotReq.Action != "update" {
+		t.Errorf("expected action update, got %q", gotReq.Action)
+	}
+	if gotReq.Channel != "beta" {
+		t.Errorf("expected Channel=beta, got %q", gotReq.Channel)
+	}
+}
+
+func TestHandleUpdateCommand_DefaultChannelIsStable(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, CurrentVersion: "1.0.0"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() { handleUpdateCommand(client, nil) })
+
+	if gotReq.Channel != "" {
+		t.Errorf("expected empty channel by default, got %q", gotReq.Channel)
+	}
+}
+
+func TestPrintUsage_IncludesChannelFlag(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	if !strings.Contains(output, "--channel") {
+		t.Error("usage should mention --channel")
 	}
 }
 

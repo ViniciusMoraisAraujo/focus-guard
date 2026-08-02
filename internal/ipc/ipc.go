@@ -23,6 +23,9 @@ type Request struct {
 	RestMin  int    `json:"rest_min,omitempty"`
 	Cycles   int    `json:"cycles,omitempty"`
 	Strict   bool   `json:"strict,omitempty"`
+	// Channel selects the release channel for the update action: "" or
+	// "stable" (default, skips prereleases) or "beta" (opt-in to prereleases).
+	Channel string `json:"channel,omitempty"`
 }
 
 type Response struct {
@@ -50,7 +53,8 @@ type UpdateStatus struct {
 }
 
 // UpdateChecker performs an auto-update check. When apply is true the checker
-// also applies the update to the daemon binary.
+// also applies the update to the daemon binary. channel selects the release
+// channel ("" or "stable" skips prereleases; "beta" opts in).
 type UpdateChecker interface {
-	Check(ctx context.Context, apply bool) (UpdateStatus, error)
+	Check(ctx context.Context, apply bool, channel string) (UpdateStatus, error)
 }

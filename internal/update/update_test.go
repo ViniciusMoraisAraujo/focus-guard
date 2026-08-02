@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"testing"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
@@ -208,6 +209,156 @@ func TestCheckForUpdate_PreRelease(t *testing.T) {
 	}
 	if result.Version != "1.1.0-rc1" {
 		t.Errorf("expected version 1.1.0-rc1, got %s", result.Version)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Update channels (beta vs. stable)
+// ---------------------------------------------------------------------------
+
+// newPrereleaseGitHubServer serves a release list with the latest tag marked
+// as prerelease, so tests can prove the beta channel opts in to prereleases
+// while the stable channel skips them.
+func newPrereleaseGitHubServer(t *testing.T, stableTag, betaTag string) *httptest.Server {
+	t.Helper()
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		baseURL := "http://" + r.Host
+		body := `[{
+			"tag_name": "` + betaTag + `",
+			"name": "` + betaTag + `",
+			"prerelease": true,
+			"assets": [
+				{
+					"name": "focusguard_` + betaTag + `_linux_amd64.tar.gz",
+					"browser_download_url": "` + baseURL + `/focusguard_` + betaTag + `_linux_amd64.tar.gz"
+				}
+			]
+		},{
+			"tag_name": "` + stableTag + `",
+			"name": "` + stableTag + `",
+			"prerelease": false,
+			"assets": [
+				{
+					"name": "focusguard_` + stableTag + `_linux_amd64.tar.gz",
+					"browser_download_url": "` + baseURL + `/focusguard_` + stableTag + `_linux_amd64.tar.gz"
+				}
+			]
+		}]`
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(body))
+	}))
+}
+
+// TestWithChannel_Beta_OptsIntoPrerelease verifies the beta channel sees a
+// prerelease that is newer than the current version, while the default (stable)
+// updater skips prereleases entirely.
+func TestWithChannel_Beta_OptsIntoPrerelease(t *testing.T) {
+	server := newPrereleaseGitHubServer(t, "v1.0.0", "v1.1.0-rc1")
+	defer server.Close()
+
+	u := NewUpdater("testowner", "testrepo",
+		WithVersion("1.0.0"),
+		WithChannel("beta"),
+		WithGitHubAPI(server.URL+"/api/v3/"),
+	)
+
+	result, err := u.CheckForUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckForUpdate erro: %v", err)
+	}
+	if result == nil {
+		t.Fatal("beta channel deveria detectar a prerelease v1.1.0-rc1")
+	}
+	if result.Version != "1.1.0-rc1" {
+		t.Errorf("esperava v1.1.0-rc1, got %s", result.Version)
+	}
+}
+
+// TestStableChannel_SkipsPrerelease verifies the stable updater does NOT report
+// a prerelease-only update — prereleases are opt-in via the beta channel.
+func TestStableChannel_SkipsPrerelease(t *testing.T) {
+	server := newPrereleaseGitHubServer(t, "v1.0.0", "v1.1.0-rc1")
+	defer server.Close()
+
+	u := NewUpdater("testowner", "testrepo",
+		WithVersion("1.0.0"),
+		WithGitHubAPI(server.URL+"/api/v3/"),
+	)
+
+	result, err := u.CheckForUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckForUpdate erro: %v", err)
+	}
+	if result != nil {
+		t.Errorf("stable channel não deveria detectar a prerelease, got %+v", result)
+	}
+}
+
+// TestSetChannel_SwitchesStableToBeta verifies SetChannel reconfigures an
+// existing updater so the daemon can honor a per-request channel without
+// rebuilding the whole Updater.
+func TestSetChannel_SwitchesStableToBeta(t *testing.T) {
+	server := newPrereleaseGitHubServer(t, "v1.0.0", "v1.1.0-rc1")
+	defer server.Close()
+
+	u := NewUpdater("testowner", "testrepo",
+		WithVersion("1.0.0"),
+		WithGitHubAPI(server.URL+"/api/v3/"),
+	)
+
+	// Estável primeiro: sem update.
+	if res, _ := u.CheckForUpdate(context.Background()); res != nil {
+		t.Fatalf("stable não deveria ver a prerelease, got %+v", res)
+	}
+
+	u.SetChannel("beta")
+
+	res, err := u.CheckForUpdate(context.Background())
+	if err != nil {
+		t.Fatalf("CheckForUpdate após SetChannel: %v", err)
+	}
+	if res == nil || res.Version != "1.1.0-rc1" {
+		t.Errorf("SetChannel(beta) deveria habilitar prereleases, got %+v", res)
+	}
+}
+
+// TestSetChannel_ConcurrentRequests_NoRace simulates the daemon serving IPC
+// update requests from multiple goroutines at once (each connection runs in its
+// own goroutine) while they flip between channels. Under -race this proves
+// SetChannel + CheckForUpdate are safe to call concurrently.
+func TestSetChannel_ConcurrentRequests_NoRace(t *testing.T) {
+	server := newPrereleaseGitHubServer(t, "v1.0.0", "v1.1.0-rc1")
+	defer server.Close()
+
+	u := NewUpdater("testowner", "testrepo",
+		WithVersion("1.0.0"),
+		WithGitHubAPI(server.URL+"/api/v3/"),
+	)
+
+	const goroutines = 8
+	var wg sync.WaitGroup
+	for i := 0; i < goroutines; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			for j := 0; j < 5; j++ {
+				if (i+j)%2 == 0 {
+					u.SetChannel("beta")
+				} else {
+					u.SetChannel("stable")
+				}
+				// Resultado pode variar conforme o snapshot — o que importa
+				// aqui é não haver data race.
+				_, _ = u.CheckForUpdate(context.Background())
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	// Após o stress, o updater deve permanecer íntegro (não-nil).
+	if u.getUpdater() == nil {
+		t.Error("updater ficou nil após concorrência")
 	}
 }
 

@@ -21,6 +21,10 @@ type Systray interface {
 	SetIcon(data []byte)
 	SetTitle(title string)
 	SetTooltip(tooltip string)
+	// Notify shows a native balloon/toast (Windows) or desktop notification
+	// (Linux notify-send). Implementations are best-effort: failures are
+	// ignored because the tooltip still surfaces the same information.
+	Notify(title, message string)
 	AddMenuItem(title, tooltip string) MenuItem
 	AddSeparator()
 	Quit()

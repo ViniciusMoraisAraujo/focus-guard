@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
@@ -21,9 +22,12 @@ type UpdateResult struct {
 
 // Updater handles checking for and applying updates from GitHub releases.
 type Updater struct {
+	mu             sync.Mutex // protege channel/apiBaseURL/updater (SetChannel é chamado por request)
 	owner          string
 	repo           string
 	currentVersion string
+	channel        string // "" | "stable" | "beta"
+	apiBaseURL     string // override p/ GitHub Enterprise ou testes
 	updater        *selfupdate.Updater
 }
 
@@ -37,23 +41,56 @@ func WithVersion(version string) Option {
 	}
 }
 
+// WithChannel selects the release channel: "stable" (default) skips
+// prereleases; "beta" opts in to prereleases for early access.
+func WithChannel(channel string) Option {
+	return func(u *Updater) {
+		u.channel = channel
+		u.rebuildUpdater()
+	}
+}
+
 // WithGitHubAPI overrides the GitHub API base URL (useful for testing).
 func WithGitHubAPI(apiURL string) Option {
 	return func(u *Updater) {
-		source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{
-			EnterpriseBaseURL: apiURL,
-		})
-		if err != nil {
-			return
-		}
-		updater, err := selfupdate.NewUpdater(selfupdate.Config{
-			Source: source,
-		})
-		if err != nil {
-			return
-		}
-		u.updater = updater
+		u.apiBaseURL = apiURL
+		u.rebuildUpdater()
 	}
+}
+
+// getUpdater returns the current underlying go-selfupdate updater under lock,
+// so a SetChannel from another goroutine cannot swap it mid-operation. Each
+// Check/Update call works on a consistent snapshot.
+func (u *Updater) getUpdater() *selfupdate.Updater {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	return u.updater
+}
+
+// rebuildUpdater (re)creates the underlying go-selfupdate updater honoring the
+// configured source (GitHub API override) and the release channel. Prereleases
+// are only included when the channel is "beta".
+//
+// Callers must hold u.mu (construction-time options run single-threaded;
+// SetChannel takes the lock itself).
+func (u *Updater) rebuildUpdater() {
+	cfg := selfupdate.Config{
+		Prerelease: u.channel == "beta",
+	}
+	if u.apiBaseURL != "" {
+		source, err := selfupdate.NewGitHubSource(selfupdate.GitHubConfig{
+			EnterpriseBaseURL: u.apiBaseURL,
+		})
+		if err != nil {
+			return
+		}
+		cfg.Source = source
+	}
+	updater, err := selfupdate.NewUpdater(cfg)
+	if err != nil {
+		return
+	}
+	u.updater = updater
 }
 
 // NewUpdater creates a new Updater for the given GitHub owner and repository.
@@ -71,6 +108,21 @@ func NewUpdater(owner, repo string, opts ...Option) *Updater {
 	return u
 }
 
+// SetChannel reconfigures an existing Updater for a new release channel
+// ("" | "stable" | "beta") without rebuilding the whole object — used by the
+// daemon to honor a per-request --channel flag. The daemon serves each IPC
+// connection in its own goroutine, so the switch is mutex-protected to avoid
+// racing on the underlying updater.
+func (u *Updater) SetChannel(channel string) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if u.channel == channel {
+		return
+	}
+	u.channel = channel
+	u.rebuildUpdater()
+}
+
 // repository returns a selfupdate.Repository for the configured GitHub owner/repo.
 func (u *Updater) repository() selfupdate.Repository {
 	return selfupdate.NewRepositorySlug(u.owner, u.repo)
@@ -83,7 +135,7 @@ func (u *Updater) CheckForUpdate(ctx context.Context) (*UpdateResult, error) {
 		return nil, nil
 	}
 
-	latest, found, err := u.updater.DetectLatest(ctx, u.repository())
+	latest, found, err := u.getUpdater().DetectLatest(ctx, u.repository())
 	if err != nil {
 		return nil, fmt.Errorf("failed to detect latest release: %w", err)
 	}
@@ -113,7 +165,7 @@ func (u *Updater) UpdateTo(ctx context.Context, result *UpdateResult, binaryPath
 		return "", fmt.Errorf("failed to create backup: %w", err)
 	}
 
-	_, err := u.updater.UpdateCommand(ctx, binaryPath, u.currentVersion, u.repository())
+	_, err := u.getUpdater().UpdateCommand(ctx, binaryPath, u.currentVersion, u.repository())
 	if err != nil {
 		_ = u.RestoreBackup(backupPath, binaryPath)
 		return "", fmt.Errorf("failed to update binary: %w", err)
@@ -125,7 +177,7 @@ func (u *Updater) UpdateTo(ctx context.Context, result *UpdateResult, binaryPath
 // applyOneBinary is the per-binary replace step, stubbable in tests so the
 // multi-binary rollback flow can be exercised without hitting GitHub.
 var applyOneBinary = func(u *Updater, ctx context.Context, binaryPath string) error {
-	_, err := u.updater.UpdateCommand(ctx, binaryPath, u.currentVersion, u.repository())
+	_, err := u.getUpdater().UpdateCommand(ctx, binaryPath, u.currentVersion, u.repository())
 	return err
 }
 

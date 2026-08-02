@@ -522,6 +522,113 @@ func TestMessage_FetchErr_ResetsProtection(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Indicador visual de update (Feature 5)
+// ---------------------------------------------------------------------------
+
+func TestView_UpdateBannerShownWhenAvailable(t *testing.T) {
+	m := newTestModel(nil)
+	m.updateAvailable = true
+	m.updateVersion = "1.1.0"
+
+	view := m.View()
+	if !strings.Contains(view, "UPDATE DISPONÍVEL") {
+		t.Error("banner should be shown when an update is available")
+	}
+	if !strings.Contains(view, "v1.1.0") {
+		t.Error("banner should include the new version")
+	}
+	if !strings.Contains(view, "[u]") {
+		t.Error("banner should advertise the 'u' keybind")
+	}
+}
+
+func TestView_NoUpdateBannerWhenUnavailable(t *testing.T) {
+	m := newTestModel(nil)
+	m.updateAvailable = false
+
+	view := m.View()
+	if strings.Contains(view, "UPDATE DISPONÍVEL") {
+		t.Error("banner should NOT be shown without an available update")
+	}
+}
+
+func TestKey_U_DispatchesUpdateWhenAvailable(t *testing.T) {
+	m := newTestModel(nil)
+	m.updateAvailable = true
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	if cmd == nil {
+		t.Fatal("'u' with update available should dispatch an update command")
+	}
+	if !m.loading {
+		t.Error("loading should be true while applying the update")
+	}
+}
+
+func TestKey_U_NoOpWhenNoUpdate(t *testing.T) {
+	m := newTestModel(nil)
+	m.updateAvailable = false
+
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'u'}})
+	if cmd != nil {
+		t.Error("'u' without an update should be a no-op")
+	}
+}
+
+func TestMessage_UpdateAppliedShowsSuccess(t *testing.T) {
+	m := newTestModel(nil)
+	m.loading = true
+
+	result, cmd := m.Update(updateAppliedMsg{message: "Atualização aplicada"})
+	if result != m {
+		t.Error("should return same model")
+	}
+	if cmd == nil {
+		t.Error("update applied should trigger a status refresh")
+	}
+	if m.loading {
+		t.Error("loading should be false after update applied")
+	}
+	if !strings.Contains(m.statusMessage, "Atualização aplicada") {
+		t.Errorf("statusMessage should carry the success message, got %q", m.statusMessage)
+	}
+	// Após aplicar, o banner some (a versão atual passa a ser a nova).
+	if m.updateAvailable {
+		t.Error("updateAvailable should reset after applying")
+	}
+}
+
+func TestMessage_UpdateErrShowsError(t *testing.T) {
+	m := newTestModel(nil)
+	m.loading = true
+
+	_, cmd := m.Update(updateErrMsg{err: errors.New("network down")})
+	if cmd == nil {
+		t.Error("update error should trigger a status refresh")
+	}
+	if m.loading {
+		t.Error("loading should be false after update error")
+	}
+	if m.err == nil || m.err.Error() != "network down" {
+		t.Errorf("err should be set, got %v", m.err)
+	}
+}
+
+func TestMessage_StatusFetched_SetsUpdateFields(t *testing.T) {
+	m := New(nil)
+	m.loading = true
+
+	m.Update(statusFetchedMsg{updateAvailable: true, updateVersion: "0.3.0"})
+
+	if !m.updateAvailable {
+		t.Error("updateAvailable should be set from status")
+	}
+	if m.updateVersion != "0.3.0" {
+		t.Errorf("updateVersion = %q, want 0.3.0", m.updateVersion)
+	}
+}
+
 func TestView_ShowsProtectionLine(t *testing.T) {
 	m := newTestModel(nil)
 	m.dohActive = true

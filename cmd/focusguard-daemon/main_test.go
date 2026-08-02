@@ -760,11 +760,14 @@ type fakeUpdaterAPI struct {
 	applyErr   error
 	applyCalls int32
 	appliedTo  []string
+	channel    string
 }
 
 func (f *fakeUpdaterAPI) CheckForUpdate(_ context.Context) (*update.UpdateResult, error) {
 	return f.result, f.checkErr
 }
+
+func (f *fakeUpdaterAPI) SetChannel(channel string) { f.channel = channel }
 
 func (f *fakeUpdaterAPI) UpdateToAll(_ context.Context, _ *update.UpdateResult, binaries []string) ([]string, error) {
 	atomic.AddInt32(&f.applyCalls, 1)
@@ -782,7 +785,7 @@ func (f *fakeUpdaterAPI) UpdateToAll(_ context.Context, _ *update.UpdateResult, 
 func TestDaemonUpdater_Check_NoUpdate(t *testing.T) {
 	d := &daemonUpdater{u: &fakeUpdaterAPI{}, binaries: []string{"/tmp/focusguard-daemon"}}
 
-	st, err := d.Check(context.Background(), false)
+	st, err := d.Check(context.Background(), false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -800,7 +803,7 @@ func TestDaemonUpdater_Check_UpdateAvailable(t *testing.T) {
 		binaries: []string{"/tmp/focusguard-daemon"},
 	}
 
-	st, err := d.Check(context.Background(), false)
+	st, err := d.Check(context.Background(), false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -821,7 +824,7 @@ func TestDaemonUpdater_Check_Error(t *testing.T) {
 		binaries: []string{"/tmp/focusguard-daemon"},
 	}
 
-	_, err := d.Check(context.Background(), false)
+	_, err := d.Check(context.Background(), false, "")
 	if err == nil || !strings.Contains(err.Error(), "network down") {
 		t.Fatalf("expected network error, got %v", err)
 	}
@@ -831,7 +834,7 @@ func TestDaemonUpdater_Check_Apply(t *testing.T) {
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
 	d := &daemonUpdater{u: fake, binaries: []string{"/tmp/focusguard-daemon"}}
 
-	st, err := d.Check(context.Background(), true)
+	st, err := d.Check(context.Background(), true, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -849,7 +852,7 @@ func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
 		binaries: []string{"/tmp/focusguard-daemon"},
 	}
 
-	_, err := d.Check(context.Background(), true)
+	_, err := d.Check(context.Background(), true, "")
 	if err == nil || !strings.Contains(err.Error(), "file locked") {
 		t.Fatalf("expected apply error, got %v", err)
 	}
@@ -858,7 +861,7 @@ func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
 func TestDaemonUpdater_Check_NilUpdater(t *testing.T) {
 	d := &daemonUpdater{u: nil, binaries: []string{"/tmp/focusguard-daemon"}}
 
-	st, err := d.Check(context.Background(), false)
+	st, err := d.Check(context.Background(), false, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -917,7 +920,7 @@ func TestDaemonUpdater_Check_Apply_AllBinaries(t *testing.T) {
 		},
 	}
 
-	st, err := d.Check(context.Background(), true)
+	st, err := d.Check(context.Background(), true, "")
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -938,7 +941,7 @@ func TestDaemonUpdater_Check_Apply_PartialFailureNoRestart(t *testing.T) {
 		binaries: []string{"/usr/local/bin/focusguard", "/usr/local/bin/focusguard-daemon"},
 	}
 
-	st, err := d.Check(context.Background(), true)
+	st, err := d.Check(context.Background(), true, "")
 	if err == nil || !strings.Contains(err.Error(), "access denied") {
 		t.Fatalf("expected apply error, got %v", err)
 	}
@@ -1111,7 +1114,7 @@ type fakeUpdateChecker struct {
 	calls int32
 }
 
-func (f *fakeUpdateChecker) Check(_ context.Context, apply bool) (ipc.UpdateStatus, error) {
+func (f *fakeUpdateChecker) Check(_ context.Context, apply bool, _ string) (ipc.UpdateStatus, error) {
 	atomic.AddInt32(&f.calls, 1)
 	return ipc.UpdateStatus{CurrentVersion: "1.0.0"}, nil
 }

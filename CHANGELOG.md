@@ -7,6 +7,53 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.2.8] - 2026-08-02
+
+### 🔀 Canais de atualização (beta vs. stable)
+
+- **`focusguard update --channel beta`** — opta por **prereleases** (early
+  access) sem contaminar quem usa o canal estável: `--channel stable` (e o
+  padrão) ignora releases `prerelease` no GitHub. O canal é honrado por
+  request no daemon (`SetChannel` no updater → `Config{Prerelease: true}` do
+  go-selfupdate), então CLI e tray podem alternar sem reiniciar o serviço.
+- **Race-free sob concorrência (TDD)** — o daemon atende cada conexão IPC em
+  sua própria goroutine; o `SetChannel` agora é protegido por mutex e cada
+  checagem usa um snapshot consistente do updater (sem data race em flips
+  rápidos beta↔stable).
+
+### 🖥️ Indicador visual de update na TUI
+
+- **Banner no topo da interface** — quando há versão nova disponível, a TUI
+  exibe uma barra destacada `[ UPDATE DISPONÍVEL (vX.X.X) — Pressione 'u' ]`;
+  a tecla `u` aplica a atualização ali mesmo, com mensagens de sucesso/erro e
+  reset do banner após a aplicação.
+
+### 🔔 Notificações nativas no tray
+
+- **Balão nativo quando há update** — o tray agora consulta o status
+  periodicamente (a cada 30min) e, ao detectar uma nova versão, dispara uma
+  notificação do sistema: `notify-send` no Linux e `ShowBalloonTip`
+  (PowerShell/WinForms) no Windows, com dedup por versão (notifica uma única
+  vez por versão). Best-effort — falha na notificação não afeta o tray.
+
+### 🛟 Smart Recovery: rollback automático no watchdog
+
+- **Release quebrada não deixa a proteção morta** — se o daemon crashar logo
+  após um update aplicado e houver um `.bak` recente (deixado pelo
+  `UpdateToAll`), o watchdog externo restaura a versão anterior antes de
+  reiniciar, subindo o binário que funcionava.
+- **Sem reverter atualização boa (TDD)** — a decisão compara o **mtime do
+  backup** com a última saúde confirmada do daemon: o binário atual só é
+  revertido se **nunca** foi confirmado saudável após a substituição (crash
+  no boot) e o daemon ficou fora por mais que a janela de graça de 60s (2× o
+  intervalo de checagem) — um restart pós-update legítimo (que volta em
+  segundos) nunca é revertido, e morte rotineira de um daemon estável também
+  não. Crash logo após o primeiro health da versão nova (dentro de 30s)
+  também dispara o rollback.
+- **Novo pacote `internal/recovery`** com lógica pura testável
+  (`FindRecentBackup`, `ShouldRollBack`, `RestoreFromBackup`,
+  `RecoverIfNeeded`) + testes anti-regressão no watchdog.
+
 ## [0.2.7] - 2026-08-02
 
 ### 🔄 Auto-Update confiável (destaque)

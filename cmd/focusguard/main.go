@@ -42,7 +42,7 @@ func main() {
 	case "status":
 		handleStatusCommand(client)
 	case "update":
-		handleUpdateCommand(client)
+		handleUpdateCommand(client, os.Args[2:])
 	case "install":
 		handleInstallCommand()
 	case "uninstall":
@@ -423,9 +423,14 @@ func handleStatusCommand(client *ipc.Client) {
 	fmt.Println()
 }
 
-func handleUpdateCommand(client *ipc.Client) {
+func handleUpdateCommand(client *ipc.Client, args []string) {
+	updateCmd := flag.NewFlagSet("update", flag.ExitOnError)
+	channelFlag := updateCmd.String("channel", "", "Canal de release: stable (padrão) ou beta (prereleases)")
+	_ = updateCmd.Parse(args)
+
 	req := ipc.Request{
-		Action: "update",
+		Action:  "update",
+		Channel: *channelFlag,
 	}
 
 	resp, err := client.Send(req)
@@ -482,7 +487,7 @@ func printUsage() {
 	fmt.Println("  focusguard pomodoro-stop               Encerrar a sessão pomodoro")
 	fmt.Println("  focusguard stats                       Gráfico de foco em arte ASCII")
 	fmt.Println("  focusguard status")
-	fmt.Println("  focusguard update                  Verificar e aplicar atualizações do daemon")
+	fmt.Println("  focusguard update [--channel beta]  Verificar e aplicar atualizações do daemon")
 	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
 	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")
 	fmt.Println("  focusguard interactive             Modo interativo (TUI)")

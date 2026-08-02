@@ -2,7 +2,12 @@
 
 package tray
 
-import "github.com/getlantern/systray"
+import (
+	"fmt"
+	"os/exec"
+
+	"github.com/getlantern/systray"
+)
 
 type systrayImpl struct{}
 
@@ -13,6 +18,23 @@ func (s *systrayImpl) Run(onReady, onExit func()) { systray.Run(onReady, onExit)
 func (s *systrayImpl) SetIcon(data []byte)        { systray.SetIcon(data) }
 func (s *systrayImpl) SetTitle(title string)      { systray.SetTitle(title) }
 func (s *systrayImpl) SetTooltip(tooltip string)  { systray.SetTooltip(tooltip) }
+
+// Notify raises a native Windows balloon via PowerShell's WinForms
+// NotifyIcon.ShowBalloonTip — the tray library used by FocusGuard does not
+// expose Shell_NotifyIcon (NIF_INFO) publicly. Best-effort: a missing
+// PowerShell or a failure is ignored (the tooltip still carries the info).
+func (s *systrayImpl) Notify(title, message string) {
+	script := fmt.Sprintf(`
+Add-Type -AssemblyName System.Windows.Forms
+$n = New-Object System.Windows.Forms.NotifyIcon
+$n.Icon = [System.Drawing.SystemIcons]::Information
+$n.Visible = $true
+$n.ShowBalloonTip(8000, %q, %q, [System.Windows.Forms.ToolTipIcon]::Info)
+Start-Sleep -Seconds 9
+$n.Dispose()
+`, title, message)
+	_ = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script).Run()
+}
 func (s *systrayImpl) AddMenuItem(title, tooltip string) MenuItem {
 	return &menuItemImpl{systray.AddMenuItem(title, tooltip)}
 }

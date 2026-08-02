@@ -14,6 +14,10 @@ const (
 	// forever on a hung daemon, all subsequent clicks are silently dropped
 	// and the tray appears dead.
 	daemonTimeout = 5 * time.Second
+	// updatePollInterval is how often the tray re-checks for a new update in
+	// the background (Feature 2). 30min strikes a balance between noticing
+	// releases promptly and not hammering the daemon.
+	updatePollInterval = 30 * time.Minute
 )
 
 var quickBlockDomains = []string{
@@ -43,6 +47,11 @@ type Controller struct {
 	tuiItem     MenuItem
 	quitItem    MenuItem
 	quickItems  []MenuItem
+
+	// notifiedVersion records the last version a native notification was shown
+	// for, so the tray does not spam the user on every poll for the same
+	// release (Feature 2).
+	notifiedVersion string
 }
 
 // NewController builds a tray controller.
@@ -106,6 +115,41 @@ func (c *Controller) onReady() {
 	}()
 
 	c.refreshStatus()
+	c.startUpdatePolling()
+}
+
+// startUpdatePolling runs the background update check (Feature 2): every
+// updatePollInterval the tray asks the daemon's cached status and raises a
+// native notification when a new version is available.
+func (c *Controller) startUpdatePolling() {
+	ticker := time.NewTicker(updatePollInterval)
+	go func() {
+		for range ticker.C {
+			c.checkForUpdateNotification()
+		}
+	}()
+}
+
+// checkForUpdateNotification queries the daemon status and raises a native
+// notification (balloon/toast) the first time a new version is seen. It is a
+// no-op when the daemon is unreachable, the request fails, or the version was
+// already notified.
+func (c *Controller) checkForUpdateNotification() {
+	resp, err := c.daemon.SendWithTimeout(ipc.Request{Action: "status"}, daemonTimeout)
+	if err != nil || resp == nil || !resp.Success {
+		return
+	}
+	if !resp.UpdateAvailable || resp.UpdateVersion == "" {
+		return
+	}
+	if resp.UpdateVersion == c.notifiedVersion {
+		return
+	}
+	c.notifiedVersion = resp.UpdateVersion
+	c.systray.Notify(
+		"Nova versão do FocusGuard",
+		fmt.Sprintf("v%s disponível. Abra o terminal e digite 'focusguard update' para atualizar.", resp.UpdateVersion),
+	)
 }
 
 func (c *Controller) refreshStatus() {

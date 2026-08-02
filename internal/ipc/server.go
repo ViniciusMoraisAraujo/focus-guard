@@ -92,7 +92,9 @@ func (s *Server) RefreshUpdateStatus(ctx context.Context) (UpdateStatus, error) 
 	if c == nil {
 		return UpdateStatus{}, nil
 	}
-	st, err := c.Check(ctx, false)
+	// A checagem em background sempre usa o canal estável — nunca surpreender
+	// um usuário estável com uma prerelease.
+	st, err := c.Check(ctx, false, "")
 	if err != nil {
 		return st, err
 	}
@@ -268,7 +270,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		st, err := c.Check(ctx, true)
+		st, err := c.Check(ctx, true, req.Channel)
 		cancel()
 		if err != nil {
 			resp = Response{Success: false, Message: err.Error()}

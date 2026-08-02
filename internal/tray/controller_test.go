@@ -58,6 +58,19 @@ type mockSystray struct {
 	items      []*mockMenuItem
 	separators int
 	quitCalls  int
+	notifs     []string
+}
+
+func (m *mockSystray) Notify(title, message string) {
+	m.mu.Lock()
+	m.notifs = append(m.notifs, title+"|"+message)
+	m.mu.Unlock()
+}
+
+func (m *mockSystray) notifications() []string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]string(nil), m.notifs...)
 }
 
 func newMockSystray() *mockSystray { return &mockSystray{} }
@@ -421,6 +434,87 @@ func (m *timeoutRecordingDaemon) SendWithTimeout(_ ipc.Request, d time.Duration)
 	m.timeouts = append(m.timeouts, d)
 	m.mu.Unlock()
 	return &ipc.Response{Success: true, DoHActive: true, FirewallRules: 3}, nil
+}
+
+// ---------------------------------------------------------------------------
+// Notificações nativas de update (Feature 2 — polling no tray)
+// ---------------------------------------------------------------------------
+
+func TestCheckForUpdateNotification_NotifiesOnNewVersion(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: true, UpdateAvailable: true, UpdateVersion: "1.1.0", CurrentVersion: "1.0.0"}}
+	c := NewController(s, d, nil)
+
+	c.checkForUpdateNotification()
+
+	notifs := s.notifications()
+	if len(notifs) != 1 {
+		t.Fatalf("expected 1 notification, got %d: %v", len(notifs), notifs)
+	}
+	if !strings.Contains(notifs[0], "Nova versão do FocusGuard") {
+		t.Errorf("notification should carry the update title, got %q", notifs[0])
+	}
+	if !strings.Contains(notifs[0], "1.1.0") {
+		t.Errorf("notification should mention the new version, got %q", notifs[0])
+	}
+	if !strings.Contains(notifs[0], "focusguard update") {
+		t.Errorf("notification should tell the user how to update, got %q", notifs[0])
+	}
+}
+
+func TestCheckForUpdateNotification_NotifiesOncePerVersion(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: true, UpdateAvailable: true, UpdateVersion: "1.1.0"}}
+	c := NewController(s, d, nil)
+
+	c.checkForUpdateNotification()
+	c.checkForUpdateNotification()
+	c.checkForUpdateNotification()
+
+	if got := len(s.notifications()); got != 1 {
+		t.Errorf("expected a single notification for the same version, got %d", got)
+	}
+}
+
+func TestCheckForUpdateNotification_NoNotifyWithoutUpdate(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: true, UpdateAvailable: false}}
+	c := NewController(s, d, nil)
+
+	c.checkForUpdateNotification()
+
+	if got := len(s.notifications()); got != 0 {
+		t.Errorf("no notification expected without an update, got %d", got)
+	}
+}
+
+func TestCheckForUpdateNotification_NoNotifyWhenDaemonDown(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{err: errDaemonDown}
+	c := NewController(s, d, nil)
+
+	c.checkForUpdateNotification()
+
+	if got := len(s.notifications()); got != 0 {
+		t.Errorf("no notification expected when the daemon is down, got %d", got)
+	}
+}
+
+func TestCheckForUpdateNotification_NotifiesAgainOnNewerVersion(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{Success: true, UpdateAvailable: true, UpdateVersion: "1.1.0"}}
+	c := NewController(s, d, nil)
+
+	c.checkForUpdateNotification()
+
+	d.mu.Lock()
+	d.resp = &ipc.Response{Success: true, UpdateAvailable: true, UpdateVersion: "1.2.0"}
+	d.mu.Unlock()
+	c.checkForUpdateNotification()
+
+	if got := len(s.notifications()); got != 2 {
+		t.Errorf("expected a new notification for v1.2.0, got %d: %v", got, s.notifications())
+	}
 }
 
 func TestController_UsesTimeoutForAllIPCCalls(t *testing.T) {

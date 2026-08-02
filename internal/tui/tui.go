@@ -45,6 +45,9 @@ type model struct {
 	firewallRules   int
 	protectionError string
 
+	updateAvailable bool
+	updateVersion   string
+
 	lastStatusFetch time.Time
 
 	width  int
@@ -65,6 +68,8 @@ type statusFetchedMsg struct {
 	dohActive       bool
 	firewallRules   int
 	protectionError string
+	updateAvailable bool
+	updateVersion   string
 }
 
 type fetchErrMsg struct {
@@ -76,6 +81,14 @@ type blockAppliedMsg struct {
 }
 
 type blockErrMsg struct {
+	err error
+}
+
+type updateAppliedMsg struct {
+	message string
+}
+
+type updateErrMsg struct {
 	err error
 }
 
@@ -130,6 +143,13 @@ var (
 			Foreground(warning).
 			Italic(true).
 			MarginTop(1)
+
+	updateBannerStyle = lipgloss.NewStyle().
+				Foreground(lipgloss.Color("#0A0A0A")).
+				Background(warning).
+				Bold(true).
+				Padding(0, 1).
+				MarginTop(1)
 
 	formBoxStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
@@ -236,7 +256,24 @@ func (m *model) fetchStatusCmd() tea.Cmd {
 			dohActive:       resp.DoHActive,
 			firewallRules:   resp.FirewallRules,
 			protectionError: resp.ProtectionError,
+			updateAvailable: resp.UpdateAvailable,
+			updateVersion:   resp.UpdateVersion,
 		}
+	}
+}
+
+// updateCmd dispatches the update action to the daemon and maps the response
+// to an updateAppliedMsg or updateErrMsg (Feature 5 — 'u' keybind).
+func (m *model) updateCmd() tea.Cmd {
+	return func() tea.Msg {
+		resp, err := m.client.Send(ipc.Request{Action: "update"})
+		if err != nil {
+			return updateErrMsg{err: err}
+		}
+		if !resp.Success {
+			return updateErrMsg{err: errors.New(resp.Message)}
+		}
+		return updateAppliedMsg{message: resp.Message}
 	}
 }
 
@@ -276,6 +313,8 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.dohActive = msg.dohActive
 		m.firewallRules = msg.firewallRules
 		m.protectionError = msg.protectionError
+		m.updateAvailable = msg.updateAvailable
+		m.updateVersion = msg.updateVersion
 		m.lastStatusFetch = time.Now()
 		m.updateTableRows()
 		return m, nil
@@ -308,6 +347,20 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.formFocus = 0
 		m.statusMessage = ""
 		m.err = fmt.Errorf("não foi possível aplicar o bloqueio. Verifique se o daemon está em execução e tente novamente")
+		return m, m.fetchStatusCmd()
+
+	case updateAppliedMsg:
+		m.loading = false
+		m.err = nil
+		m.statusMessage = msg.message
+		m.updateAvailable = false
+		m.updateVersion = ""
+		return m, m.fetchStatusCmd()
+
+	case updateErrMsg:
+		m.loading = false
+		m.err = msg.err
+		m.statusMessage = ""
 		return m, m.fetchStatusCmd()
 	}
 
@@ -349,6 +402,14 @@ func (m *model) handleListKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.loading = true
 		m.err = nil
 		return m, m.fetchStatusCmd()
+
+	case "u":
+		if m.loading || !m.updateAvailable {
+			return m, nil
+		}
+		m.loading = true
+		m.err = nil
+		return m, m.updateCmd()
 	}
 
 	var cmd tea.Cmd
@@ -451,6 +512,11 @@ func (m *model) listView() string {
 		b.WriteString("\n")
 	}
 
+	if !m.loading && m.updateAvailable {
+		b.WriteString(m.updateBanner())
+		b.WriteString("\n")
+	}
+
 	if m.err != nil {
 		b.WriteString(errorStyle.Render(fmt.Sprintf("\u2716 %v", m.err)))
 		b.WriteString("\n")
@@ -492,6 +558,12 @@ func (m *model) listView() string {
 	)))
 
 	return appStyle.Render(b.String())
+}
+
+// updateBanner renders the visual update indicator (Feature 5): a highlighted
+// bar advertising the new version and the 'u' keybind to apply it.
+func (m *model) updateBanner() string {
+	return updateBannerStyle.Render(fmt.Sprintf("⬆ UPDATE DISPONÍVEL (v%s) — pressione [u] para atualizar", m.updateVersion))
 }
 
 func (m *model) protectionLine() string {

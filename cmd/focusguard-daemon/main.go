@@ -104,6 +104,7 @@ func startStatewatch(rec statewatch.Reconciler, statePath string) *statewatch.St
 type updaterAPI interface {
 	CheckForUpdate(ctx context.Context) (*update.UpdateResult, error)
 	UpdateToAll(ctx context.Context, result *update.UpdateResult, binaries []string) ([]string, error)
+	SetChannel(channel string)
 }
 
 type daemonUpdater struct {
@@ -111,11 +112,18 @@ type daemonUpdater struct {
 	binaries []string
 }
 
-func (d *daemonUpdater) Check(ctx context.Context, apply bool) (ipc.UpdateStatus, error) {
+func (d *daemonUpdater) Check(ctx context.Context, apply bool, channel string) (ipc.UpdateStatus, error) {
 	st := ipc.UpdateStatus{CurrentVersion: daemonVersion}
 	if d == nil || d.u == nil {
 		return st, nil
 	}
+
+	// Canal de release por request: "beta" opta por prereleases; o padrão
+	// ("" / "stable") as ignora. O updater é compartilhado entre as conexões
+	// IPC (cada uma em sua goroutine): SetChannel é atômico e a checagem usa
+	// um snapshot consistente — em flips rápidos prevalece o último canal
+	// escrito (last-writer-wins), semântica benigna e livre de data race.
+	d.u.SetChannel(channel)
 
 	res, err := d.u.CheckForUpdate(ctx)
 	if err != nil {

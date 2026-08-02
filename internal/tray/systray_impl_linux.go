@@ -2,7 +2,11 @@
 
 package tray
 
-import "github.com/getlantern/systray"
+import (
+	"os/exec"
+
+	"github.com/getlantern/systray"
+)
 
 type systrayImpl struct{}
 
@@ -13,6 +17,13 @@ func (s *systrayImpl) Run(onReady, onExit func()) { systray.Run(onReady, onExit)
 func (s *systrayImpl) SetIcon(data []byte)        { systray.SetIcon(data) }
 func (s *systrayImpl) SetTitle(title string)      { systray.SetTitle(title) }
 func (s *systrayImpl) SetTooltip(tooltip string)  { systray.SetTooltip(tooltip) }
+
+// Notify raises a native desktop notification via notify-send (libnotify).
+// Best-effort: if notify-send is missing or fails, the notification is
+// dropped silently (the tray tooltip still surfaces the same information).
+func (s *systrayImpl) Notify(title, message string) {
+	_ = exec.Command("notify-send", "--app-name=FocusGuard", "--icon=focusguard", title, message).Run()
+}
 func (s *systrayImpl) AddMenuItem(title, tooltip string) MenuItem {
 	return &menuItemImpl{systray.AddMenuItem(title, tooltip)}
 }

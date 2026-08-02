@@ -20,13 +20,15 @@ import (
 )
 
 type fakeUpdateChecker struct {
-	status UpdateStatus
-	err    error
-	apply  bool
+	status  UpdateStatus
+	err     error
+	apply   bool
+	channel string
 }
 
-func (f *fakeUpdateChecker) Check(_ context.Context, apply bool) (UpdateStatus, error) {
+func (f *fakeUpdateChecker) Check(_ context.Context, apply bool, channel string) (UpdateStatus, error) {
 	f.apply = apply
+	f.channel = channel
 	return f.status, f.err
 }
 
@@ -518,6 +520,42 @@ func TestServer_Update_PassesApplyFlag(t *testing.T) {
 
 	if !fake.apply {
 		t.Error("expected checker.Check to be called with apply=true")
+	}
+}
+
+// TestServer_Update_PassesChannel verifies the update action forwards the
+// requested release channel ("stable"/"beta") to the checker — the daemon
+// configures the updater to include prereleases only for the beta channel.
+func TestServer_Update_PassesChannel(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	}
+	server.SetUpdateChecker(fake)
+
+	executeRequest(t, server, Request{Action: "update", Channel: "beta"})
+
+	if fake.channel != "beta" {
+		t.Errorf("expected checker.Check channel=beta, got %q", fake.channel)
+	}
+}
+
+// TestServer_RefreshUpdateStatus_DefaultChannel verifies the background check
+// (check-only, no apply) uses the stable channel — background checks must
+// never surprise a stable user with a prerelease.
+func TestServer_RefreshUpdateStatus_DefaultChannel(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	}
+	server.SetUpdateChecker(fake)
+
+	if _, err := server.RefreshUpdateStatus(context.Background()); err != nil {
+		t.Fatalf("RefreshUpdateStatus: %v", err)
+	}
+
+	if fake.channel != "" {
+		t.Errorf("expected default channel (empty), got %q", fake.channel)
 	}
 }
 
