@@ -73,8 +73,13 @@ function Install-Daemon {
 
     sc create $ServiceName binPath=$exe start=auto displayname="FocusGuard Daemon"
     if ($LASTEXITCODE -eq 0) {
+        # Recovery automática: o daemon se auto-reinicia após aplicar um update
+        # (exit code 1 — ver restartAfterUpdate). O SCM só sobe o serviço de
+        # novo se a recovery estiver configurada: restart em 5s, 10s e 30s.
+        sc failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
         Write-Host "[FocusGuard] ✔ Serviço Windows '$ServiceName' instalado com sucesso!" -ForegroundColor Green
         Write-Host "[FocusGuard] O daemon iniciará automaticamente na inicialização do sistema." -ForegroundColor Cyan
+        Write-Host "[FocusGuard] Recovery configurada: o daemon reinicia sozinho após atualização." -ForegroundColor Cyan
         sc start $ServiceName | Out-Null
         if ($LASTEXITCODE -eq 0) {
             Write-Host "[FocusGuard] ✔ Daemon iniciado!" -ForegroundColor Green

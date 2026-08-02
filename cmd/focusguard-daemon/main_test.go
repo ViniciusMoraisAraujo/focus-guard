@@ -759,22 +759,28 @@ type fakeUpdaterAPI struct {
 	checkErr   error
 	applyErr   error
 	applyCalls int32
+	appliedTo  []string
 }
 
 func (f *fakeUpdaterAPI) CheckForUpdate(_ context.Context) (*update.UpdateResult, error) {
 	return f.result, f.checkErr
 }
 
-func (f *fakeUpdaterAPI) UpdateTo(_ context.Context, _ *update.UpdateResult, _ string) (string, error) {
+func (f *fakeUpdaterAPI) UpdateToAll(_ context.Context, _ *update.UpdateResult, binaries []string) ([]string, error) {
 	atomic.AddInt32(&f.applyCalls, 1)
+	f.appliedTo = append([]string(nil), binaries...)
 	if f.applyErr != nil {
-		return "", f.applyErr
+		return nil, f.applyErr
 	}
-	return "backup.bak", nil
+	backups := make([]string, 0, len(binaries))
+	for _, b := range binaries {
+		backups = append(backups, b+".bak")
+	}
+	return backups, nil
 }
 
 func TestDaemonUpdater_Check_NoUpdate(t *testing.T) {
-	d := &daemonUpdater{u: &fakeUpdaterAPI{}, binary: "/tmp/focusguard-daemon"}
+	d := &daemonUpdater{u: &fakeUpdaterAPI{}, binaries: []string{"/tmp/focusguard-daemon"}}
 
 	st, err := d.Check(context.Background(), false)
 	if err != nil {
@@ -790,8 +796,8 @@ func TestDaemonUpdater_Check_NoUpdate(t *testing.T) {
 
 func TestDaemonUpdater_Check_UpdateAvailable(t *testing.T) {
 	d := &daemonUpdater{
-		u:      &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}},
-		binary: "/tmp/focusguard-daemon",
+		u:        &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}},
+		binaries: []string{"/tmp/focusguard-daemon"},
 	}
 
 	st, err := d.Check(context.Background(), false)
@@ -811,8 +817,8 @@ func TestDaemonUpdater_Check_UpdateAvailable(t *testing.T) {
 
 func TestDaemonUpdater_Check_Error(t *testing.T) {
 	d := &daemonUpdater{
-		u:      &fakeUpdaterAPI{checkErr: errors.New("network down")},
-		binary: "/tmp/focusguard-daemon",
+		u:        &fakeUpdaterAPI{checkErr: errors.New("network down")},
+		binaries: []string{"/tmp/focusguard-daemon"},
 	}
 
 	_, err := d.Check(context.Background(), false)
@@ -823,7 +829,7 @@ func TestDaemonUpdater_Check_Error(t *testing.T) {
 
 func TestDaemonUpdater_Check_Apply(t *testing.T) {
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
-	d := &daemonUpdater{u: fake, binary: "/tmp/focusguard-daemon"}
+	d := &daemonUpdater{u: fake, binaries: []string{"/tmp/focusguard-daemon"}}
 
 	st, err := d.Check(context.Background(), true)
 	if err != nil {
@@ -833,14 +839,14 @@ func TestDaemonUpdater_Check_Apply(t *testing.T) {
 		t.Error("expected Applied=true when apply is true")
 	}
 	if atomic.LoadInt32(&fake.applyCalls) != 1 {
-		t.Errorf("expected 1 UpdateTo call, got %d", fake.applyCalls)
+		t.Errorf("expected 1 UpdateToAll call, got %d", fake.applyCalls)
 	}
 }
 
 func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
 	d := &daemonUpdater{
-		u:      &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("file locked")},
-		binary: "/tmp/focusguard-daemon",
+		u:        &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("file locked")},
+		binaries: []string{"/tmp/focusguard-daemon"},
 	}
 
 	_, err := d.Check(context.Background(), true)
@@ -850,7 +856,7 @@ func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
 }
 
 func TestDaemonUpdater_Check_NilUpdater(t *testing.T) {
-	d := &daemonUpdater{u: nil, binary: "/tmp/focusguard-daemon"}
+	d := &daemonUpdater{u: nil, binaries: []string{"/tmp/focusguard-daemon"}}
 
 	st, err := d.Check(context.Background(), false)
 	if err != nil {
@@ -858,6 +864,124 @@ func TestDaemonUpdater_Check_NilUpdater(t *testing.T) {
 	}
 	if st.Available {
 		t.Error("expected no update when updater is nil")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Auto-update: multi-binário (Bug 1) e restart pós-update (Bug 2)
+// ---------------------------------------------------------------------------
+
+// TestSiblingBinaries_ReturnsAllFocusGuardBinaries verifies the daemon derives
+// the sibling binary paths (CLI, tray, watchdog) next to its own executable,
+// so `focusguard update` replaces the whole suite — not just the daemon.
+func TestSiblingBinaries_ReturnsAllFocusGuardBinaries(t *testing.T) {
+	got := siblingBinaries("/usr/local/bin/focusguard-daemon")
+	want := []string{
+		"/usr/local/bin/focusguard",
+		"/usr/local/bin/focusguard-daemon",
+		"/usr/local/bin/focusguard-tray",
+		"/usr/local/bin/focusguard-watchdog",
+	}
+	if len(got) != len(want) {
+		t.Fatalf("siblingBinaries = %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("siblingBinaries[%d] = %q, want %q", i, got[i], want[i])
+		}
+	}
+}
+
+// TestSiblingBinaries_WindowsExt adds the .exe suffix on Windows so each
+// binary is found next to the daemon.
+func TestSiblingBinaries_WindowsExt(t *testing.T) {
+	got := siblingBinaries(`C:\Program Files\FocusGuard\focusguard-daemon.exe`)
+	for _, p := range got {
+		if !strings.HasSuffix(p, ".exe") {
+			t.Errorf("expected .exe suffix on windows path, got %q", p)
+		}
+	}
+}
+
+// TestDaemonUpdater_Check_Apply_AllBinaries verifies the updater applies to
+// every sibling binary (daemon + CLI + tray + watchdog), not just the daemon.
+func TestDaemonUpdater_Check_Apply_AllBinaries(t *testing.T) {
+	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
+	d := &daemonUpdater{
+		u: fake,
+		binaries: []string{
+			"/usr/local/bin/focusguard",
+			"/usr/local/bin/focusguard-daemon",
+			"/usr/local/bin/focusguard-tray",
+			"/usr/local/bin/focusguard-watchdog",
+		},
+	}
+
+	st, err := d.Check(context.Background(), true)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !st.Applied {
+		t.Error("expected Applied=true")
+	}
+	if atomic.LoadInt32(&fake.applyCalls) != 1 {
+		t.Fatalf("expected 1 UpdateToAll call, got %d", fake.applyCalls)
+	}
+}
+
+// TestDaemonUpdater_Check_Apply_PartialFailureNoRestart registers that a
+// partial failure must abort the update (Applied=false) — the daemon must not
+// restart into a half-updated state.
+func TestDaemonUpdater_Check_Apply_PartialFailureNoRestart(t *testing.T) {
+	d := &daemonUpdater{
+		u:        &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("access denied")},
+		binaries: []string{"/usr/local/bin/focusguard", "/usr/local/bin/focusguard-daemon"},
+	}
+
+	st, err := d.Check(context.Background(), true)
+	if err == nil || !strings.Contains(err.Error(), "access denied") {
+		t.Fatalf("expected apply error, got %v", err)
+	}
+	if st.Applied {
+		t.Error("expected Applied=false on failure — no restart into partial state")
+	}
+}
+
+// TestNewDaemonUpdater_WiresExistingSiblings verifies newDaemonUpdater builds
+// the binary list from the daemon path (Bug 1): every installed sibling
+// (CLI, watchdog) is included, a missing one (tray) is skipped, and the daemon
+// itself is always present.
+func TestNewDaemonUpdater_WiresExistingSiblings(t *testing.T) {
+	dir := t.TempDir()
+	ext := ""
+	if goos == "windows" {
+		ext = ".exe"
+	}
+	for _, n := range []string{"focusguard", "focusguard-daemon", "focusguard-watchdog"} {
+		if err := os.WriteFile(filepath.Join(dir, n+ext), []byte("bin"), 0755); err != nil {
+			t.Fatalf("write fake binary: %v", err)
+		}
+	}
+	// tray não é criado de propósito — deve ser descartado.
+
+	fake := &fakeUpdaterAPI{}
+	d := newDaemonUpdater(filepath.Join(dir, "focusguard-daemon"+ext), fake)
+
+	expected := []string{
+		filepath.Join(dir, "focusguard"+ext),
+		filepath.Join(dir, "focusguard-daemon"+ext),
+		filepath.Join(dir, "focusguard-watchdog"+ext),
+	}
+	if len(d.binaries) != len(expected) {
+		t.Fatalf("binaries = %v, want %v", d.binaries, expected)
+	}
+	for i := range expected {
+		if d.binaries[i] != expected[i] {
+			t.Errorf("binaries[%d] = %q, want %q", i, d.binaries[i], expected[i])
+		}
+	}
+	if d.u != fake {
+		t.Error("updater não foi repassado ao daemonUpdater")
 	}
 }
 
@@ -911,6 +1035,62 @@ func TestSetupUpdateIntegration_Enabled(t *testing.T) {
 	}
 	if !st.Available || st.NewVersion != "1.1.0" {
 		t.Errorf("expected update 1.1.0 available, got %+v", st)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Restart pós-update (Bug 2)
+// ---------------------------------------------------------------------------
+
+// fakeRestartScheduler reports active blocks through HasActiveBlocks, letting
+// the restart decision be exercised without a real scheduler.
+type fakeRestartScheduler struct{ active bool }
+
+func (f *fakeRestartScheduler) HasActiveBlocks() bool { return f.active }
+
+// TestRestartAfterUpdate_ExitsWhenIdle verifies that after a successful update
+// the daemon calls os.Exit(1) when there are no active blocks and no pomodoro
+// session — so systemd (Restart=always) / SCM recovery respawn it with the new
+// binary (no zombie). Exit code 1 (not 0) on purpose: the Windows SCM only
+// applies the recovery actions on a failure exit, 0 would leave the service
+// dead until reboot.
+func TestRestartAfterUpdate_ExitsWhenIdle(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	exited := make(chan int, 1)
+	osExit = func(code int) { exited <- code }
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: false}
+
+	go restartAfterUpdate(server, sched)
+
+	select {
+	case code := <-exited:
+		if code != 1 {
+			t.Errorf("expected exit code 1 (falha p/ SCM recovery), got %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("os.Exit não foi chamado — daemon ficaria zumbi após o update")
+	}
+}
+
+// TestRestartAfterUpdate_NoExitWithActiveBlocks verifies the daemon does NOT
+// exit after an update while blocks/session are active — restarting mid-block
+// would drop enforcement.
+func TestRestartAfterUpdate_NoExitWithActiveBlocks(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	var exitCalled atomic.Int32
+	osExit = func(code int) { exitCalled.Add(1) }
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: true}
+
+	restartAfterUpdate(server, sched)
+	time.Sleep(100 * time.Millisecond)
+	if exitCalled.Load() != 0 {
+		t.Error("os.Exit não deveria ser chamado com bloqueios ativos")
 	}
 }
 

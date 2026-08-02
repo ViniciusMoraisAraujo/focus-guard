@@ -103,12 +103,12 @@ func startStatewatch(rec statewatch.Reconciler, statePath string) *statewatch.St
 
 type updaterAPI interface {
 	CheckForUpdate(ctx context.Context) (*update.UpdateResult, error)
-	UpdateTo(ctx context.Context, result *update.UpdateResult, binaryPath string) (string, error)
+	UpdateToAll(ctx context.Context, result *update.UpdateResult, binaries []string) ([]string, error)
 }
 
 type daemonUpdater struct {
-	u      updaterAPI
-	binary string
+	u        updaterAPI
+	binaries []string
 }
 
 func (d *daemonUpdater) Check(ctx context.Context, apply bool) (ipc.UpdateStatus, error) {
@@ -128,7 +128,12 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool) (ipc.UpdateStatus
 	st.Available = true
 	st.NewVersion = res.Version
 	if apply {
-		if _, err := d.u.UpdateTo(ctx, res, d.binary); err != nil {
+		// Bug 1 corrigido: atualiza a SUITE inteira (daemon + CLI + tray +
+		// watchdog), não só o daemon. Um update parcial quebraria o protocolo
+		// IPC (daemon novo ↔ CLI antiga). O rollback é atômico dentro do
+		// UpdateToAll; qualquer falha aqui mantém Applied=false — e portanto
+		// o daemon NÃO reinicia para um estado meio-atualizado.
+		if _, err := d.u.UpdateToAll(ctx, res, d.binaries); err != nil {
 			return st, fmt.Errorf("falha ao aplicar atualização: %w", err)
 		}
 		st.Applied = true
@@ -136,20 +141,75 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool) (ipc.UpdateStatus
 	return st, nil
 }
 
+// siblingBinaries returns the paths of every FocusGuard binary expected next
+// to the daemon (CLI, tray, watchdog) — same directory, same extension.
+func siblingBinaries(daemonPath string) []string {
+	dir := filepath.Dir(daemonPath)
+	ext := filepath.Ext(daemonPath) // ".exe" no Windows, "" no Linux
+	names := []string{"focusguard", "focusguard-daemon", "focusguard-tray", "focusguard-watchdog"}
+	out := make([]string, 0, len(names))
+	for _, n := range names {
+		out = append(out, filepath.Join(dir, n+ext))
+	}
+	return out
+}
+
+// newDaemonUpdater builds the daemon updater for the given daemon binary path,
+// including every sibling binary that is actually installed (a missing tray is
+// skipped; the daemon itself is always present because it is running).
+func newDaemonUpdater(daemonPath string, mk updaterAPI) *daemonUpdater {
+	var binaries []string
+	for _, p := range siblingBinaries(daemonPath) {
+		if _, err := os.Stat(p); err == nil {
+			binaries = append(binaries, p)
+		}
+	}
+	if len(binaries) == 0 {
+		binaries = []string{daemonPath} // defensivo: nunca atualizar lista vazia
+	}
+	return &daemonUpdater{u: mk, binaries: binaries}
+}
+
+var osExecutable = os.Executable
+
 func setupUpdateIntegration(server *ipc.Server) func() {
 	if daemonVersion == "" || strings.HasSuffix(daemonVersion, "-dev") {
 		log.Println("[FocusGuard Daemon] Auto-update desativado (versão de desenvolvimento).")
 		return nil
 	}
 
-	binaryPath, err := os.Executable()
+	binaryPath, err := osExecutable()
 	if err != nil {
 		log.Printf("[FocusGuard Daemon] Auto-update desativado: %v", err)
 		return nil
 	}
 
-	server.SetUpdateChecker(&daemonUpdater{u: newUpdater(updateOwner, updateRepo), binary: binaryPath})
+	server.SetUpdateChecker(newDaemonUpdater(binaryPath, newUpdater(updateOwner, updateRepo)))
 	return startPeriodicUpdateCheck(server, updateCheckInterval)
+}
+
+// osExit é stubbable nos testes (o main real usa os.Exit).
+var osExit = os.Exit
+
+// restartAfterUpdate é o callback registrado no server (SetOnUpdateApplied):
+// depois que o update é aplicado com sucesso, o daemon encerra o processo para
+// que o supervisor (systemd Restart=always no Linux, SCM recovery no Windows)
+// o suba já com o binário novo — corrige o "daemon zumbi" que ficava rodando a
+// versão antiga em RAM. Só sai se não houver bloqueios/sessão ativos: reiniciar
+// no meio de um bloqueio derrubaria a proteção.
+//
+// O exit code é 1 (e não 0) de propósito: o SCM do Windows só aplica as ações
+// de recovery (sc failure ... actions= restart) quando o serviço termina com
+// falha; um exit 0 é tratado como parada limpa e o serviço ficaria morto até
+// reboot. No Linux o systemd reinicia com qualquer código, então 1 é seguro.
+func restartAfterUpdate(server *ipc.Server, sched interface{ HasActiveBlocks() bool }) {
+	time.Sleep(500 * time.Millisecond) // deixa a resposta IPC chegar ao CLI
+	if sched.HasActiveBlocks() || server.HasActiveSession() {
+		log.Println("[FocusGuard Daemon] Update aplicado, mas há bloqueios/sessão ativos. O restart fica para quando expirarem.")
+		return
+	}
+	log.Println("[FocusGuard Daemon] Update aplicado. Reiniciando daemon com a nova versão...")
+	osExit(1)
 }
 
 func startPeriodicUpdateCheck(server *ipc.Server, interval time.Duration) func() {
@@ -288,6 +348,11 @@ func runDaemon() bool {
 
 	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
 		defer stopUpdate()
+		// Bug 2 corrigido: após aplicar um update, o daemon se reinicia sozinho
+		// (os.Exit(0)) para o systemd/watchdog subirem a nova versão — em vez
+		// de ficar rodando o binário antigo em RAM até o usuário reiniciar a
+		// máquina.
+		server.SetOnUpdateApplied(func() { restartAfterUpdate(server, sched) })
 	}
 
 	sigChan := make(chan os.Signal, 1)

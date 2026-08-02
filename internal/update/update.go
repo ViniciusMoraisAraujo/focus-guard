@@ -10,6 +10,7 @@ import (
 	"time"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
+	"golang.org/x/mod/semver"
 )
 
 // UpdateResult contains information about a found update.
@@ -121,6 +122,76 @@ func (u *Updater) UpdateTo(ctx context.Context, result *UpdateResult, binaryPath
 	return backupPath, nil
 }
 
+// applyOneBinary is the per-binary replace step, stubbable in tests so the
+// multi-binary rollback flow can be exercised without hitting GitHub.
+var applyOneBinary = func(u *Updater, ctx context.Context, binaryPath string) error {
+	_, err := u.updater.UpdateCommand(ctx, binaryPath, u.currentVersion, u.repository())
+	return err
+}
+
+// UpdateToAll downloads the release and replaces every given binary (daemon,
+// CLI, tray, watchdog) — go-selfupdate is single-binary, so each path is
+// updated in turn. It is all-or-nothing: every binary is backed up first and,
+// if any replace fails, all binaries already replaced are restored from their
+// backups. This prevents the FocusGuard suite from ending up half-updated
+// (e.g. a new daemon talking IPC with an old CLI, which would break the
+// protocol). Returns the backup paths on success.
+func (u *Updater) UpdateToAll(ctx context.Context, result *UpdateResult, binaries []string) ([]string, error) {
+	if result == nil || result.Release == nil {
+		return nil, fmt.Errorf("no update result provided")
+	}
+	if len(binaries) == 0 {
+		return nil, nil
+	}
+
+	// Fase 1 — backup de todos antes de tocar em qualquer binário.
+	backups := make([]string, 0, len(binaries))
+	for _, b := range binaries {
+		if _, err := os.Stat(b); os.IsNotExist(err) {
+			continue // binário não instalado nesta máquina (ex.: tray opcional)
+		}
+		backupPath := b + ".bak." + time.Now().Format("20060102150405")
+		if err := copyFile(b, backupPath); err != nil {
+			u.cleanupBackups(backups)
+			return nil, fmt.Errorf("failed to back up %s: %w", b, err)
+		}
+		backups = append(backups, backupPath)
+	}
+
+	// Fase 2 — aplica a atualização em cada binário presente.
+	// okPaths acompanha a mesma ordem de backups (ambos só contêm binários
+	// existentes), então okPaths[i] ↔ backups[i] no rollback.
+	var okPaths []string
+	for _, b := range binaries {
+		if _, err := os.Stat(b); os.IsNotExist(err) {
+			continue
+		}
+		if err := applyOneBinary(u, ctx, b); err != nil {
+			// Fase 3 — rollback atômico: restaura todos os já atualizados.
+			for i, bk := range backups {
+				if i < len(okPaths) {
+					if rerr := u.RestoreBackup(bk, okPaths[i]); rerr != nil {
+						return nil, fmt.Errorf("%v; além disso, falha ao restaurar %s: %w", err, okPaths[i], rerr)
+					}
+				}
+			}
+			u.cleanupBackups(backups)
+			return nil, fmt.Errorf("failed to update binary %s: %w", b, err)
+		}
+		okPaths = append(okPaths, b)
+	}
+
+	return backups, nil
+}
+
+// cleanupBackups removes backup files (best-effort) after a successful update
+// or a failed one that already restored the originals.
+func (u *Updater) cleanupBackups(backups []string) {
+	for _, bk := range backups {
+		_ = u.CleanupBackup(bk)
+	}
+}
+
 // ApplyUpdate creates a backup copy of the binary.
 func (u *Updater) ApplyUpdate(binaryPath string) (string, error) {
 	if binaryPath == "" {
@@ -189,14 +260,34 @@ func copyFile(src, dst string) error {
 	return os.Chmod(dst, srcInfo.Mode())
 }
 
-// IsNewVersionAvailable checks if the latest release version is greater than the current.
+// IsNewVersionAvailable checks if the latest release version is greater than
+// the current one using strict semver comparison (golang.org/x/mod/semver).
+// It does NOT depend on go-selfupdate's internal asset-name parsing — the old
+// implementation built a "dummy" Release and called GreaterThan, which would
+// silently break if the library ever changed how it parses AssetName.
 func IsNewVersionAvailable(current, latest string) bool {
-	if current == "" || latest == "" {
-		return false
+	cur := canonicalSemver(current)
+	lat := canonicalSemver(latest)
+	if cur == "" || lat == "" {
+		return false // versão inválida — nunca decide "há update"
 	}
-	rel := &selfupdate.Release{
-		AssetName: fmt.Sprintf("dummy_%s_linux_amd64.tar.gz", latest),
-		Name:      latest,
+	return semver.Compare(lat, cur) > 0
+}
+
+// canonicalSemver normalizes a version for x/mod/semver: that package requires
+// the "v" prefix (semver.IsValid("1.0.0") is false), while FocusGuard versions
+// may come with or without it ("0.2.6" from ldflags, "v0.2.6" from tags).
+// Invalid versions yield "".
+func canonicalSemver(v string) string {
+	v = strings.TrimSpace(v)
+	if v == "" {
+		return ""
 	}
-	return rel.GreaterThan(current)
+	if !strings.HasPrefix(v, "v") {
+		if !semver.IsValid("v" + v) {
+			return ""
+		}
+		v = "v" + v
+	}
+	return semver.Canonical(v)
 }

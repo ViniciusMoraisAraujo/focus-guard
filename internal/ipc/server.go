@@ -17,11 +17,12 @@ import (
 )
 
 type Server struct {
-	scheduler     *scheduler.Scheduler
-	listener      net.Listener
-	updateChecker UpdateChecker
-	pomodoro      PomodoroRunner
-	analytics     AnalyticsProvider
+	scheduler       *scheduler.Scheduler
+	listener        net.Listener
+	updateChecker   UpdateChecker
+	pomodoro        PomodoroRunner
+	analytics       AnalyticsProvider
+	onUpdateApplied func()
 
 	mu           sync.RWMutex
 	updateStatus UpdateStatus
@@ -70,6 +71,16 @@ func (s *Server) SetUpdateChecker(c UpdateChecker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updateChecker = c
+}
+
+// SetOnUpdateApplied registers a hook invoked after an update has been applied
+// successfully. The daemon uses it to exit and let systemd/watchdog respawn it
+// with the new binary; without it the daemon would keep running the old binary
+// in RAM after the update (the "zombie daemon").
+func (s *Server) SetOnUpdateApplied(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onUpdateApplied = fn
 }
 
 // RefreshUpdateStatus runs a check-only update check (no apply) and caches the
@@ -131,11 +142,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 	}
 
 	var resp Response
+	updateApplied := false
 
 	switch req.Action {
 	case "block":
 		d, err := time.ParseDuration(req.Duration)
-		if err != nil || d < 0 {
+		// d <= 0 também é rejeitado: um bloqueio de 0s expiraria imediatamente
+		// (bloqueio sem efeito que ainda aplica/remove regras de firewall).
+		if err != nil || d <= 0 {
 			resp = Response{
 				Success: false,
 				Message: "Duration invalid. Ex: --duration 4h, 30m"}
@@ -269,17 +283,32 @@ func (s *Server) handleConnection(conn net.Conn) {
 			UpdateVersion:   st.NewVersion,
 			CurrentVersion:  st.CurrentVersion,
 		}
-		if st.Available {
-			resp.Message = fmt.Sprintf("Atualização aplicada: %s → %s", st.CurrentVersion, st.NewVersion)
+		if st.Applied {
+			updateApplied = true
+			resp.Message = fmt.Sprintf("Atualização aplicada: %s → %s. O daemon será reiniciado automaticamente.", st.CurrentVersion, st.NewVersion)
+		} else if st.Available {
+			resp.Message = fmt.Sprintf("Atualização disponível: %s → %s", st.CurrentVersion, st.NewVersion)
 		} else {
 			resp.Message = "Nenhuma atualização disponível."
 		}
-
 	default:
 		resp = Response{Success: false, Message: "Not suported action: " + req.Action}
 	}
 
 	_ = json.NewEncoder(conn).Encode(resp)
+
+	// Notifica o hook de restart APÓS a resposta já ter sido escrita no socket
+	// (o CLI foca no fflush antes do daemon sair do processo). O hook faz o
+	// daemon encerrar para o systemd/watchdog subirem o binário novo — sem
+	// isso ficaria o "daemon zumbi" rodando a versão antiga em RAM.
+	if updateApplied {
+		s.mu.RLock()
+		fn := s.onUpdateApplied
+		s.mu.RUnlock()
+		if fn != nil {
+			go fn()
+		}
+	}
 }
 
 // handlePomodoro validates a pomodoro request, resolves the preset to domains
@@ -295,11 +324,21 @@ func handlePomodoro(s *Server, req Request) Response {
 	if strings.TrimSpace(req.Preset) == "" {
 		return Response{Success: false, Message: "Informe um preset (ex: --preset social)."}
 	}
-	if req.WorkMin <= 0 {
-		return Response{Success: false, Message: "Duração de trabalho inválida (--work >= 1)."}
+	// Tetos defensivos: time.Duration(req.WorkMin)*time.Minute faria overflow
+	// (wrap) no int64 para valores gigantes — um --work 1e9 virava uma sessão
+	// de ~147 anos em vez de erro. O mesmo vale para o acumulador focus do
+	// controller (focus += s.Work por ciclo): um --cycles 1e9 transbordaria o
+	// tempo registrado no analytics. Uma semana por fase / 1k ciclos já é
+	// absurdo para um pomodoro, então estes tetos nunca atrapalham o uso real.
+	const (
+		maxPomodoroMinutes = 7 * 24 * 60 // 7 dias por fase
+		maxPomodoroCycles  = 1000
+	)
+	if req.WorkMin <= 0 || req.WorkMin > maxPomodoroMinutes {
+		return Response{Success: false, Message: fmt.Sprintf("Duração de trabalho inválida (--work entre 1 e %d minutos).", maxPomodoroMinutes)}
 	}
-	if req.RestMin < 0 || req.Cycles < 1 {
-		return Response{Success: false, Message: "Parâmetros de pomodoro inválidos (--rest >= 0, --cycles >= 1)."}
+	if req.RestMin < 0 || req.RestMin > maxPomodoroMinutes || req.Cycles < 1 || req.Cycles > maxPomodoroCycles {
+		return Response{Success: false, Message: fmt.Sprintf("Parâmetros de pomodoro inválidos (--rest entre 0 e %d minutos, --cycles entre 1 e %d).", maxPomodoroMinutes, maxPomodoroCycles)}
 	}
 
 	p, err := preset.Resolve(req.Preset)

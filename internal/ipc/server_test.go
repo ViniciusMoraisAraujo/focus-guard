@@ -250,6 +250,7 @@ func TestServer_HandleConnection_Block_InvalidDuration(t *testing.T) {
 	}{
 		{name: "malformed duration string", duration: "invalid-time"},
 		{name: "negative duration value", duration: "-30m"},
+		{name: "zero duration value", duration: "0s"},
 	}
 
 	for _, tc := range testCases {
@@ -388,6 +389,105 @@ func TestServer_Update_Applied(t *testing.T) {
 	}
 	if !strings.Contains(resp.Message, "Atualização aplicada") {
 		t.Errorf("expected applied message, got %q", resp.Message)
+	}
+}
+
+// TestServer_Update_Applied_NotifiesOnUpdateApplied verifies the server
+// invokes the restart hook once an update has been applied — the daemon uses
+// it to exit and let systemd/watchdog respawn with the new binary (Bug 2).
+func TestServer_Update_Applied_NotifiesOnUpdateApplied(t *testing.T) {
+	server := setupTestServer(t)
+	applied := make(chan struct{}, 1)
+	server.SetOnUpdateApplied(func() { applied <- struct{}{} })
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{
+			CurrentVersion: "1.0.0",
+			NewVersion:     "1.1.0",
+			Available:      true,
+			Applied:        true,
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update"})
+	if !resp.Success {
+		t.Fatalf("update falhou: %s", resp.Message)
+	}
+
+	select {
+	case <-applied:
+	case <-time.After(2 * time.Second):
+		t.Fatal("SetOnUpdateApplied não foi notificado após update aplicado")
+	}
+}
+
+// TestServer_Update_Applied_HookAfterResponse verifies the restart hook fires
+// only AFTER the response has been written to the client: the hook blocks on a
+// channel, and the client must still receive the response — proving the encode
+// happens before (and independently of) the hook. If the hook ran before the
+// flush, the client would hang waiting for the response.
+func TestServer_Update_Applied_HookAfterResponse(t *testing.T) {
+	server := setupTestServer(t)
+	hookBlocked := make(chan struct{})
+	releaseHook := make(chan struct{})
+	server.SetOnUpdateApplied(func() {
+		close(hookBlocked)
+		<-releaseHook // trava o hook para provar que a resposta não depende dele
+	})
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{
+			CurrentVersion: "1.0.0",
+			NewVersion:     "1.1.0",
+			Available:      true,
+			Applied:        true,
+		},
+	})
+
+	clientConn, serverConn := net.Pipe()
+	defer func() {
+		_ = clientConn.Close()
+		close(releaseHook)
+	}()
+
+	go server.handleConnection(serverConn)
+	_ = json.NewEncoder(clientConn).Encode(Request{Action: "update"})
+
+	// O decode da resposta deve completar mesmo com o hook bloqueado.
+	var resp Response
+	if err := json.NewDecoder(clientConn).Decode(&resp); err != nil {
+		t.Fatalf("resposta não chegou com o hook travado (ordem errada?): %v", err)
+	}
+	if !resp.Success || !resp.UpdateAvailable {
+		t.Errorf("resposta inesperada: %+v", resp)
+	}
+
+	// E o hook realmente foi disparado (após a resposta).
+	select {
+	case <-hookBlocked:
+	case <-time.After(2 * time.Second):
+		t.Fatal("hook de restart não foi notificado após update aplicado")
+	}
+}
+
+// TestServer_Update_NotApplied_NoNotify verifies the restart hook is NOT fired
+// when no update is applied (check-only or failure) — the daemon must not
+// restart into an un-updated binary.
+func TestServer_Update_NotApplied_NoNotify(t *testing.T) {
+	server := setupTestServer(t)
+	notified := make(chan struct{}, 1)
+	server.SetOnUpdateApplied(func() { notified <- struct{}{} })
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0", Available: false},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update"})
+	if !resp.Success {
+		t.Fatalf("update falhou: %s", resp.Message)
+	}
+
+	select {
+	case <-notified:
+		t.Fatal("não deveria notificar restart quando não há update aplicado")
+	case <-time.After(200 * time.Millisecond):
 	}
 }
 
@@ -568,6 +668,60 @@ func TestServer_Pomodoro_InvalidParams(t *testing.T) {
 	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 0, RestMin: 5, Cycles: 4})
 	if resp.Success {
 		t.Error("expected failure for WorkMin=0")
+	}
+}
+
+// TestServer_Pomodoro_RejectsWorkMinOverflow verifies the defensive cap: a
+// WorkMin large enough to overflow int64 when converted to time.Duration would
+// wrap to a small positive duration (a ~147-year session) instead of failing.
+func TestServer_Pomodoro_RejectsWorkMinOverflow(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+
+	// time.Duration(1e9)*time.Minute wraps para um valor positivo (~147 anos).
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 1_000_000_000, RestMin: 5, Cycles: 4})
+	if resp.Success {
+		t.Error("expected failure for WorkMin that would overflow int64")
+	}
+}
+
+// TestServer_Pomodoro_RejectsRestMinOverflow mirrors the work cap for RestMin.
+func TestServer_Pomodoro_RejectsRestMinOverflow(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 1_000_000_000, Cycles: 4})
+	if resp.Success {
+		t.Error("expected failure for RestMin that would overflow int64")
+	}
+}
+
+// TestServer_Pomodoro_RejectsCyclesOverflow caps Cycles too: a huge Cycles
+// would overflow the focus accumulator (focus += s.Work) in the controller,
+// recording a negative duration in the analytics.
+func TestServer_Pomodoro_RejectsCyclesOverflow(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 1_000_000_000})
+	if resp.Success {
+		t.Error("expected failure for Cycles that would overflow the focus accumulator")
+	}
+}
+
+// TestServer_Pomodoro_AcceptsMaxCycles verifies the boundary of the cycles cap
+// is inclusive (1000 cycles is allowed).
+func TestServer_Pomodoro_AcceptsMaxCycles(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 1000})
+	if !resp.Success {
+		t.Fatalf("expected 1000 cycles to be accepted, got: %s", resp.Message)
+	}
+	if fake.started.Cycles != 1000 {
+		t.Errorf("started.Cycles = %d, want 1000", fake.started.Cycles)
 	}
 }
 

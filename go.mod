@@ -9,6 +9,7 @@ require (
 	github.com/creativeprojects/go-selfupdate v1.6.0
 	github.com/fsnotify/fsnotify v1.10.1
 	github.com/getlantern/systray v1.2.2
+	golang.org/x/mod v0.38.0
 	golang.org/x/sys v0.47.0
 )
 
