@@ -7,8 +7,76 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.2.6] - 2026-08-02
+
+### 🍅 Pomodoro, Presets e Analytics (destaque)
+
+- **Novo comando `focusguard pomodoro`** — sessões de foco em ciclos
+  trabalho/descanso sobre uma categoria de domínios: `--preset social` (ex.:
+  25min de trabalho + 5min de descanso × 4 ciclos, configuráveis com
+  `--work`, `--rest` e `--cycles`). Cada fase de trabalho bloqueia os
+  domínios do preset pelo scheduler (expiração automática pelos timers; sem
+  desbloqueio manual).
+- **Sessões estritas (`--strict`)** — não podem ser encerradas
+  antecipadamente pelo `pomodoro-stop` nem pelo `Ctrl+C`/parada de serviço
+  do daemon: o ciclo sempre roda até o fim (o daemon ignora sinais de
+  parada enquanto houver sessão ativa).
+- **Presets por categoria** — `focusguard presets` lista os catálogos
+  disponíveis (`social`, `video`, `news`, `games`); `focusguard block
+  --preset social --duration 2h` bloqueia a categoria inteira de uma vez.
+- **`focusguard stats`** — histórico de sessões em JSONL (`analytics.jsonl`
+  ao lado do state.json) com gráfico ASCII: sessões registradas, tempo total
+  de foco, foco por dia (janela de 30 dias) e domínios mais bloqueados.
+  Linhas corrompidas são puladas na leitura — um write parcial nunca aborta
+  o relatório. Sem o arquivo, o recorder fica em memória (best-effort).
+
+### 🔒 Process Guard
+
+- **Encerramento de processos da denylist** — enquanto houver sessão de foco
+  ativa (`sched.HasActiveBlocks`), o daemon varre a tabela de processos a
+  cada 5s e encerra executáveis de entretenimento/comunicação (`steam.exe`,
+  `discord.exe`) — o guard não pode ser enganado por extensão/normalização
+  (`Discord.exe` ≡ `discord`, `DISCORD.EXE` ≡ `discord`).
+- **Multi-plataforma** — `tasklist`/`taskkill` no Windows, `/proc/<pid>/comm`
+  + `pkill` no Linux; falhas são best-effort (o próximo scan tenta de novo).
+
+### 🛡️ Réplicas criptografadas do state.json
+
+- **Backup oculto e auto-healing** — cada gravação do state.json também
+  escreve uma réplica selada com AES-256-GCM em `.<nome>.replica` no mesmo
+  diretório; um state.json apagado/vazio/corrompido é recuperado da réplica
+  na inicialização do daemon (restaura o arquivo primário e segue com a RAM
+  como fonte de verdade).
+- **Atrelada ao hardware** — a chave é derivada do ID de hardware
+  (`/etc/machine-id` no Linux, `MachineGuid` no Windows): a réplica só pode
+  ser descriptografada na mesma máquina que a selou. Best-effort: sem ID de
+  hardware as réplicas apenas ficam desativadas, sem quebrar o fluxo.
+
+### 🖼️ Ícone e recursos do Windows
+
+- **`focusguard-icon`** — novo comando de build (stdlib pura, sem CGO) que
+  gera o ícone multi-tamanho `focusguard.ico` (16–256px) e o `focusguard.png`
+  (256px), consumidos pelos metadados do `.exe` (go-winres) e pelos atalhos
+  de desktop — o tray e o gerador de ícones agora compartilham o mesmo
+  artwork (`internal/icon`).
+- **go-winres no pipeline** — `versioninfo.json` (raiz e CLI) com ícone,
+  manifest `requireAdministrator` e versão do produto; `go-winres make`
+  emite os `rsrc_windows_*.syso` embedados automaticamente pelo `go build`
+  (novos alvos `make icon`/`make winres`, hooks no GoReleaser).
+- **Atalhos de desktop com ícone** — `install-daemon.ps1` cria/remove o
+  atalho `FocusGuard.lnk` (ícone do CLI, `$cli,0`); `install-linux.sh`
+  instala o ícone 256px em `~/.local/share/icons/hicolor` e o atalho
+  `focusguard.desktop` no Desktop (português incluído).
+
 ### 🛡️ Regras de rede e firewall: robustez (enforcer)
 
+- **REJECT em vez de DROP** — as regras de firewall agora usam
+  `-j REJECT --reject-with tcp-reset` no Linux: conexões bloqueadas falham
+  imediatamente (RST) em vez de travarem no timeout do cliente; o sweep
+  remove também regras legadas `DROP` de versões anteriores.
+- **Teardown de sockets** — `ss -K dst <ip>` encerra as conexões TCP já
+  estabelecidas com um IP recém-bloqueado (best-effort), matando
+  keep-alives no ato.
 - **Sanitização de domínios** — antes de gravar no `/etc/hosts`, o domínio
   recebido é limpo e validado (`sanitizeDomain`): remove scheme
   (`http://`/`https://`) e path, elimina quebras de linha (`\r`, `\n`),
@@ -20,10 +88,10 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   `iptables -D` em loop até o iptables reportar `does a matching rule exist`,
   removendo regras duplicadas/órfãs acumuladas de crashes/races anteriores
   (com teto defensivo de 100 remoções para nunca travar).
-- **Testes (TDD)** — 8 novos testes cobrindo sanitização (scheme maiúsculo,
-  injeção CRLF/espaço/tab, collapse de `www.`), rejeição de injeção no hosts,
-  remoção de duplicatas, no-op sem regras, propagação de erros reais e o teto
-  do loop.
+- **Testes (TDD)** — cobertura de sanitização (scheme maiúsculo, injeção
+  CRLF/espaço/tab, collapse de `www.`), rejeição de injeção no hosts,
+  remoção de duplicatas, no-op sem regras, propagação de erros reais, teto
+  do loop, `ss -K` por IP e sweep de regras legadas DROP.
 
 ## [0.2.5] - 2026-08-01
 
