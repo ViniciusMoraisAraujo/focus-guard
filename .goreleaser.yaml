@@ -11,7 +11,8 @@ before:
     - go run ./cmd/focusguard-icon
     # go-winres make lê versioninfo.json (--in) e emite rsrc_windows_*.syso
     # na pasta do package, embedados automaticamente pelo go build no Windows.
-    - if command -v go-winres >/dev/null 2>&1; then cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64; cd ../../cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64; fi
+    # O GoReleaser executa hooks sem shell, então o condicional vai via sh -c.
+    - sh -c "if command -v go-winres >/dev/null 2>&1; then cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64; fi"
 
 env:
   - CGO_ENABLED=0
