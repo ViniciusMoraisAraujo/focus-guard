@@ -14,6 +14,7 @@ import (
 
 	"focusguard/internal/fsutil"
 	"focusguard/internal/policy"
+	"focusguard/internal/tamper"
 )
 
 const (
@@ -47,6 +48,31 @@ type HostsWatcher struct {
 	lastSelfHash  fsutil.Hash
 	detectRunning bool
 	detectPending bool
+	tamperLogger  TamperLogger
+}
+
+// TamperLogger receives an entry whenever a tamper attempt is detected and
+// restored. The daemon wires the tamper recorder; nil disables logging.
+type TamperLogger interface {
+	Log(event tamper.Event)
+}
+
+// SetTamperLogger wires an optional logger for detected tampering attempts
+// (external edits to the hosts file).
+func (w *HostsWatcher) SetTamperLogger(l TamperLogger) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tamperLogger = l
+}
+
+// logTamper records a tamper event with the given action and detail.
+func (w *HostsWatcher) logTamper(action, detail string) {
+	w.mu.Lock()
+	l := w.tamperLogger
+	w.mu.Unlock()
+	if l != nil {
+		l.Log(tamper.Event{At: time.Now(), Source: "hosts", Action: action, Detail: detail})
+	}
 }
 
 // MarkSelfWrite records the SHA-256 of the hosts file content as written by
@@ -257,6 +283,7 @@ func (w *HostsWatcher) detectTamper() error {
 		}
 		// The hosts file was deleted (e.g. by an admin) — recreate it. The
 		// error is propagated so the async caller can log a failed restore.
+		w.logTamper("restore", "hosts deletado")
 		return w.enf.Sync(activeBlocks)
 	}
 
@@ -264,6 +291,7 @@ func (w *HostsWatcher) detectTamper() error {
 	for _, b := range blocks {
 		marker := fmt.Sprintf("# FOCUSGUARD: %s", b.Domain)
 		if !strings.Contains(hostsContent, marker) {
+			w.logTamper("restore", b.Domain)
 			return w.enf.Sync(activeBlocks)
 		}
 	}

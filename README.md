@@ -23,7 +23,12 @@
 - 🎯 **Metas diárias e streak** — define uma meta de foco diária (`goal set 4h`); o `stats` mostra a sequência de dias consecutivos com foco
 - ⏰ **Agendamento recorrente** — bloqueia categorias em horários fixos dos dias da semana (`schedule add --days seg,ter,qua --start 08:00 --end 12:00`)
 - 🚨 **Modo pânico e allowlist** — `block --internet` corta toda a internet de uma vez, com `--allow` para manter ferramentas de trabalho acessíveis
-- 📊 **Analytics com export** — `stats` com gráfico ASCII, streak e exportação para CSV/JSON (`--export`)
+- 📊 **Analytics com export** — `stats` com gráfico ASCII, streak e exportação para CSV/JSON/HTML (`--export`) e resumo semanal (`report`)
+- 🛡 **Process guard configurável** — `apps add/remove` gerencia quais processos são encerrados durante o foco (antes era hardcoded)
+- 🔏 **Tamper-log** — histórico das tentativas de burla detectadas e revertidas pelos watchers (`tamper-log`)
+- 🎯 **Missões nomeadas** — `pomodoro --label "Estudar ENEM"` nomeia a sessão; `mission` e `stats --mission` agregam o foco por missão
+- 🍅 **Pomodoro com memória** — `--save` persiste os padrões, `pomodoro-defaults` consulta, beeps nas transições e resumo pós-sessão
+- ⏰ **Múltiplas janelas e import iCal** — `schedule --windows` para várias janelas por dia e `schedule import --file horario.ics` para eventos semanais de calendários
 
 ---
 
@@ -266,10 +271,39 @@ focusguard goal                           # consultar a meta
 focusguard pomodoro --preset social --work 25 --rest 5 --cycles 4 --strict
 focusguard pomodoro-stop                  # encerrar a sessão (não funciona em --strict)
 
+# Pomodoro com padrões salvos: a sessão seguinte sem flags reutiliza os valores
+focusguard pomodoro --preset social --work 50 --rest 10 --cycles 2 --save
+focusguard pomodoro-defaults              # mostrar os padrões atuais
+
+# Sessões nomeadas (missões) e filtro por missão
+focusguard pomodoro --preset social --label "Estudar ENEM"
+focusguard mission                        # total de foco por missão
+focusguard stats --mission ENEM           # relatório só da missão
+
 # Relatório de foco: gráfico ASCII + streak + exportação
 focusguard stats                          # gráfico de foco (30 dias)
 focusguard stats --export csv > focusguard-stats.csv      # exportar CSV
 focusguard stats --export json > focusguard-stats.json    # exportar JSON
+focusguard stats --export html > relatorio.html           # relatório HTML autossuficiente
+focusguard report                         # resumo semanal de foco
+```
+
+#### Processos, burla e importação de calendário (v0.5.0+)
+
+```bash
+# Process guard: quais apps são encerrados durante sessões de foco
+focusguard apps                           # listar a denylist
+focusguard apps add spotify.exe           # encerrar durante o foco
+focusguard apps remove spotify.exe        # parar de encerrar
+
+# Histórico de tentativas de burla (adulterações detectadas e revertidas)
+focusguard tamper-log
+
+# Agendamento com múltiplas janelas por dia
+focusguard schedule add --preset social --days seg,ter,qua,qui,sex --windows 08:00-12:00,14:00-18:00
+
+# Importar eventos semanais de um calendário (.ics) como regras de bloqueio
+focusguard schedule import --file horario.ics --preset social
 ```
 
 > ⚠️ O daemon (`focusguard-daemon`) precisa estar rodando para que `block` e `status` funcionem.
@@ -428,13 +462,20 @@ Interface interativa construída com [Bubble Tea](https://github.com/charmbracel
 | `focusguard preset add <nome> <dominio...>` | Cria um preset personalizado |
 | `focusguard preset remove <nome>` | Remove um preset personalizado |
 | `focusguard schedule add --preset <cat> --days <dias> --start HH:MM --end HH:MM` | Cria um agendamento recorrente |
+| `focusguard schedule add --windows 08:00-12:00,14:00-18:00` | Várias janelas por dia numa regra |
+| `focusguard schedule import --file <arquivo.ics> --preset <cat>` | Importa eventos semanais de um calendário |
 | `focusguard schedule list` | Lista os agendamentos |
 | `focusguard schedule remove <id>` | Remove um agendamento |
-| `focusguard pomodoro --preset <cat> [--work 25] [--rest 5] [--cycles 4] [--strict]` | Sessão pomodoro (ciclos trabalho/descanso) |
+| `focusguard apps` / `apps add <proc>` / `apps remove <proc>` | Gerencia a denylist de processos do guard |
+| `focusguard pomodoro --preset <cat> [--work 25] [--rest 5] [--cycles 4] [--strict] [--save] [--label "missão"]` | Sessão pomodoro (ciclos trabalho/descanso) |
+| `focusguard pomodoro-defaults` | Mostra os padrões salvos do pomodoro |
 | `focusguard pomodoro-stop` | Encerra a sessão pomodoro |
+| `focusguard mission` | Total de foco por missão nomeada |
+| `focusguard tamper-log` | Histórico de tentativas de burla |
 | `focusguard goal set <duração>` | Define a meta diária de foco (ex: 4h) |
 | `focusguard goal` | Consulta a meta diária |
-| `focusguard stats [--export csv\|json]` | Relatório de foco em ASCII, com exportação |
+| `focusguard stats [--export csv\|json\|html] [--mission <nome>]` | Relatório de foco em ASCII, com exportação e filtro por missão |
+| `focusguard report` | Resumo semanal de foco |
 | `focusguard status` | Lista bloqueios ativos |
 | `focusguard install` | Instala daemon como serviço de inicialização |
 | `focusguard uninstall` | Remove daemon da inicialização |

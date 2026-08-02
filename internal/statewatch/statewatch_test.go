@@ -9,6 +9,8 @@ import (
 	"time"
 
 	"github.com/fsnotify/fsnotify"
+
+	"focusguard/internal/tamper"
 )
 
 type mockReconciler struct {
@@ -51,6 +53,65 @@ func TestNew_Defaults(t *testing.T) {
 	}
 	if w.debounce != defaultDebounce {
 		t.Errorf("expected debounce %v, got %v", defaultDebounce, w.debounce)
+	}
+}
+
+// fakeTLog records tamper events for assertions.
+type fakeTLog struct {
+	mu     sync.Mutex
+	events []tamper.Event
+}
+
+func (f *fakeTLog) Log(e tamper.Event) {
+	f.mu.Lock()
+	f.events = append(f.events, e)
+	f.mu.Unlock()
+}
+
+func (f *fakeTLog) snapshot() []tamper.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tamper.Event(nil), f.events...)
+}
+
+func TestDetectChange_LogsExternalEdit(t *testing.T) {
+	dir := t.TempDir()
+	statePath := filepath.Join(dir, "state.json")
+	writeStateFile(t, statePath, `{}`)
+
+	rec := &mockReconciler{}
+	logr := &fakeTLog{}
+
+	w := &StateWatcher{
+		StatePath:  statePath,
+		reconciler: rec,
+		debounce:   10 * time.Millisecond,
+		events:     make(chan fsEvent, 10),
+		stopCh:     make(chan struct{}),
+	}
+	w.SetTamperLogger(logr)
+
+	done := make(chan struct{})
+	go func() {
+		w.eventLoop()
+		close(done)
+	}()
+
+	select {
+	case w.events <- fsEvent{op: "write"}:
+	case <-time.After(time.Second):
+		t.Fatal("failed to send event")
+	}
+	time.Sleep(50 * time.Millisecond)
+	close(w.stopCh)
+	<-done
+
+	ev := logr.snapshot()
+	if len(ev) != 1 {
+		t.Fatalf("expected 1 tamper event, got %+v", ev)
+	}
+	if ev[0].Source != "state" || ev[0].Action != "reconcile" {
+		t.Errorf("evento inesperado: %+v", ev[0])
 	}
 }
 

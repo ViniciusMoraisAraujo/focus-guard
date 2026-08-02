@@ -19,6 +19,7 @@ import (
 	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/store"
+	"focusguard/internal/tamper"
 )
 
 type fakeUpdateChecker struct {
@@ -720,6 +721,52 @@ func TestServer_Presets_UsesConfiguredStore(t *testing.T) {
 
 func (f *fakePomodoroRunner) Status() pomodoro.State { return f.state }
 
+func (f *fakePomodoroRunner) WatchCompletion() <-chan pomodoro.CompletionSummary {
+	ch := make(chan pomodoro.CompletionSummary)
+	return ch
+}
+
+// fakePomodoroPrefs is a stubbable PomodoroPrefs for the server tests.
+type fakePomodoroPrefs struct {
+	work, rest, cycles int
+	remembered         [3]int
+}
+
+func (f *fakePomodoroPrefs) Resolve(work, rest, cycles int) (int, int, int) {
+	if work <= 0 {
+		work = f.work
+	}
+	if work <= 0 {
+		work = 25
+	}
+	// rest: -1 = não informado (usa salvo/default); 0 = explicitamente sem
+	// descanso (mantém 0); >0 = explícito. O default salvo segue o real
+	// Prefs: rest não configurado (0 no fake) cai para o clássico 5.
+	switch rest {
+	case -1:
+		if f.rest == 0 {
+			rest = 5
+		} else {
+			rest = f.rest
+		}
+	case 0:
+		// sem descanso explícito — mantém 0
+	default:
+		// explícito — mantém
+	}
+	if cycles <= 0 {
+		cycles = f.cycles
+	}
+	if cycles <= 0 {
+		cycles = 4
+	}
+	return work, rest, cycles
+}
+
+func (f *fakePomodoroPrefs) Remember(work, rest, cycles int) {
+	f.remembered = [3]int{work, rest, cycles}
+}
+
 // ---------------------------------------------------------------------------
 // Agendamento recorrente (schedule-list / schedule-add / schedule-remove)
 // ---------------------------------------------------------------------------
@@ -727,11 +774,15 @@ func (f *fakePomodoroRunner) Status() pomodoro.State { return f.state }
 // fakeScheduleManager is a stubbable ScheduleManager used to test the server's
 // schedule wiring without touching disk.
 type fakeScheduleManager struct {
-	list    []schedule.Rule
-	added   []schedule.Rule
-	removed []string
-	addErr  error
-	remErr  error
+	list           []schedule.Rule
+	added          []schedule.Rule
+	removed        []string
+	importedICS    []string
+	importedPreset string
+	imported       []schedule.Rule
+	addErr         error
+	remErr         error
+	importErr      error
 }
 
 func (f *fakeScheduleManager) List() []schedule.Rule { return f.list }
@@ -745,6 +796,15 @@ func (f *fakeScheduleManager) Add(r schedule.Rule) (schedule.Rule, error) {
 func (f *fakeScheduleManager) Remove(id string) error {
 	f.removed = append(f.removed, id)
 	return f.remErr
+}
+
+func (f *fakeScheduleManager) ImportICS(data []byte, preset string) ([]schedule.Rule, error) {
+	f.importedICS = append(f.importedICS, string(data))
+	f.importedPreset = preset
+	if f.imported == nil && f.importErr == nil {
+		return []schedule.Rule{{ID: "abc1", Preset: preset, Label: "Aula", Days: []int{1, 3}, Windows: []string{"08:00-12:00"}, Enabled: true}}, nil
+	}
+	return f.imported, f.importErr
 }
 
 // ---------------------------------------------------------------------------
@@ -896,6 +956,79 @@ func TestServer_Stats_IncludesStreak(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Import iCal (schedule-import)
+// ---------------------------------------------------------------------------
+
+const testICSContent = `BEGIN:VCALENDAR
+BEGIN:VEVENT
+UID:1
+SUMMARY:Aula
+DTSTART:20260202T080000
+DTEND:20260202T120000
+RRULE:FREQ=WEEKLY;BYDAY=MO,WE
+END:VEVENT
+END:VCALENDAR
+`
+
+func TestServer_ScheduleImport_AddsRules(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeScheduleManager{}
+	server.SetSchedules(fake)
+
+	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent, ICSPreset: "social"})
+	if !resp.Success {
+		t.Fatalf("schedule-import falhou: %s", resp.Message)
+	}
+	if fake.importedPreset != "social" {
+		t.Errorf("importedPreset = %q, want social", fake.importedPreset)
+	}
+	if !strings.Contains(fake.importedICS[0], "FREQ=WEEKLY") {
+		t.Errorf("ICS content should reach the manager raw")
+	}
+}
+
+func TestServer_ScheduleImport_MissingPreset(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetSchedules(&fakeScheduleManager{})
+
+	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent})
+	if resp.Success {
+		t.Error("expected failure when the preset is missing")
+	}
+}
+
+func TestServer_ScheduleImport_EmptyContent(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetSchedules(&fakeScheduleManager{})
+
+	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSPreset: "social"})
+	if resp.Success {
+		t.Error("expected failure for empty ICS content")
+	}
+}
+
+func TestServer_ScheduleImport_UnknownPreset(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetSchedules(&fakeScheduleManager{})
+
+	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent, ICSPreset: "nao-existe"})
+	if resp.Success {
+		t.Error("expected failure for an unknown preset (would silently never apply)")
+	}
+}
+
+func TestServer_ScheduleImport_NoWeeklyEvents(t *testing.T) {
+	server := setupTestServer(t)
+	// importErr força o "nenhum evento semanal" na resposta do manager.
+	server.SetSchedules(&fakeScheduleManager{importErr: errors.New("Nenhum evento semanal encontrado no calendário.")})
+
+	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent, ICSPreset: "social"})
+	if resp.Success {
+		t.Error("expected failure when no weekly events are found")
+	}
+}
+
 func TestServer_ScheduleList_ReturnsRules(t *testing.T) {
 	server := setupTestServer(t)
 	server.SetSchedules(&fakeScheduleManager{
@@ -979,6 +1112,132 @@ func TestServer_ScheduleRemove_Error(t *testing.T) {
 	}
 }
 
+// fakeAppsManager is a stubbable process-app denylist provider.
+type fakeAppsManager struct {
+	list    []string
+	addErr  error
+	remErr  error
+	removed []string
+}
+
+func (f *fakeAppsManager) List() []string { return f.list }
+func (f *fakeAppsManager) Add(name string) error {
+	if f.addErr != nil {
+		return f.addErr
+	}
+	f.list = append(f.list, name)
+	return nil
+}
+func (f *fakeAppsManager) Remove(name string) error {
+	if f.remErr != nil {
+		return f.remErr
+	}
+	f.removed = append(f.removed, name)
+	return nil
+}
+
+func TestServer_AppsList_ReturnsDenylist(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetApps(&fakeAppsManager{list: []string{"steam", "discord"}})
+
+	resp := executeRequest(t, server, Request{Action: "apps-list"})
+	if !resp.Success {
+		t.Fatalf("apps-list falhou: %s", resp.Message)
+	}
+	if len(resp.Apps) != 2 || resp.Apps[0] != "steam" {
+		t.Errorf("Apps inesperado: %+v", resp.Apps)
+	}
+}
+
+func TestServer_AppsList_WithoutManager(t *testing.T) {
+	server := setupTestServer(t)
+	resp := executeRequest(t, server, Request{Action: "apps-list"})
+	if resp.Success {
+		t.Fatal("apps-list sem manager deveria falhar")
+	}
+}
+
+func TestServer_AppsAdd_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeAppsManager{}
+	server.SetApps(fake)
+
+	resp := executeRequest(t, server, Request{Action: "apps-add", AppName: "spotify"})
+	if !resp.Success {
+		t.Fatalf("apps-add falhou: %s", resp.Message)
+	}
+	if len(fake.list) != 1 || fake.list[0] != "spotify" {
+		t.Errorf("Add deveria registrar spotify, got %v", fake.list)
+	}
+}
+
+func TestServer_AppsAdd_ManagerError(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetApps(&fakeAppsManager{addErr: errors.New("apps: nome inválido")})
+
+	resp := executeRequest(t, server, Request{Action: "apps-add", AppName: ""})
+	if resp.Success {
+		t.Fatal("expected failure when the store rejects the app")
+	}
+	if !strings.Contains(resp.Message, "inválido") {
+		t.Errorf("message deveria carregar o erro do store, got %q", resp.Message)
+	}
+}
+
+func TestServer_AppsRemove_Success(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeAppsManager{}
+	server.SetApps(fake)
+
+	resp := executeRequest(t, server, Request{Action: "apps-remove", AppName: "steam"})
+	if !resp.Success {
+		t.Fatalf("apps-remove falhou: %s", resp.Message)
+	}
+	if len(fake.removed) != 1 || fake.removed[0] != "steam" {
+		t.Errorf("removed = %v, want [steam]", fake.removed)
+	}
+}
+
+func TestServer_AppsRemove_ManagerError(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetApps(&fakeAppsManager{remErr: errors.New("apps: não encontrado")})
+
+	resp := executeRequest(t, server, Request{Action: "apps-remove", AppName: "zzz"})
+	if resp.Success {
+		t.Fatal("expected failure when the store rejects the removal")
+	}
+}
+
+// fakeTamperProvider is a stubbable tamper-log provider.
+type fakeTamperProvider struct {
+	events []tamper.Event
+}
+
+func (f *fakeTamperProvider) Events() ([]tamper.Event, error) { return f.events, nil }
+
+func TestServer_TamperLog_ReturnsEvents(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetTamper(&fakeTamperProvider{events: []tamper.Event{
+		{At: time.Now(), Source: "hosts", Action: "restore", Detail: "twitter.com"},
+	}})
+
+	resp := executeRequest(t, server, Request{Action: "tamper-log"})
+	if !resp.Success {
+		t.Fatalf("tamper-log falhou: %s", resp.Message)
+	}
+	if len(resp.TamperLog) != 1 || resp.TamperLog[0].Source != "hosts" {
+		t.Errorf("TamperLog inesperado: %+v", resp.TamperLog)
+	}
+}
+
+func TestServer_TamperLog_WithoutProvider(t *testing.T) {
+	server := setupTestServer(t)
+	resp := executeRequest(t, server, Request{Action: "tamper-log"})
+	if resp.Success {
+		t.Fatal("tamper-log sem provider deveria falhar")
+	}
+}
+
 func TestServer_Presets_ReturnsCatalog(t *testing.T) {
 	server := setupTestServer(t)
 
@@ -997,6 +1256,135 @@ func TestServer_Presets_ReturnsCatalog(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("expected the social preset in the catalog, got %+v", resp.Presets)
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Pomodoro prefs (pomodoro-defaults / --save)
+// ---------------------------------------------------------------------------
+
+func TestServer_PomodoroDefaults_NoPrefs(t *testing.T) {
+	server := setupTestServer(t)
+	resp := executeRequest(t, server, Request{Action: "pomodoro-defaults"})
+	if resp.Success {
+		t.Error("expected failure when no prefs store is configured")
+	}
+}
+
+func TestServer_PomodoroDefaults_ResolvesSaved(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoroPrefs(&fakePomodoroPrefs{work: 50, rest: 10, cycles: 2})
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro-defaults"})
+	if !resp.Success {
+		t.Fatalf("pomodoro-defaults falhou: %s", resp.Message)
+	}
+	if resp.PomodoroWork != 50 || resp.PomodoroRest != 10 || resp.PomodoroCycle != 2 {
+		t.Errorf("defaults = %d/%d/%d, want 50/10/2", resp.PomodoroWork, resp.PomodoroRest, resp.PomodoroCycle)
+	}
+}
+
+func TestServer_Pomodoro_SavePersistsDefaults(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+	prefs := &fakePomodoroPrefs{}
+	server.SetPomodoroPrefs(prefs)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 50, RestMin: 10, Cycles: 2, Save: true})
+	if !resp.Success {
+		t.Fatalf("pomodoro falhou: %s", resp.Message)
+	}
+	if prefs.remembered != [3]int{50, 10, 2} {
+		t.Errorf("remembered = %v, want [50 10 2]", prefs.remembered)
+	}
+	if !strings.Contains(resp.Message, "padrões salvos") {
+		t.Errorf("message should mention saved defaults, got %q", resp.Message)
+	}
+}
+
+func TestServer_Pomodoro_NoSaveSkipsPersist(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetPomodoro(&fakePomodoroRunner{})
+	prefs := &fakePomodoroPrefs{}
+	server.SetPomodoroPrefs(prefs)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 50, RestMin: 10, Cycles: 2})
+	if !resp.Success {
+		t.Fatalf("pomodoro falhou: %s", resp.Message)
+	}
+	if prefs.remembered != [3]int{0, 0, 0} {
+		t.Errorf("remembered should stay zero without Save, got %v", prefs.remembered)
+	}
+}
+
+func TestServer_Pomodoro_ResolvesDefaultsWhenZero(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+	prefs := &fakePomodoroPrefs{work: 50, rest: 10, cycles: 2}
+	server.SetPomodoroPrefs(prefs)
+
+	// CLI sem flags explícitas: work=0, rest=-1, cycles=0 → defaults salvos.
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 0, RestMin: -1, Cycles: 0})
+	if !resp.Success {
+		t.Fatalf("pomodoro falhou: %s", resp.Message)
+	}
+	if fake.started.Work != 50*time.Minute || fake.started.Rest != 10*time.Minute || fake.started.Cycles != 2 {
+		t.Errorf("started = %v/%v/%d, want 50m/10m/2", fake.started.Work, fake.started.Rest, fake.started.Cycles)
+	}
+}
+
+func TestServer_Pomodoro_LabelPassthrough(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakePomodoroRunner{}
+	server.SetPomodoro(fake)
+
+	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 4, Label: "Estudar ENEM"})
+	if !resp.Success {
+		t.Fatalf("pomodoro falhou: %s", resp.Message)
+	}
+	if fake.started.Label != "Estudar ENEM" {
+		t.Errorf("started.Label = %q, want Estudar ENEM", fake.started.Label)
+	}
+}
+
+func TestServer_Stats_FilterByMission(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetAnalytics(&fakeAnalyticsProvider{
+		sessions: []analytics.Session{
+			{Start: time.Now().Add(-time.Hour), End: time.Now(), Preset: "social", Label: "ENEM", Domains: []string{"twitter.com"}, Focus: time.Hour},
+			{Start: time.Now().Add(-2 * time.Hour), End: time.Now().Add(-time.Hour), Preset: "video", Domains: []string{"youtube.com"}, Focus: 2 * time.Hour},
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "stats", Mission: "ENEM"})
+	if !resp.Success {
+		t.Fatalf("stats falhou: %s", resp.Message)
+	}
+	if resp.Stats.TotalSessions != 1 || resp.Stats.TotalFocus != time.Hour {
+		t.Errorf("filtered stats = %d sessions / %v, want 1 / 1h", resp.Stats.TotalSessions, resp.Stats.TotalFocus)
+	}
+}
+
+func TestServer_Missions_AggregatesLabels(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetAnalytics(&fakeAnalyticsProvider{
+		sessions: []analytics.Session{
+			{Start: time.Now().Add(-time.Hour), End: time.Now(), Preset: "social", Label: "ENEM", Domains: []string{"twitter.com"}, Focus: time.Hour},
+			{Start: time.Now().Add(-2 * time.Hour), End: time.Now().Add(-time.Hour), Preset: "video", Label: "ENEM", Domains: []string{"youtube.com"}, Focus: 2 * time.Hour},
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "missions"})
+	if !resp.Success {
+		t.Fatalf("missions falhou: %s", resp.Message)
+	}
+	if len(resp.LabelStats) != 1 {
+		t.Fatalf("LabelStats = %d, want 1", len(resp.LabelStats))
+	}
+	if resp.LabelStats[0].Label != "ENEM" || resp.LabelStats[0].Duration != 3*time.Hour {
+		t.Errorf("LabelStats[0] = %+v, want ENEM/3h", resp.LabelStats[0])
 	}
 }
 

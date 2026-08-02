@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"focusguard/internal/analytics"
+	"focusguard/internal/apps"
 	"focusguard/internal/enforcer"
 	"focusguard/internal/goal"
 	"focusguard/internal/hostswatch"
@@ -26,6 +27,7 @@ import (
 	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
 	"focusguard/internal/store"
+	"focusguard/internal/tamper"
 	"focusguard/internal/update"
 	"focusguard/internal/watchdog"
 )
@@ -57,6 +59,7 @@ var newUpdater = func(owner, repo string) updaterAPI {
 type processGuardStarter interface {
 	Start(isActive func() bool)
 	Stop()
+	SetDenylist(names []string)
 }
 
 // newProcessGuard is stubbable (mirrors newHostswatch/newStatewatch) so daemon
@@ -70,13 +73,98 @@ var newProcessGuard = func(denylist []string) processGuardStarter {
 // enquanto houver sessão de foco ativa.
 var defaultProcessDenylist = []string{"steam.exe", "discord.exe"}
 
-func startProcessGuard(sched processguard.ActivityChecker) processGuardStarter {
-	pg := newProcessGuard(defaultProcessDenylist)
+// startProcessGuard builds and starts the process guard with the given
+// denylist (sourced from the persisted apps store). It is a no-op when the
+// constructor returns nil.
+// persistPomodoroSummary persists the resolved work/rest/cycles of a finished
+// session as the next session's defaults and logs the post-session summary.
+// Extracted as a pure function so tests can exercise it without running a
+// (minutes-long) real pomodoro session.
+func persistPomodoroSummary(prefs *pomodoro.Prefs, sum pomodoro.CompletionSummary) {
+	// Arredonda para cima: uma sessão de 30s vira 1m, nunca 0 (que o Resolve
+	// trataria como "não salvo" e cairia para o default). O minuto é a unidade
+	// mínima do IPC/CLI.
+	roundUpMin := func(d time.Duration) int {
+		m := int(d / time.Minute)
+		if d%time.Minute > 0 {
+			m++
+		}
+		return m
+	}
+	prefs.Remember(roundUpMin(sum.Work), roundUpMin(sum.Rest), sum.Cycles)
+	verb := "Concluída"
+	if sum.Stopped {
+		verb = "Encerrada"
+	}
+	mode := ""
+	if sum.Strict {
+		mode = " [estrita]"
+	}
+	log.Printf("[FocusGuard Daemon] Sessão %s: preset=%s %d ciclos (%s foco)%s",
+		verb, sum.Preset, sum.Cycles, sum.Focus.Round(time.Second), mode)
+}
+
+// watchPomodoroCompletions consumes the controller's completion summary
+// stream: logs a post-session summary (daemon log) and persists the resolved
+// work/rest/cycles as the next session's defaults. Returns a stop func; a nil
+// controller produces a no-op stop.
+func watchPomodoroCompletions(c *pomodoro.Controller, prefs *pomodoro.Prefs) func() {
+	if c == nil || prefs == nil {
+		return func() {}
+	}
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			case sum := <-c.WatchCompletion():
+				persistPomodoroSummary(prefs, sum)
+			}
+		}
+	}()
+	return func() { close(stop) }
+}
+
+func startProcessGuard(sched processguard.ActivityChecker, denylist []string) processGuardStarter {
+	pg := newProcessGuard(denylist)
 	if pg == nil {
 		return nil
 	}
 	pg.Start(sched.HasActiveBlocks)
 	return pg
+}
+
+// guardApps wires the persisted apps store to the live process guard: every
+// apps-add/apps-remove refreshes the guard's denylist so the change takes
+// effect on the next scan. Satisfies the ipc.AppsManager interface.
+type guardApps struct {
+	store *apps.Store
+	guard interface{ SetDenylist([]string) }
+}
+
+func (g *guardApps) List() []string { return g.store.List() }
+
+func (g *guardApps) Add(name string) error {
+	if err := g.store.Add(name); err != nil {
+		return err
+	}
+	g.refreshGuard()
+	return nil
+}
+
+func (g *guardApps) Remove(name string) error {
+	if err := g.store.Remove(name); err != nil {
+		return err
+	}
+	g.refreshGuard()
+	return nil
+}
+
+func (g *guardApps) refreshGuard() {
+	if g.guard != nil {
+		g.guard.SetDenylist(g.store.List())
+	}
 }
 
 // presetResolver adapts *preset.Store to schedule.Resolver (preset name → the
@@ -365,9 +453,14 @@ func runDaemon() bool {
 	wd := watchdog.New(sched, watchdogSec)
 	go wd.Start()
 
+	// Tamper log: histórico de tentativas de burla (adulterações externas do
+	// hosts/state detectadas e revertidas) — "focusguard tamper-log".
+	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
+
 	hw := startHostswatch(enf, sched)
 	if hw != nil {
 		defer hw.Stop()
+		hw.SetTamperLogger(tamperRec)
 		if notifier, ok := enf.(interface{ SetOnHostsWrite(func()) }); ok {
 			notifier.SetOnHostsWrite(hw.MarkSelfWrite)
 		}
@@ -376,18 +469,25 @@ func runDaemon() bool {
 	sw := startStatewatch(sched, statePath)
 	if sw != nil {
 		defer sw.Stop()
+		sw.SetTamperLogger(tamperRec)
 		st.SetOnSave(sw.MarkSelfWrite)
 	}
 
 	// Process Guard: encerra executáveis da denylist (steam, discord) enquanto
 	// houver sessão de foco ativa — a checagem de atividade é o HasActiveBlocks
-	// do scheduler.
-	pg := startProcessGuard(sched)
+	// do scheduler. A denylist é persistida (apps.json) e configurável via
+	// "focusguard apps add/remove".
+	appsStore := apps.NewStore(filepath.Join(filepath.Dir(statePath), "apps.json"))
+	pg := startProcessGuard(sched, appsStore.List())
 	if pg != nil {
 		defer pg.Stop()
 	}
 
 	server := ipc.NewServer(sched)
+	if pg != nil {
+		server.SetApps(&guardApps{store: appsStore, guard: pg})
+	}
+	server.SetTamper(tamperRec)
 
 	// Modo Pomodoro & Presets: ciclos de trabalho/descanso sobre as categorias
 	// (--preset social, video, news, games). O controller bloqueia via o
@@ -395,7 +495,19 @@ func runDaemon() bool {
 	// estritas (--strict) não podem ser encerradas antecipadamente e, ao
 	// terminar, são registradas no analytics para o "focusguard stats".
 	pomo := pomodoro.New(sched)
+	pomo.SetNotifier(pomodoro.NewNotifier()) // beep nas transições work/rest/done
 	server.SetPomodoro(pomo)
+
+	// Preferências do pomodoro: work/rest/cycles da última sessão (--save)
+	// persistidos em pomodoro.json — um "focusguard pomodoro --preset x" sem
+	// flags reutiliza os padrões salvos. O watcher abaixo também persiste os
+	// valores resolvidos ao fim de cada sessão (mesmo sem --save).
+	pomoPrefs := pomodoro.NewPrefs(filepath.Join(filepath.Dir(statePath), "pomodoro.json"))
+	server.SetPomodoroPrefs(pomoPrefs)
+	stopPomoWatch := watchPomodoroCompletions(pomo, pomoPrefs)
+	if stopPomoWatch != nil {
+		defer stopPomoWatch()
+	}
 
 	// Presets personalizados do usuário: catálogo persistido (builtins + custom)
 	// ao lado do state.json — "focusguard preset add/remove".

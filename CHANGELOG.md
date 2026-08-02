@@ -7,6 +7,51 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🛡 Processos configuráveis (process guard)
+
+- **`focusguard apps add <processo>` / `apps remove <processo>` / `apps`** —
+  gerencia a denylist de processos que são encerrados durante sessões de foco
+  (antes era hardcoded `steam.exe, discord.exe`). Persistida em apps.json e
+  aplicada pelo guard em tempo real.
+
+### 📊 Relatório HTML e resumo semanal
+
+- **`focusguard stats --export html`** — relatório autossuficiente (CSS
+  inline, sem assets externos) com cards, gráfico de barras por dia e ranking
+  de domínios.
+- **`focusguard report`** — resumo semanal em texto: total de foco, dias
+  ativos, média e raia.
+
+### 🛡 Histórico de tentativas de burla
+
+- **`focusguard tamper-log`** — lista as adulterações detectadas nos arquivos
+  de bloqueio (hosts/state) e revertidas pelos watchers, com data e detalhe.
+
+### ⏰ Agendamento com múltiplas janelas
+
+- **`focusguard schedule add --windows 08:00-12:00,14:00-18:00`** — uma regra
+  pode ter várias janelas por dia (em vez de um único `--start/--end`).
+
+### 🍅 Pomodoro: padrões salvos, beeps e resumo pós-sessão
+
+- **`focusguard pomodoro --save`** — persiste work/rest/cycles como padrão;
+  `focusguard pomodoro-defaults` mostra os padrões atuais; uma sessão sem
+  flags reutiliza os salvos.
+- **Beep de transição** nas mudanças de fase (trabalho/descanso/fim) e
+  **resumo pós-sessão** no log do daemon.
+
+### 🎯 Sessões nomeadas e missões
+
+- **`focusguard pomodoro --label "Estudar ENEM"`** — nomeia a sessão;
+  **`focusguard mission`** agrega o foco por missão e
+  **`focusguard stats --mission <nome>`** filtra o relatório por missão.
+
+### 📅 Import de calendário (iCal)
+
+- **`focusguard schedule import --file <arquivo.ics> --preset <categoria>`** —
+  converte os eventos semanais (RRULE FREQ=WEEKLY) de um calendário em regras
+  de bloqueio recorrentes.
+
 ## [0.4.0] - 2026-08-02
 
 ### 🍅 Presets personalizados

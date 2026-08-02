@@ -15,6 +15,7 @@ import (
 	"focusguard/internal/preset"
 	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
+	"focusguard/internal/tamper"
 )
 
 type Server struct {
@@ -22,10 +23,13 @@ type Server struct {
 	listener        net.Listener
 	updateChecker   UpdateChecker
 	pomodoro        PomodoroRunner
+	pomodoroPrefs   PomodoroPrefs
 	analytics       AnalyticsProvider
 	presets         PresetManager
 	schedules       ScheduleManager
 	goalStore       GoalManager
+	apps            AppsManager
+	tamperLog       TamperProvider
 	onUpdateApplied func()
 
 	mu           sync.RWMutex
@@ -69,6 +73,7 @@ type ScheduleManager interface {
 	List() []schedule.Rule
 	Add(r schedule.Rule) (schedule.Rule, error)
 	Remove(id string) error
+	ImportICS(data []byte, preset string) ([]schedule.Rule, error)
 }
 
 // GoalManager is the daily focus goal store used by goal-get/goal-set. The
@@ -94,6 +99,36 @@ func (s *Server) SetSchedules(m ScheduleManager) {
 	s.schedules = m
 }
 
+// AppsManager is the process-app denylist used by the apps-* actions. The
+// daemon wires a *apps.Store that also refreshes the live process guard.
+type AppsManager interface {
+	List() []string
+	Add(name string) error
+	Remove(name string) error
+}
+
+// SetApps wires the process denylist into the server. Nil makes the apps-*
+// actions fail with a clear message.
+func (s *Server) SetApps(m AppsManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.apps = m
+}
+
+// TamperProvider supplies the detected tamper events for the tamper-log
+// action. The daemon wires the tamper recorder; tests stub it.
+type TamperProvider interface {
+	Events() ([]tamper.Event, error)
+}
+
+// SetTamper wires the tamper-log provider into the server. Nil makes the
+// tamper-log action fail with a clear message.
+func (s *Server) SetTamper(p TamperProvider) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.tamperLog = p
+}
+
 // catalog returns the configured PresetManager or the built-in fallback.
 func (s *Server) catalog() PresetManager {
 	s.mu.RLock()
@@ -110,12 +145,28 @@ type PomodoroRunner interface {
 	Start(pomodoro.Session) (pomodoro.State, error)
 	Stop() (pomodoro.State, error)
 	Status() pomodoro.State
+	// WatchCompletion exposes the post-session summary stream (daemon-only;
+	// tests stub it with a never-sending channel).
+	WatchCompletion() <-chan pomodoro.CompletionSummary
 }
 
 func (s *Server) SetPomodoro(r PomodoroRunner) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.pomodoro = r
+}
+
+// PomodoroPrefs persists/reads the pomodoro defaults (work/rest/cycles) so a
+// plain "focusguard pomodoro --preset x" reuses the last session's values.
+type PomodoroPrefs interface {
+	Resolve(work, rest, cycles int) (int, int, int)
+	Remember(work, rest, cycles int)
+}
+
+func (s *Server) SetPomodoroPrefs(p PomodoroPrefs) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.pomodoroPrefs = p
 }
 
 // AnalyticsProvider supplies the recorded sessions for the stats action. The
@@ -310,6 +361,59 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 		}
 
+	case "tamper-log":
+		s.mu.RLock()
+		p := s.tamperLog
+		s.mu.RUnlock()
+		if p == nil {
+			resp = Response{Success: false, Message: "tamper-log não configurado"}
+			break
+		}
+		events, err := p.Events()
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{Success: true, TamperLog: events}
+
+	case "apps-list":
+		s.mu.RLock()
+		am := s.apps
+		s.mu.RUnlock()
+		if am == nil {
+			resp = Response{Success: false, Message: "denylist de apps não configurada"}
+			break
+		}
+		resp = Response{Success: true, Apps: am.List()}
+
+	case "apps-add":
+		s.mu.RLock()
+		am := s.apps
+		s.mu.RUnlock()
+		if am == nil {
+			resp = Response{Success: false, Message: "denylist de apps não configurada"}
+			break
+		}
+		if err := am.Add(req.AppName); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Processo %s adicionado à denylist", req.AppName)}
+		}
+
+	case "apps-remove":
+		s.mu.RLock()
+		am := s.apps
+		s.mu.RUnlock()
+		if am == nil {
+			resp = Response{Success: false, Message: "denylist de apps não configurada"}
+			break
+		}
+		if err := am.Remove(req.AppName); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Processo %s removido da denylist", req.AppName)}
+		}
+
 	case "schedule-list":
 		s.mu.RLock()
 		sm := s.schedules
@@ -334,6 +438,43 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: true, Message: fmt.Sprintf("Regra %s criada: %s das %s às %s", r.ID, r.Preset, r.Start, r.End)}
 		}
 
+	case "schedule-import":
+		s.mu.RLock()
+		sm := s.schedules
+		s.mu.RUnlock()
+		if sm == nil {
+			resp = Response{Success: false, Message: "agendamento não configurado"}
+			break
+		}
+		if strings.TrimSpace(req.ICSPreset) == "" {
+			resp = Response{Success: false, Message: "Informe o preset do calendário (ex: --preset social)."}
+			break
+		}
+		if strings.TrimSpace(req.ICSContent) == "" {
+			resp = Response{Success: false, Message: "Arquivo .ics vazio."}
+			break
+		}
+		// Preset inexistente seria importado silenciosamente e nunca aplicado
+		// (o worker pula presets que não resolvem) — valida cedo via catálogo.
+		if _, err := s.catalog().Resolve(req.ICSPreset); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		added, err := sm.ImportICS([]byte(req.ICSContent), req.ICSPreset)
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		if len(added) == 0 {
+			resp = Response{Success: false, Message: "Nenhum evento semanal encontrado no calendário."}
+			break
+		}
+		resp = Response{
+			Success:   true,
+			Schedules: added,
+			Message:   fmt.Sprintf("%d regras importadas do calendário (preset %s)", len(added), req.ICSPreset),
+		}
+
 	case "schedule-remove":
 		s.mu.RLock()
 		sm := s.schedules
@@ -350,6 +491,25 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 	case "pomodoro":
 		resp = handlePomodoro(s, req)
+
+	case "pomodoro-defaults":
+		s.mu.RLock()
+		prefs := s.pomodoroPrefs
+		s.mu.RUnlock()
+		if prefs == nil {
+			resp = Response{Success: false, Message: "preferências de pomodoro não configuradas"}
+			break
+		}
+		// Consulta os padrões atuais: work/cycles não informados (0) e rest
+		// não informado (-1) — 0 é um valor legítimo para rest (sem descanso).
+		work, rest, cycles := prefs.Resolve(0, -1, 0)
+		resp = Response{
+			Success:       true,
+			PomodoroWork:  work,
+			PomodoroRest:  rest,
+			PomodoroCycle: cycles,
+			Message:       fmt.Sprintf("Padrões atuais: %dm trabalho / %dm descanso / %d ciclos", work, rest, cycles),
+		}
 
 	case "pomodoro-stop":
 		s.mu.RLock()
@@ -406,8 +566,28 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: false, Message: err.Error()}
 			break
 		}
-		st := analytics.Summarize(sessions, 7, time.Now())
+		var st *analytics.Stats
+		if req.Mission != "" {
+			st = analytics.SummarizeByLabel(sessions, req.Mission, 7, time.Now())
+		} else {
+			st = analytics.Summarize(sessions, 7, time.Now())
+		}
 		resp = Response{Success: true, Stats: st}
+
+	case "missions":
+		s.mu.RLock()
+		p := s.analytics
+		s.mu.RUnlock()
+		if p == nil {
+			resp = Response{Success: false, Message: "analytics não configurado"}
+			break
+		}
+		sessions, err := p.Sessions()
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{Success: true, LabelStats: analytics.SummarizeLabels(sessions)}
 
 	case "status":
 		blocks, err := s.scheduler.ListBlocks()
@@ -512,6 +692,7 @@ func blockAllModeSuffix(allowlist []string) string {
 func handlePomodoro(s *Server, req Request) Response {
 	s.mu.RLock()
 	r := s.pomodoro
+	prefs := s.pomodoroPrefs
 	s.mu.RUnlock()
 	if r == nil {
 		return Response{Success: false, Message: "pomodoro não configurado"}
@@ -530,10 +711,18 @@ func handlePomodoro(s *Server, req Request) Response {
 		maxPomodoroMinutes = 7 * 24 * 60 // 7 dias por fase
 		maxPomodoroCycles  = 1000
 	)
-	if req.WorkMin <= 0 || req.WorkMin > maxPomodoroMinutes {
+
+	// Resolve defaults salvos: a CLI envia 0 (não informado) para work/cycles
+	// e -1 (não informado) para rest — 0 é um valor legítimo para rest (sem
+	// descanso). Sem prefs configuradas, caem no clássico 25/5/4.
+	work, rest, cycles := req.WorkMin, req.RestMin, req.Cycles
+	if prefs != nil {
+		work, rest, cycles = prefs.Resolve(work, rest, cycles)
+	}
+	if work <= 0 || work > maxPomodoroMinutes {
 		return Response{Success: false, Message: fmt.Sprintf("Duração de trabalho inválida (--work entre 1 e %d minutos).", maxPomodoroMinutes)}
 	}
-	if req.RestMin < 0 || req.RestMin > maxPomodoroMinutes || req.Cycles < 1 || req.Cycles > maxPomodoroCycles {
+	if rest < 0 || rest > maxPomodoroMinutes || cycles < 1 || cycles > maxPomodoroCycles {
 		return Response{Success: false, Message: fmt.Sprintf("Parâmetros de pomodoro inválidos (--rest entre 0 e %d minutos, --cycles entre 1 e %d).", maxPomodoroMinutes, maxPomodoroCycles)}
 	}
 
@@ -544,19 +733,26 @@ func handlePomodoro(s *Server, req Request) Response {
 
 	sess := pomodoro.Session{
 		Preset:  p.Name,
+		Label:   req.Label,
 		Domains: p.Domains,
-		Work:    time.Duration(req.WorkMin) * time.Minute,
-		Rest:    time.Duration(req.RestMin) * time.Minute,
-		Cycles:  req.Cycles,
+		Work:    time.Duration(work) * time.Minute,
+		Rest:    time.Duration(rest) * time.Minute,
+		Cycles:  cycles,
 		Strict:  req.Strict,
 	}
 	st, err := r.Start(sess)
 	if err != nil {
 		return Response{Success: false, Message: err.Error()}
 	}
+
+	msg := fmt.Sprintf("Pomodoro %s iniciado: %d ciclos de %dm trabalho / %dm descanso", p.Name, sess.Cycles, work, rest)
+	if req.Save && prefs != nil {
+		prefs.Remember(work, rest, cycles)
+		msg += " (padrões salvos para a próxima sessão)"
+	}
 	return Response{
 		Success:  true,
-		Message:  fmt.Sprintf("Pomodoro %s iniciado: %d ciclos de %dm trabalho / %dm descanso", p.Name, sess.Cycles, req.WorkMin, req.RestMin),
+		Message:  msg,
 		Pomodoro: &st,
 	}
 }

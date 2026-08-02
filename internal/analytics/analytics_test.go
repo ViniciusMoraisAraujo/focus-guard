@@ -256,6 +256,65 @@ func TestRenderStats_BarWidth(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Relatório HTML & resumo semanal
+// ---------------------------------------------------------------------------
+
+func TestExportHTML_ContainsSections(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC)
+	st := Summarize([]Session{
+		testSession(now.Add(-24*time.Hour), now.Add(-23*time.Hour), "social", time.Hour),
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),
+	}, 7, now)
+
+	html := ExportHTML(st)
+	for _, want := range []string{
+		"<!DOCTYPE html>", "FocusGuard", "Sessões", "2026-08-02", "2026-08-03",
+		"twitter.com", "Raia",
+	} {
+		if !strings.Contains(html, want) {
+			t.Errorf("HTML deveria conter %q", want)
+		}
+	}
+	if !strings.Contains(strings.ToLower(html), "<style") {
+		t.Error("HTML deveria ser self-contained com CSS inline")
+	}
+}
+
+func TestExportHTML_EscapesDomains(t *testing.T) {
+	now := time.Now()
+	st := Summarize([]Session{{Start: now.Add(-time.Hour), End: now, Focus: time.Hour, Domains: []string{"<script>alert(1)</script>"}}}, 7, now)
+	html := ExportHTML(st)
+	if strings.Contains(html, "<script>alert(1)</script>") {
+		t.Error("HTML deveria escapar conteúdo injetável nos domínios")
+	}
+}
+
+func TestRenderWeeklySummary_Totals(t *testing.T) {
+	now := time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC) // segunda
+	sessions := []Session{
+		testSession(now.Add(-48*time.Hour), now.Add(-47*time.Hour), "social", time.Hour), // sábado
+		testSession(now.Add(-24*time.Hour), now.Add(-23*time.Hour), "video", time.Hour),  // domingo
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),                       // hoje
+	}
+	st := Summarize(sessions, 7, now)
+
+	out := RenderWeeklySummary(st)
+	for _, want := range []string{"Resumo semanal", "3", "3h", "twitter.com", "Raia de foco: 3"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("resumo deveria conter %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestRenderWeeklySummary_Empty(t *testing.T) {
+	st := Summarize(nil, 7, time.Now())
+	out := RenderWeeklySummary(st)
+	if !strings.Contains(out, "Nenhuma sessão") {
+		t.Errorf("resumo vazio deveria avisar, got:\n%s", out)
+	}
+}
+
 // TestRecorder_AppendAndLoad verifies sessions persist to a JSONL file and
 // load back in order.
 func TestRecorder_AppendAndLoad(t *testing.T) {
@@ -335,6 +394,46 @@ func TestRecorder_MissingFile_Empty(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Errorf("expected no sessions, got %d", len(sessions))
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Sessões nomeadas (label) e relatório por missão
+// ---------------------------------------------------------------------------
+
+func TestSummarizeByLabel_FiltersSessions(t *testing.T) {
+	now := time.Now()
+	sessions := []Session{
+		testSession(now.Add(-time.Hour), now, "social", time.Hour),
+		{Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour), Preset: "video", Label: "ENEM", Domains: []string{"youtube.com"}, Focus: 2 * time.Hour},
+	}
+
+	st := SummarizeByLabel(sessions, "ENEM", 7, now)
+	if st.TotalSessions != 1 {
+		t.Errorf("TotalSessions = %d, want 1", st.TotalSessions)
+	}
+	if st.TotalFocus != 2*time.Hour {
+		t.Errorf("TotalFocus = %v, want 2h", st.TotalFocus)
+	}
+	if st.PerDomain[0].Domain != "youtube.com" {
+		t.Errorf("PerDomain should only contain the filtered session's domains, got %+v", st.PerDomain)
+	}
+}
+
+func TestSummarizeLabels_AggregatesByMission(t *testing.T) {
+	now := time.Now()
+	sessions := []Session{
+		{Start: now.Add(-time.Hour), End: now, Preset: "social", Label: "ENEM", Domains: []string{"twitter.com"}, Focus: time.Hour},
+		{Start: now.Add(-2 * time.Hour), End: now.Add(-time.Hour), Preset: "video", Label: "ENEM", Domains: []string{"youtube.com"}, Focus: 2 * time.Hour},
+		{Start: now.Add(-3 * time.Hour), End: now.Add(-2 * time.Hour), Preset: "social", Domains: []string{"twitter.com"}, Focus: time.Hour}, // sem label
+	}
+
+	labels := SummarizeLabels(sessions)
+	if len(labels) != 1 {
+		t.Fatalf("len(labels) = %d, want 1 (só a missão ENEM)", len(labels))
+	}
+	if labels[0].Label != "ENEM" || labels[0].Duration != 3*time.Hour || labels[0].Sessions != 2 {
+		t.Errorf("label stat = %+v, want ENEM/3h/2", labels[0])
 	}
 }
 

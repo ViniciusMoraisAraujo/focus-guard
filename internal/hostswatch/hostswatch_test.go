@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"focusguard/internal/policy"
+	"focusguard/internal/tamper"
 )
 
 type mockEnforcer struct {
@@ -181,6 +182,82 @@ func TestDetectTamper_PartialMissing(t *testing.T) {
 		t.Error("expected twitter.com in synced blocks")
 	}
 	enf.mu.Unlock()
+}
+
+// fakeTamperLogger records tamper events for assertions.
+type fakeTamperLogger struct {
+	mu     sync.Mutex
+	events []tamper.Event
+}
+
+func (f *fakeTamperLogger) Log(e tamper.Event) {
+	f.mu.Lock()
+	f.events = append(f.events, e)
+	f.mu.Unlock()
+}
+
+func (f *fakeTamperLogger) snapshot() []tamper.Event {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]tamper.Event(nil), f.events...)
+}
+
+func TestDetectTamper_LogsViolation(t *testing.T) {
+	dir := t.TempDir()
+	hostsPath := filepath.Join(dir, "hosts")
+	writeHosts(t, hostsPath, []string{"127.0.0.1 localhost"})
+
+	enf := &mockEnforcer{}
+	sched := &mockScheduler{
+		blocks: []policy.Block{
+			{Domain: "twitter.com", ResolvedIPs: []string{"1.2.3.4"}},
+		},
+	}
+
+	w := &HostsWatcher{
+		HostsPath: hostsPath,
+		enf:       enf,
+		sched:     sched,
+	}
+	logr := &fakeTamperLogger{}
+	w.SetTamperLogger(logr)
+
+	if err := w.detectTamper(); err != nil {
+		t.Fatalf("detectTamper: %v", err)
+	}
+	ev := logr.snapshot()
+	if len(ev) != 1 {
+		t.Fatalf("expected 1 tamper event, got %+v", ev)
+	}
+	if ev[0].Source != "hosts" || ev[0].Action != "restore" || ev[0].Detail != "twitter.com" {
+		t.Errorf("evento inesperado: %+v", ev[0])
+	}
+}
+
+func TestDetectTamper_IntactDoesNotLog(t *testing.T) {
+	dir := t.TempDir()
+	hostsPath := filepath.Join(dir, "hosts")
+	writeHosts(t, hostsPath, []string{
+		"127.0.0.1 localhost",
+		"127.0.0.1 twitter.com # FOCUSGUARD: twitter.com",
+	})
+
+	w := &HostsWatcher{
+		HostsPath: hostsPath,
+		enf:       &mockEnforcer{},
+		sched: &mockScheduler{
+			blocks: []policy.Block{{Domain: "twitter.com", ResolvedIPs: []string{"1.2.3.4"}}},
+		},
+	}
+	logr := &fakeTamperLogger{}
+	w.SetTamperLogger(logr)
+
+	if err := w.detectTamper(); err != nil {
+		t.Fatalf("detectTamper: %v", err)
+	}
+	if ev := logr.snapshot(); len(ev) != 0 {
+		t.Errorf("hosts intacto não deveria logar, got %+v", ev)
+	}
 }
 
 func TestDetectTamper_NoBlocks(t *testing.T) {

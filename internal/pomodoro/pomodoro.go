@@ -7,6 +7,8 @@ package pomodoro
 
 import (
 	"errors"
+	"fmt"
+	"os"
 	"sync"
 	"time"
 
@@ -23,10 +25,13 @@ const (
 )
 
 // Session describes a pomodoro to start. Domains are pre-resolved from a
-// preset by the caller (daemon/server). Strict sessions are inviolable: Stop
-// is refused while active, so the work/rest cycle always runs to completion.
+// preset by the caller (daemon/server). Label is an optional session name (a
+// "mission", e.g. "Estudar ENEM") recorded in the analytics. Strict sessions
+// are inviolable: Stop is refused while active, so the work/rest cycle always
+// runs to completion.
 type Session struct {
 	Preset  string
+	Label   string
 	Domains []string
 	Work    time.Duration
 	Rest    time.Duration
@@ -57,20 +62,94 @@ type SessionRecorder interface {
 	Record(analytics.Session)
 }
 
+// CompletionSummary describes a finished session for the daemon's post-session
+// summary and prefs persistence (saving the resolved work/rest/cycles).
+type CompletionSummary struct {
+	Preset  string
+	Work    time.Duration
+	Rest    time.Duration
+	Cycles  int
+	Focus   time.Duration
+	Strict  bool
+	Stopped bool
+}
+
+// BeepFunc emits an audible/terminal transition cue. The production
+// implementation writes the terminal bell; tests stub it.
+type BeepFunc func(kind string)
+
+// Notifier emits transition cues for the pomodoro cycle: a beep when a work
+// phase starts, another when rest starts and a final one when the session
+// completes. Beeps are fire-and-forget and must never block the session loop.
+type Notifier struct {
+	beep BeepFunc
+}
+
+// terminalBell writes the ASCII bell character to stdout. It is best-effort:
+// terminals without audible bells simply ignore it.
+func terminalBell(kind string) {
+	switch kind {
+	case "work":
+		fmt.Fprint(os.Stdout, "\a")
+	case "rest":
+		fmt.Fprint(os.Stdout, "\a\a")
+	case "done":
+		fmt.Fprint(os.Stdout, "\a\a\a")
+	}
+}
+
+// NewNotifier returns a Notifier wired to the terminal bell.
+func NewNotifier() *Notifier {
+	return &Notifier{beep: terminalBell}
+}
+
+// WorkStart cues the beginning of a work phase.
+func (n *Notifier) WorkStart() { n.beep("work") }
+
+// RestStart cues the beginning of a rest phase.
+func (n *Notifier) RestStart() { n.beep("rest") }
+
+// Finish cues the completion of the whole session.
+func (n *Notifier) Finish() { n.beep("done") }
+
 // Controller runs at most one pomodoro session at a time.
 type Controller struct {
-	mu      sync.Mutex
-	blocker Blocker
-	state   State
-	stop    chan struct{}
-	done    chan struct{}
-	rec     SessionRecorder
-	strict  bool
+	mu       sync.Mutex
+	blocker  Blocker
+	state    State
+	stop     chan struct{}
+	done     chan struct{}
+	rec      SessionRecorder
+	notifier *Notifier
+	strict   bool
+	watchCh  chan CompletionSummary
+	lastSum  CompletionSummary
 }
 
 // New returns a Controller that blocks via the given Blocker.
 func New(blocker Blocker) *Controller {
 	return &Controller{blocker: blocker}
+}
+
+// SetNotifier registers transition cues (beeps). Nil disables them.
+func (c *Controller) SetNotifier(n *Notifier) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.notifier = n
+}
+
+// WatchCompletion returns a channel that receives one CompletionSummary per
+// finished session. The daemon uses it to persist the resolved defaults and
+// log a post-session summary. The channel stays open while idle (never
+// closed), so the daemon can watch across many sessions. Safe to call once at
+// startup, before any session starts.
+func (c *Controller) WatchCompletion() <-chan CompletionSummary {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.watchCh == nil {
+		c.watchCh = make(chan CompletionSummary, 4)
+	}
+	return c.watchCh
 }
 
 // SetRecorder registers an analytics recorder that receives exactly one
@@ -145,8 +224,13 @@ func (c *Controller) Start(s Session) (State, error) {
 // session B cannot have its channel closed by session A's finalizer.
 func (c *Controller) run(s Session, startedAt time.Time, stop, done chan struct{}) {
 	var focus time.Duration
+	n := c.notifier
+	if n == nil {
+		n = &Notifier{beep: func(string) {}} // no-op
+	}
 	for cycle := 1; cycle <= s.Cycles; cycle++ {
 		c.setPhase(PhaseWork, cycle, s, s.Work)
+		n.WorkStart()
 		_, _ = c.blocker.BlockDomains(s.Domains, s.Work)
 		focus += s.Work
 		if !wait(stop, s.Work) {
@@ -154,19 +238,48 @@ func (c *Controller) run(s Session, startedAt time.Time, stop, done chan struct{
 		}
 		if s.Rest > 0 && cycle < s.Cycles {
 			c.setPhase(PhaseRest, cycle, s, s.Rest)
+			n.RestStart()
 			if !wait(stop, s.Rest) {
 				break
 			}
 		}
 	}
 
+	n.Finish()
+
+	stopped := false
+	select {
+	case <-stop:
+		stopped = true
+	default:
+	}
+
 	c.mu.Lock()
 	c.state = State{}
 	c.stop = nil
 	c.done = nil // simétrico a c.stop: o canal foi capturado localmente
+	watchCh := c.watchCh
+	c.lastSum = CompletionSummary{
+		Preset:  s.Preset,
+		Work:    s.Work,
+		Rest:    s.Rest,
+		Cycles:  s.Cycles,
+		Focus:   focus,
+		Strict:  s.Strict,
+		Stopped: stopped,
+	}
 	c.mu.Unlock()
 
 	c.record(s, startedAt, focus)
+
+	// Entrega o resumo de forma não-bloqueante: se ninguém está assistindo
+	// (watchCh nil ou cheio), a sessão simplesmente não gera resumo.
+	if watchCh != nil {
+		select {
+		case watchCh <- c.lastSum:
+		default:
+		}
+	}
 	close(done)
 }
 
@@ -182,6 +295,7 @@ func (c *Controller) record(s Session, startedAt time.Time, focus time.Duration)
 		Start:   startedAt,
 		End:     time.Now(),
 		Preset:  s.Preset,
+		Label:   s.Label,
 		Domains: append([]string(nil), s.Domains...),
 		WorkMin: int(s.Work / time.Minute),
 		RestMin: int(s.Rest / time.Minute),

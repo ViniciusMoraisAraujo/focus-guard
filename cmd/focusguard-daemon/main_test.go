@@ -13,10 +13,12 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/apps"
 	"focusguard/internal/enforcer"
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
 	"focusguard/internal/policy"
+	"focusguard/internal/pomodoro"
 	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/statewatch"
@@ -1200,12 +1202,72 @@ func newRealWatcherChain(t *testing.T) (*store.Store, *scheduler.Scheduler, *fak
 }
 
 // ---------------------------------------------------------------------------
+// Pomodoro prefs & completion watcher
+// ---------------------------------------------------------------------------
+
+// stubBlockerForDaemon records BlockDomains calls without touching the OS.
+type stubBlockerForDaemon struct{ calls int }
+
+func (s *stubBlockerForDaemon) BlockDomains([]string, time.Duration) ([]policy.Block, error) {
+	s.calls++
+	return nil, nil
+}
+
+// TestPersistPomodoroSummary_PersistsMinutes verifies the daemon persists the
+// resolved work/rest/cycles of a finished session as the next defaults — in
+// MINUTES (the IPC/CLI unit), so a 25m session saves 25, not 0.
+func TestPersistPomodoroSummary_PersistsMinutes(t *testing.T) {
+	prefsPath := filepath.Join(t.TempDir(), "pomodoro.json")
+	prefs := pomodoro.NewPrefs(prefsPath)
+
+	persistPomodoroSummary(prefs, pomodoro.CompletionSummary{
+		Preset: "social",
+		Work:   25 * time.Minute,
+		Rest:   5 * time.Minute,
+		Cycles: 4,
+		Focus:  50 * time.Minute,
+	})
+
+	w, r, cy := prefs.Resolve(0, -1, 0)
+	if w != 25 || r != 5 || cy != 4 {
+		t.Errorf("persisted defaults = %d/%d/%d, want 25/5/4", w, r, cy)
+	}
+	// Reabrindo o arquivo (persistência real): os padrões sobrevivem ao restart.
+	prefs2 := pomodoro.NewPrefs(prefsPath)
+	if w2, r2, c2 := prefs2.Resolve(0, -1, 0); w2 != 25 || r2 != 5 || c2 != 4 {
+		t.Errorf("reloaded defaults = %d/%d/%d, want 25/5/4", w2, r2, c2)
+	}
+}
+
+// TestPersistPomodoroSummary_SubMinuteDurations verifies work/rest sub-minute
+// round UP to 1 minute (the minimum IPC unit) so Resolve never falls back to
+// the default because of a 0.
+func TestPersistPomodoroSummary_SubMinuteDurations(t *testing.T) {
+	prefs := pomodoro.NewPrefs(filepath.Join(t.TempDir(), "pomodoro.json"))
+	persistPomodoroSummary(prefs, pomodoro.CompletionSummary{
+		Preset: "social", Work: 30 * time.Millisecond, Rest: 10 * time.Millisecond, Cycles: 2, Focus: 60 * time.Millisecond,
+	})
+	w, r, cy := prefs.Resolve(0, -1, 0)
+	if w != 1 || r != 1 || cy != 2 {
+		t.Errorf("sub-minute defaults = %d/%d/%d, want 1/1/2", w, r, cy)
+	}
+}
+
+// TestWatchPomodoroCompletions_NilController is a no-op (daemon with a nil
+// controller must not panic).
+func TestWatchPomodoroCompletions_NilController(t *testing.T) {
+	stop := watchPomodoroCompletions(nil, nil)
+	stop() // não deve panico
+}
+
+// ---------------------------------------------------------------------------
 // Process Guard wiring
 // ---------------------------------------------------------------------------
 
 type fakeProcessGuard struct {
-	onStart func(func() bool)
-	stopped bool
+	onStart  func(func() bool)
+	stopped  bool
+	denylist []string
 }
 
 func (f *fakeProcessGuard) Start(isActive func() bool) {
@@ -1215,6 +1277,10 @@ func (f *fakeProcessGuard) Start(isActive func() bool) {
 }
 
 func (f *fakeProcessGuard) Stop() { f.stopped = true }
+
+func (f *fakeProcessGuard) SetDenylist(names []string) {
+	f.denylist = append([]string(nil), names...)
+}
 
 type fakeActivityScheduler struct{ active bool }
 
@@ -1233,7 +1299,7 @@ func TestStartProcessGuard_WiresSchedulerChecker(t *testing.T) {
 	}
 
 	sched := &fakeActivityScheduler{active: true}
-	pg := startProcessGuard(sched)
+	pg := startProcessGuard(sched, []string{"steam.exe", "discord.exe"})
 	if pg == nil {
 		t.Fatal("startProcessGuard should return a guard")
 	}
@@ -1255,9 +1321,73 @@ func TestStartProcessGuard_NilGuardIsNoOp(t *testing.T) {
 	defer func() { newProcessGuard = origNew }()
 
 	newProcessGuard = func(denylist []string) processGuardStarter { return nil }
-	if pg := startProcessGuard(&fakeActivityScheduler{}); pg != nil {
+	if pg := startProcessGuard(&fakeActivityScheduler{}, nil); pg != nil {
 		t.Error("expected nil guard when the constructor returns nil")
 	}
+}
+
+// TestStartProcessGuard_ReceivesStoreDenylist verifies the guard is created
+// with the persisted apps store denylist (not a hardcoded default anymore).
+func TestStartProcessGuard_ReceivesStoreDenylist(t *testing.T) {
+	origNew := newProcessGuard
+	defer func() { newProcessGuard = origNew }()
+
+	var got []string
+	newProcessGuard = func(denylist []string) processGuardStarter {
+		got = denylist
+		return &fakeProcessGuard{}
+	}
+
+	pg := startProcessGuard(&fakeActivityScheduler{}, []string{"spotify", "steam"})
+	if pg == nil {
+		t.Fatal("expected a guard")
+	}
+	if len(got) != 2 || got[0] != "spotify" {
+		t.Errorf("guard should receive the store denylist, got %v", got)
+	}
+}
+
+// TestGuardApps_AddRefreshesGuard verifies the apps manager that wires store +
+// process guard refreshes the live guard denylist after every change, so a
+// user running "focusguard apps add spotify" takes effect on the next scan.
+func TestGuardApps_AddRefreshesGuard(t *testing.T) {
+	st := apps.NewStore(filepath.Join(t.TempDir(), "apps.json"))
+	pg := &fakeProcessGuard{}
+	ga := &guardApps{store: st, guard: pg}
+
+	if err := ga.Add("spotify.exe"); err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	if !slicesContains(pg.denylist, "spotify") {
+		t.Errorf("guard denylist should contain spotify after Add, got %v", pg.denylist)
+	}
+	if len(st.List()) != 3 {
+		t.Errorf("store should persist 3 entries (defaults+spotify), got %v", st.List())
+	}
+}
+
+func TestGuardApps_RemoveRefreshesGuard(t *testing.T) {
+	st := apps.NewStore(filepath.Join(t.TempDir(), "apps.json"))
+	pg := &fakeProcessGuard{}
+	ga := &guardApps{store: st, guard: pg}
+
+	if err := ga.Remove("steam"); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	for _, x := range pg.denylist {
+		if x == "steam" {
+			t.Errorf("guard denylist should drop steam after Remove, got %v", pg.denylist)
+		}
+	}
+}
+
+func slicesContains(list []string, want string) bool {
+	for _, x := range list {
+		if x == want {
+			return true
+		}
+	}
+	return false
 }
 
 // ---------------------------------------------------------------------------
@@ -1345,6 +1475,19 @@ func TestStartScheduleWorker_NoActiveRuleNoCalls(t *testing.T) {
 	if calls := b.blockCalls(); len(calls) != 0 {
 		t.Errorf("sem regras ativas não deve bloquear nada, got %v", calls)
 	}
+}
+
+// waitForCondition polls cond until it returns true or the timeout elapses.
+func waitForCondition(t *testing.T, timeout time.Duration, cond func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if cond() {
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("condition not met within %v", timeout)
 }
 
 // waitForFileContains polls path until its content contains want or times out.

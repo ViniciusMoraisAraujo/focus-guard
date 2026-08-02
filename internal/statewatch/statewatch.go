@@ -10,6 +10,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"focusguard/internal/fsutil"
+	"focusguard/internal/tamper"
 )
 
 const (
@@ -36,6 +37,32 @@ type StateWatcher struct {
 	lastSelfHash     fsutil.Hash
 	reconcileRunning bool
 	reconcilePending bool
+	tamperLogger     TamperLogger
+}
+
+// TamperLogger receives an entry whenever an external modification to the
+// state file is detected and reconciled away. The daemon wires the tamper
+// recorder; nil disables logging.
+type TamperLogger interface {
+	Log(event tamper.Event)
+}
+
+// SetTamperLogger wires an optional logger for detected tampering attempts
+// (external edits to the state.json).
+func (w *StateWatcher) SetTamperLogger(l TamperLogger) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.tamperLogger = l
+}
+
+// logTamper records a tamper event with the given action and detail.
+func (w *StateWatcher) logTamper(action, detail string) {
+	w.mu.Lock()
+	l := w.tamperLogger
+	w.mu.Unlock()
+	if l != nil {
+		l.Log(tamper.Event{At: time.Now(), Source: "state", Action: action, Detail: detail})
+	}
 }
 
 // MarkSelfWrite records the SHA-256 of the state file content as written by
@@ -184,6 +211,9 @@ func (w *StateWatcher) detectAndReconcile() {
 
 	go func() {
 		defer w.reconcileDone()
+		// Todo evento que chega aqui é uma alteração externa (self-writes são
+		// filtrados antes por hash) — registra no tamper-log para accountability.
+		w.logTamper("reconcile", w.StatePath)
 		log.Printf("[StateWatcher] Alteração detectada em %s — executando reconciliação...", w.StatePath)
 		if err := w.reconciler.Reconcile(); err != nil {
 			log.Printf("[StateWatcher] Erro na reconciliação após alteração em %s: %v", w.StatePath, err)

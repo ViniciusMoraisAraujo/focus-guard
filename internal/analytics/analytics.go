@@ -10,6 +10,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"sort"
 	"strings"
@@ -18,11 +19,13 @@ import (
 )
 
 // Session is one completed focus session, recorded by the pomodoro controller
-// at the end (natural completion or stop).
+// at the end (natural completion or stop). Label is the optional session name
+// (a "mission", e.g. "Estudar ENEM") used by focusguard mission/report.
 type Session struct {
 	Start   time.Time     `json:"start"`
 	End     time.Time     `json:"end"`
 	Preset  string        `json:"preset"`
+	Label   string        `json:"label,omitempty"`
 	Domains []string      `json:"domains"`
 	WorkMin int           `json:"work_min"`
 	RestMin int           `json:"rest_min"`
@@ -43,6 +46,13 @@ type DayStat struct {
 type DomainStat struct {
 	Domain   string        `json:"domain"`
 	Duration time.Duration `json:"duration"`
+}
+
+// LabelStat aggregates focus for one named mission (sessions with a Label).
+type LabelStat struct {
+	Label    string        `json:"label"`
+	Duration time.Duration `json:"duration"`
+	Sessions int           `json:"sessions"`
 }
 
 // Stats is the aggregated report returned by the "stats" IPC action.
@@ -178,6 +188,49 @@ func Summarize(sessions []Session, days int, now time.Time) *Stats {
 	return st
 }
 
+// SummarizeByLabel aggregates only the sessions whose Label matches want,
+// producing a Stats report scoped to that mission (used by the "stats
+// --mission <nome>" filter).
+func SummarizeByLabel(sessions []Session, want string, days int, now time.Time) *Stats {
+	var scoped []Session
+	for _, s := range sessions {
+		if s.Label == want {
+			scoped = append(scoped, s)
+		}
+	}
+	return Summarize(scoped, days, now)
+}
+
+// SummarizeLabels aggregates the total focus and session count per named
+// mission (sessions with a Label), sorted by duration descending. Sessions
+// without a label are excluded.
+func SummarizeLabels(sessions []Session) []LabelStat {
+	totals := make(map[string]*LabelStat)
+	for _, s := range sessions {
+		if s.Label == "" {
+			continue
+		}
+		ls, ok := totals[s.Label]
+		if !ok {
+			ls = &LabelStat{Label: s.Label}
+			totals[s.Label] = ls
+		}
+		ls.Duration += s.Focus
+		ls.Sessions++
+	}
+	out := make([]LabelStat, 0, len(totals))
+	for _, ls := range totals {
+		out = append(out, *ls)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Duration != out[j].Duration {
+			return out[i].Duration > out[j].Duration
+		}
+		return out[i].Label < out[j].Label
+	})
+	return out
+}
+
 // ComputeStreak returns the number of consecutive days (ending today, or
 // yesterday if today has no focus yet — a fresh day must not kill the streak
 // before the user starts) with at least one recorded session.
@@ -217,6 +270,129 @@ func ExportJSON(st *Stats) (string, error) {
 		return "", err
 	}
 	return string(data), nil
+}
+
+// ExportHTML renders the report as a self-contained HTML page (inline CSS, no
+// external assets) suitable for saving to a file and opening in a browser:
+// summary cards, per-day bar chart and per-domain ranking. All dynamic text
+// is HTML-escaped.
+func ExportHTML(st *Stats) string {
+	var b strings.Builder
+	b.WriteString("<!DOCTYPE html>\n<html lang=\"pt-BR\">\n<head>\n<meta charset=\"utf-8\">\n")
+	b.WriteString("<title>FocusGuard — Estatísticas de foco</title>\n")
+	b.WriteString(`<style>
+    :root { color-scheme: light dark; }
+    body { font-family: system-ui, -apple-system, sans-serif; max-width: 760px; margin: 2rem auto; padding: 0 1rem; }
+    h1 { margin-bottom: .25rem; }
+    .sub { color: #888; margin-bottom: 1.5rem; }
+    .cards { display: flex; gap: 1rem; flex-wrap: wrap; margin-bottom: 2rem; }
+    .card { flex: 1; min-width: 140px; border: 1px solid #ddd; border-radius: 10px; padding: .75rem 1rem; }
+    .card .k { font-size: .8rem; color: #888; text-transform: uppercase; letter-spacing: .04em; }
+    .card .v { font-size: 1.4rem; font-weight: 700; margin-top: .2rem; }
+    h2 { font-size: 1.05rem; margin: 1.75rem 0 .75rem; }
+    .bar-row { display: flex; align-items: center; gap: .6rem; margin-bottom: .35rem; }
+    .bar-day { width: 90px; font-size: .8rem; color: #888; }
+    .bar-track { flex: 1; background: #eee; border-radius: 6px; height: 18px; overflow: hidden; }
+    .bar-fill { height: 100%; background: linear-gradient(90deg, #4a90d9, #2d5f9a); border-radius: 6px; }
+    .bar-val { width: 70px; text-align: right; font-size: .8rem; }
+    table { width: 100%; border-collapse: collapse; }
+    td, th { text-align: left; padding: .35rem .5rem; border-bottom: 1px solid #eee; }
+    @media (prefers-color-scheme: dark) {
+      .card { border-color: #333; }
+      .bar-track { background: #222; }
+      td, th { border-bottom-color: #222; }
+    }
+  </style></head><body>
+`)
+
+	fmt.Fprintf(&b, "<h1>🛡 FocusGuard — Estatísticas de foco</h1>\n")
+	fmt.Fprintf(&b, "<div class=\"sub\">Gerado em %s</div>\n", time.Now().Format("02/01/2006 15:04"))
+
+	b.WriteString("<div class=\"cards\">\n")
+	fmt.Fprintf(&b, "<div class=\"card\"><div class=\"k\">Sessões</div><div class=\"v\">%d</div></div>\n", st.TotalSessions)
+	fmt.Fprintf(&b, "<div class=\"card\"><div class=\"k\">Tempo total</div><div class=\"v\">%s</div></div>\n", st.TotalFocus.Round(time.Minute))
+	fmt.Fprintf(&b, "<div class=\"card\"><div class=\"k\">Raia de foco</div><div class=\"v\">%d dia(s)</div></div>\n", st.Streak)
+	b.WriteString("</div>\n")
+
+	// Barras por dia (largura proporcional ao dia com mais foco).
+	b.WriteString("<h2>Foco por dia</h2>\n")
+	max := time.Duration(0)
+	for _, d := range st.PerDay {
+		if d.Duration > max {
+			max = d.Duration
+		}
+	}
+	for _, d := range st.PerDay {
+		pct := 0.0
+		if max > 0 && d.Duration > 0 {
+			pct = float64(d.Duration) / float64(max) * 100
+		}
+		b.WriteString("<div class=\"bar-row\">")
+		fmt.Fprintf(&b, "<div class=\"bar-day\">%s</div>", d.Day)
+		fmt.Fprintf(&b, "<div class=\"bar-track\"><div class=\"bar-fill\" style=\"width:%.1f%%\"></div></div>", pct)
+		if d.Duration > 0 {
+			fmt.Fprintf(&b, "<div class=\"bar-val\">%s</div>", d.Duration.Round(time.Minute))
+		} else {
+			b.WriteString("<div class=\"bar-val\">—</div>")
+		}
+		b.WriteString("</div>\n")
+	}
+
+	// Ranking de domínios.
+	if len(st.PerDomain) > 0 {
+		b.WriteString("<h2>Domínios mais bloqueados</h2>\n<table><thead><tr><th>Domínio</th><th>Foco</th></tr></thead><tbody>\n")
+		for _, d := range st.PerDomain {
+			fmt.Fprintf(&b, "<tr><td>%s</td><td>%s</td></tr>\n", html.EscapeString(d.Domain), d.Duration.Round(time.Minute))
+		}
+		b.WriteString("</tbody></table>\n")
+	}
+
+	b.WriteString("</body></html>\n")
+	return b.String()
+}
+
+// RenderWeeklySummary renders a compact plain-text weekly digest from the
+// Stats report: totals, per-active-day average, active days, streak and the
+// top blocked domains.
+func RenderWeeklySummary(st *Stats) string {
+	var b strings.Builder
+	b.WriteString("📊 Resumo semanal de foco\n")
+	b.WriteString("───────────────────────\n")
+	if st.TotalSessions == 0 {
+		b.WriteString("Nenhuma sessão registrada na última semana — faça uma sessão de foco primeiro.\n")
+		return b.String()
+	}
+
+	activeDays := 0
+	for _, d := range st.PerDay {
+		if d.Duration > 0 {
+			activeDays++
+		}
+	}
+	avg := time.Duration(0)
+	if activeDays > 0 {
+		avg = st.TotalFocus / time.Duration(activeDays)
+	}
+
+	fmt.Fprintf(&b, "Total de foco: %s (%d sessões)\n", st.TotalFocus.Round(time.Minute), st.TotalSessions)
+	fmt.Fprintf(&b, "Dias com foco: %d de %d\n", activeDays, len(st.PerDay))
+	if activeDays > 0 {
+		fmt.Fprintf(&b, "Média por dia ativo: %s\n", avg.Round(time.Minute))
+	}
+	if st.Streak > 0 {
+		fmt.Fprintf(&b, "🔥 Raia de foco: %d dia(s) consecutivo(s)\n", st.Streak)
+	}
+	if len(st.PerDomain) > 0 {
+		b.WriteString("\nTop domínios bloqueados:\n")
+		n := len(st.PerDomain)
+		if n > 5 {
+			n = 5
+		}
+		for _, d := range st.PerDomain[:n] {
+			fmt.Fprintf(&b, "  %s  %s\n", d.Domain, d.Duration.Round(time.Minute))
+		}
+	}
+	return b.String()
 }
 
 // RenderStats renders the report as an ASCII bar chart. The day with the most

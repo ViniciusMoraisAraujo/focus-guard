@@ -179,6 +179,125 @@ func TestManager_ListReturnsCopies(t *testing.T) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Múltiplas janelas por regra (--windows)
+// ---------------------------------------------------------------------------
+
+func TestManager_ActiveRules_MultipleWindows(t *testing.T) {
+	m := NewManager("")
+	_, _ = m.Add(Rule{
+		Preset:  "social",
+		Days:    []int{1},
+		Windows: []string{"08:00-12:00", "14:00-18:00"},
+		Enabled: true,
+	})
+
+	cases := []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{"seg 10h ativa (1ª janela)", time.Date(2026, 8, 3, 10, 0, 0, 0, time.UTC), true},
+		{"seg 13h inativa (entre janelas)", time.Date(2026, 8, 3, 13, 0, 0, 0, time.UTC), false},
+		{"seg 15h ativa (2ª janela)", time.Date(2026, 8, 3, 15, 0, 0, 0, time.UTC), true},
+		{"seg 12:00 inativa (exclusive)", time.Date(2026, 8, 3, 12, 0, 0, 0, time.UTC), false},
+		{"seg 18:00 inativa (exclusive)", time.Date(2026, 8, 3, 18, 0, 0, 0, time.UTC), false},
+		{"ter 10h inativa (dia fora)", time.Date(2026, 8, 4, 10, 0, 0, 0, time.UTC), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := len(m.ActiveRules(tc.now)) == 1
+			if got != tc.want {
+				t.Errorf("ActiveRules(%v) = %v, want %v", tc.now, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManager_ActiveRules_WindowsOvernight(t *testing.T) {
+	m := NewManager("")
+	// janela overnight dentro das Windows
+	_, _ = m.Add(Rule{Preset: "games", Days: []int{1}, Windows: []string{"22:00-06:00"}, Enabled: true})
+
+	cases := []struct {
+		name string
+		now  time.Time
+		want bool
+	}{
+		{"seg 23h ativa", time.Date(2026, 8, 3, 23, 0, 0, 0, time.UTC), true},
+		{"ter 01h ativa (virada)", time.Date(2026, 8, 4, 1, 0, 0, 0, time.UTC), true},
+		{"ter 06:00 inativa (exclusive)", time.Date(2026, 8, 4, 6, 0, 0, 0, time.UTC), false},
+		{"qua 01h inativa (dia errado)", time.Date(2026, 8, 5, 1, 0, 0, 0, time.UTC), false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := len(m.ActiveRules(tc.now)) == 1
+			if got != tc.want {
+				t.Errorf("ActiveRules(%v) = %v, want %v", tc.now, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestManager_Add_WindowsValidation(t *testing.T) {
+	m := NewManager("")
+	cases := []struct {
+		name    string
+		windows []string
+	}{
+		{"janela malformada", []string{"oito"}},
+		{"janela sem fim", []string{"08:00"}},
+		{"hora inválida", []string{"25:00-12:00"}},
+		{"minuto inválido", []string{"08:60-12:00"}},
+		{"start igual ao end", []string{"08:00-08:00"}},
+		{"uma boa e uma ruim", []string{"08:00-12:00", "oito"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := m.Add(Rule{Preset: "social", Days: []int{1}, Windows: tc.windows, Enabled: true})
+			if err == nil {
+				t.Errorf("esperava erro de validação para %q", tc.name)
+			}
+		})
+	}
+}
+
+func TestManager_Add_WindowsPersist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "schedules.json")
+	m := NewManager(path)
+	r, err := m.Add(Rule{Preset: "social", Days: []int{1}, Windows: []string{"08:00-12:00", "14:00-18:00"}, Enabled: true})
+	if err != nil {
+		t.Fatalf("Add: %v", err)
+	}
+	m2 := NewManager(path)
+	list := m2.List()
+	if len(list) != 1 {
+		t.Fatalf("persistência: got %d regras", len(list))
+	}
+	if len(list[0].Windows) != 2 || list[0].Windows[0] != r.Windows[0] {
+		t.Errorf("Windows não persistidas: %+v", list[0].Windows)
+	}
+}
+
+func TestApplyActiveRules_MultipleWindows_DurationToWindowEnd(t *testing.T) {
+	m := NewManager("")
+	_, _ = m.Add(Rule{Preset: "social", Days: []int{1}, Windows: []string{"08:00-12:00", "14:00-18:00"}, Enabled: true})
+	now := time.Date(2026, 8, 3, 15, 30, 0, 0, time.UTC) // seg 15:30 (2ª janela)
+
+	b := &fakeBlocker{}
+	n, err := ApplyActiveRules(m, fakeResolver{map[string][]string{"social": {"twitter.com"}}}, b, now)
+	if err != nil {
+		t.Fatalf("ApplyActiveRules: %v", err)
+	}
+	if n != 1 || len(b.calls) != 1 {
+		t.Fatalf("esperava 1 aplicação, got n=%d calls=%d", n, len(b.calls))
+	}
+	// 15:30 → 18:00 = 2h30m
+	if b.calls[0].duration != 2*time.Hour+30*time.Minute {
+		t.Errorf("duration = %v, want 2h30m (até o fim da janela atual)", b.calls[0].duration)
+	}
+}
+
 // --- worker (ApplyActiveRules) ---
 
 type fakeBlocker struct {

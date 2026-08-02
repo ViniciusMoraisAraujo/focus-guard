@@ -23,13 +23,17 @@ import (
 // Start/End are "HH:MM" 24h. End <= Start means the window crosses midnight
 // (e.g. 22:00 → 02:00). Enabled rules are evaluated by ActiveRules.
 type Rule struct {
-	ID      string `json:"id"`
-	Label   string `json:"label,omitempty"`
-	Preset  string `json:"preset"`
-	Days    []int  `json:"days"`
-	Start   string `json:"start"`
-	End     string `json:"end"`
-	Enabled bool   `json:"enabled"`
+	ID     string `json:"id"`
+	Label  string `json:"label,omitempty"`
+	Preset string `json:"preset"`
+	Days   []int  `json:"days"`
+	Start  string `json:"start"`
+	End    string `json:"end"`
+	// Windows lists optional "HH:MM-HH:MM" time windows (multiple per rule,
+	// e.g. "08:00-12:00,14:00-18:00"). When empty the rule falls back to the
+	// legacy single Start/End window.
+	Windows []string `json:"windows,omitempty"`
+	Enabled bool     `json:"enabled"`
 }
 
 // Manager owns the rule catalog with file persistence.
@@ -109,27 +113,8 @@ func (m *Manager) Add(r Rule) (Rule, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
-	if strings.TrimSpace(r.Preset) == "" {
-		return Rule{}, fmt.Errorf("schedule: informe um preset")
-	}
-	if len(r.Days) == 0 {
-		return Rule{}, fmt.Errorf("schedule: informe ao menos um dia da semana")
-	}
-	for _, d := range r.Days {
-		if d < 0 || d > 6 {
-			return Rule{}, fmt.Errorf("schedule: dia inválido %d (use 0-6, 0=domingo)", d)
-		}
-	}
-	start, err := parseClock(r.Start)
-	if err != nil {
-		return Rule{}, fmt.Errorf("schedule: start inválido %q", r.Start)
-	}
-	end, err := parseClock(r.End)
-	if err != nil {
-		return Rule{}, fmt.Errorf("schedule: end inválido %q", r.End)
-	}
-	if start == end {
-		return Rule{}, fmt.Errorf("schedule: end deve ser diferente do start")
+	if err := validateRule(r); err != nil {
+		return Rule{}, err
 	}
 
 	r.ID = newID()
@@ -139,6 +124,41 @@ func (m *Manager) Add(r Rule) (Rule, error) {
 		return Rule{}, err
 	}
 	return cloneRule(r), nil
+}
+
+// validateRule checks the fields every persisted rule must satisfy: a preset,
+// at least one weekday and a valid time window (start != end; an always-on
+// window would re-block forever). Shared by Add and ImportICS.
+func validateRule(r Rule) error {
+	if strings.TrimSpace(r.Preset) == "" {
+		return fmt.Errorf("schedule: informe um preset")
+	}
+	if len(r.Days) == 0 {
+		return fmt.Errorf("schedule: informe ao menos um dia da semana")
+	}
+	for _, d := range r.Days {
+		if d < 0 || d > 6 {
+			return fmt.Errorf("schedule: dia inválido %d (use 0-6, 0=domingo)", d)
+		}
+	}
+	if len(r.Windows) > 0 {
+		if _, err := windowsPairs(r); err != nil {
+			return err
+		}
+	} else {
+		start, err := parseClock(r.Start)
+		if err != nil {
+			return fmt.Errorf("schedule: start inválido %q", r.Start)
+		}
+		end, err := parseClock(r.End)
+		if err != nil {
+			return fmt.Errorf("schedule: end inválido %q", r.End)
+		}
+		if start == end {
+			return fmt.Errorf("schedule: end deve ser diferente do start")
+		}
+	}
+	return nil
 }
 
 // Remove deletes the rule with the given ID.
@@ -170,26 +190,69 @@ func (m *Manager) ActiveRules(now time.Time) []Rule {
 	return out
 }
 
-// ruleActive reports whether the rule window is active at now.
+// windowsPairs returns the rule's time windows as (start, end) minutes-since-
+// midnight pairs. When Windows is empty it falls back to the legacy Start/End
+// window (backward compatibility with schedules created before --windows).
+func windowsPairs(r Rule) ([][2]int, error) {
+	if len(r.Windows) == 0 {
+		start, err1 := parseClock(r.Start)
+		end, err2 := parseClock(r.End)
+		if err1 != nil || err2 != nil || start == end {
+			return nil, fmt.Errorf("schedule: janela inválida %q-%q", r.Start, r.End)
+		}
+		return [][2]int{{start, end}}, nil
+	}
+	pairs := make([][2]int, 0, len(r.Windows))
+	for _, w := range r.Windows {
+		parts := strings.SplitN(strings.TrimSpace(w), "-", 2)
+		if len(parts) != 2 {
+			return nil, fmt.Errorf("schedule: janela inválida %q (use HH:MM-HH:MM)", w)
+		}
+		start, err := parseClock(parts[0])
+		if err != nil {
+			return nil, fmt.Errorf("schedule: janela inválida %q", w)
+		}
+		end, err := parseClock(parts[1])
+		if err != nil {
+			return nil, fmt.Errorf("schedule: janela inválida %q", w)
+		}
+		if start == end {
+			return nil, fmt.Errorf("schedule: end deve ser diferente do start na janela %q", w)
+		}
+		pairs = append(pairs, [2]int{start, end})
+	}
+	return pairs, nil
+}
+
+// ruleActive reports whether any of the rule's windows is active at now.
 func ruleActive(r Rule, now time.Time) bool {
 	if !r.Enabled {
 		return false
 	}
-	start, err1 := parseClock(r.Start)
-	end, err2 := parseClock(r.End)
-	if err1 != nil || err2 != nil || start == end {
+	pairs, err := windowsPairs(r)
+	if err != nil {
 		return false
 	}
-
 	cur := minutesOf(now)
+	for _, p := range pairs {
+		if windowActive(p[0], p[1], cur, r.Days, now) {
+			return true
+		}
+	}
+	return false
+}
+
+// windowActive reports whether now is inside the (start,end) window, honoring
+// the rule's days — including overnight windows (start > end).
+func windowActive(start, end, cur int, days []int, now time.Time) bool {
 	switch {
 	case start < end: // janela no mesmo dia
-		return hasDay(r.Days, int(now.Weekday())) && cur >= start && cur < end
+		return hasDay(days, int(now.Weekday())) && cur >= start && cur < end
 	case cur >= start: // virada de noite: daqui até a meia-noite (hoje é dia da regra)
-		return hasDay(r.Days, int(now.Weekday()))
+		return hasDay(days, int(now.Weekday()))
 	default: // virada de noite: 00:00 → end pertence ao dia seguinte
 		prev := now.AddDate(0, 0, -1)
-		return hasDay(r.Days, int(prev.Weekday())) && cur < end
+		return hasDay(days, int(prev.Weekday())) && cur < end
 	}
 }
 
@@ -204,6 +267,7 @@ func hasDay(days []int, d int) bool {
 
 func cloneRule(r Rule) Rule {
 	r.Days = append([]int(nil), r.Days...)
+	r.Windows = append([]string(nil), r.Windows...)
 	return r
 }
 
@@ -229,26 +293,36 @@ func minutesOf(t time.Time) int {
 }
 
 // remainingUntil returns how long the rule stays active from now (used to size
-// the fresh block). For overnight windows it spans until end on the next day.
+// the fresh block): the remaining time of the current window. For overnight
+// windows it spans until end on the next day. With multiple windows it returns
+// the longest remaining among the active ones (normally just one).
 func remainingUntil(r Rule, now time.Time) time.Duration {
-	start, err1 := parseClock(r.Start)
-	end, err2 := parseClock(r.End)
-	if err1 != nil || err2 != nil || start == end {
+	pairs, err := windowsPairs(r)
+	if err != nil {
 		return 0
 	}
 	cur := minutesOf(now)
-	var rem int
-	if start < end {
-		rem = end - cur
-	} else if cur >= start {
-		rem = (24*60 - cur) + end
-	} else {
-		rem = end - cur
+	best := 0
+	for _, p := range pairs {
+		if !windowActive(p[0], p[1], cur, r.Days, now) {
+			continue
+		}
+		var rem int
+		if p[0] < p[1] {
+			rem = p[1] - cur
+		} else if cur >= p[0] {
+			rem = (24*60 - cur) + p[1]
+		} else {
+			rem = p[1] - cur
+		}
+		if rem < 0 {
+			rem = 0
+		}
+		if rem > best {
+			best = rem
+		}
 	}
-	if rem < 0 {
-		rem = 0
-	}
-	return time.Duration(rem) * time.Minute
+	return time.Duration(best) * time.Minute
 }
 
 func newID() string {
