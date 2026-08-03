@@ -1067,10 +1067,9 @@ func TestRestartAfterUpdate_ExitsWhenIdle(t *testing.T) {
 	exited := make(chan int, 1)
 	osExit = func(code int) { exited <- code }
 
-	server := ipc.NewServer(nil)
 	sched := &fakeRestartScheduler{active: false}
 
-	go restartAfterUpdate(server, sched)
+	go restartAfterUpdate(sched, nil)
 
 	select {
 	case code := <-exited:
@@ -1082,140 +1081,40 @@ func TestRestartAfterUpdate_ExitsWhenIdle(t *testing.T) {
 	}
 }
 
-// TestRestartAfterUpdate_NoExitWithActiveBlocks verifies the daemon does NOT
-// exit after an update while blocks/session are active — restarting mid-block
-// would drop enforcement.
-func TestRestartAfterUpdate_NoExitWithActiveBlocks(t *testing.T) {
+// TestRestartAfterUpdate_ExitsEvenWithActiveBlocks verifies that applying a
+// version update restarts the daemon immediately even with blocks active: the
+// daemon stops the pomodoro session and exits so the supervisor brings up the
+// new version — the blocks stay in the state mirror and the boot restores them.
+func TestRestartAfterUpdate_ExitsEvenWithActiveBlocks(t *testing.T) {
 	origExit := osExit
 	defer func() { osExit = origExit }()
-	pendingRestart.Store(false)
-	defer pendingRestart.Store(false)
-	var exitCalled atomic.Int32
-	osExit = func(code int) { exitCalled.Add(1) }
-
-	server := ipc.NewServer(nil)
-	sched := &fakeRestartScheduler{active: true}
-
-	restartAfterUpdate(server, sched)
-	time.Sleep(100 * time.Millisecond)
-	if exitCalled.Load() != 0 {
-		t.Error("os.Exit não deveria ser chamado com bloqueios ativos")
-	}
-	if !pendingRestart.Load() {
-		t.Error("esperava pendingRestart=true quando o update acontece com bloqueios ativos")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Restart pendente (flag + watcher) — corrige o restart esquecido
-// ---------------------------------------------------------------------------
-
-// TestMaybeApplyPendingRestart_ExitsWhenIdle: a deferred restart is applied as
-// soon as the last block/session expires.
-func TestMaybeApplyPendingRestart_ExitsWhenIdle(t *testing.T) {
-	origExit := osExit
-	defer func() { osExit = origExit }()
-	pendingRestart.Store(true)
-	defer pendingRestart.Store(false)
 	exited := make(chan int, 1)
 	osExit = func(code int) { exited <- code }
 
-	server := ipc.NewServer(nil)
-	sched := &fakeRestartScheduler{active: false}
+	sched := &fakeRestartScheduler{active: true}
+	var sessionStopped atomic.Int32
+	// stopSession retorna erro de propósito (simula uma sessão estrita):
+	// o update nunca fica pendente — o erro só vira aviso no log e o restart
+	// acontece mesmo assim (contrato best-effort).
+	stopSession := func() (pomodoro.State, error) {
+		sessionStopped.Add(1)
+		return pomodoro.State{}, errors.New("sessão estrita")
+	}
 
-	maybeApplyPendingRestart(server, sched)
+	go restartAfterUpdate(sched, stopSession)
 
 	select {
 	case code := <-exited:
 		if code != 1 {
-			t.Errorf("expected exit code 1, got %d", code)
+			t.Errorf("expected exit code 1 (falha p/ SCM recovery), got %d", code)
 		}
 	case <-time.After(3 * time.Second):
-		t.Fatal("os.Exit não foi chamado com restart pendente e sem bloqueios")
+		t.Fatal("os.Exit não foi chamado — update com bloqueios ativos deve reiniciar na hora")
 	}
-}
 
-// TestMaybeApplyPendingRestart_NoExitWhileStillActive: blocks still running
-// keep the restart deferred — the flag survives for the next check.
-func TestMaybeApplyPendingRestart_NoExitWhileStillActive(t *testing.T) {
-	origExit := osExit
-	defer func() { osExit = origExit }()
-	pendingRestart.Store(true)
-	defer pendingRestart.Store(false)
-	var exitCalled atomic.Int32
-	osExit = func(code int) { exitCalled.Add(1) }
-
-	server := ipc.NewServer(nil)
-	sched := &fakeRestartScheduler{active: true}
-
-	maybeApplyPendingRestart(server, sched)
-	time.Sleep(100 * time.Millisecond)
-	if exitCalled.Load() != 0 {
-		t.Error("os.Exit não deveria ser chamado enquanto houver bloqueios ativos")
+	if sessionStopped.Load() != 1 {
+		t.Error("esperava a sessão pomodoro a ser encerrada antes do restart")
 	}
-	if !pendingRestart.Load() {
-		t.Error("flag deveria permanecer setada enquanto o bloqueio estiver ativo")
-	}
-}
-
-// TestMaybeApplyPendingRestart_NoFlagNoExit: with nothing pending the checker
-// must be a no-op.
-func TestMaybeApplyPendingRestart_NoFlagNoExit(t *testing.T) {
-	origExit := osExit
-	defer func() { osExit = origExit }()
-	pendingRestart.Store(false)
-	defer pendingRestart.Store(false)
-	var exitCalled atomic.Int32
-	osExit = func(code int) { exitCalled.Add(1) }
-
-	server := ipc.NewServer(nil)
-	sched := &fakeRestartScheduler{active: false}
-
-	maybeApplyPendingRestart(server, sched)
-	time.Sleep(100 * time.Millisecond)
-	if exitCalled.Load() != 0 {
-		t.Error("os.Exit não deveria ser chamado sem restart pendente")
-	}
-}
-
-// TestStartPendingRestartWatcher_AppliesPending verifies the periodic watcher
-// fires the deferred restart once the flag is set and blocks expire.
-func TestStartPendingRestartWatcher_AppliesPending(t *testing.T) {
-	origExit := osExit
-	defer func() { osExit = origExit }()
-	pendingRestart.Store(true)
-	defer pendingRestart.Store(false)
-	exited := make(chan int, 1)
-	osExit = func(code int) { exited <- code }
-
-	server := ipc.NewServer(nil)
-	sched := &fakeRestartScheduler{active: false}
-
-	stop := startPendingRestartWatcher(server, sched, 10*time.Millisecond)
-	defer stop()
-
-	select {
-	case code := <-exited:
-		if code != 1 {
-			t.Errorf("expected exit code 1, got %d", code)
-		}
-	case <-time.After(3 * time.Second):
-		t.Fatal("watcher não aplicou o restart pendente")
-	}
-}
-
-// TestStartPendingRestartWatcher_Stops verifies the stop func terminates the
-// goroutine (and that calling it twice is safe).
-func TestStartPendingRestartWatcher_Stops(t *testing.T) {
-	pendingRestart.Store(true)
-	defer pendingRestart.Store(false)
-
-	server := ipc.NewServer(nil)
-	sched := &fakeRestartScheduler{active: true}
-
-	stop := startPendingRestartWatcher(server, sched, time.Millisecond)
-	stop()
-	stop()
 }
 
 func TestStartPeriodicUpdateCheck_Stops(t *testing.T) {
