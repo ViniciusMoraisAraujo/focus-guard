@@ -6,6 +6,7 @@
 
 ## Funcionalidades
 
+- 🌐 **Interface Web** — painel amigável no navegador (`focusguard web`), React + TypeScript, servido localmente pelo `focusguard-web` em `http://127.0.0.1:48902`
 - 🖥️ **Interface TUI interativa** — Modo gráfico no terminal com Bubble Tea
 - ⌨️ **CLI completa** — Bloqueio rápido via linha de comando
 - 🚫 **Bloqueio de domínios** — Impede o acesso a sites distractivos por tempo determinado
@@ -202,6 +203,18 @@ focusguard
 ```
 
 Navegue pelos bloqueios ativos, adicione novos bloqueios e acompanhe o tempo restante — tudo em uma interface visual no terminal.
+
+### Interface Web (navegador)
+
+```
+focusguard web
+```
+
+Abre o painel web no navegador padrão. Se o `focusguard-web` não estiver
+rodando, o CLI o inicia em segundo plano (a interface fica em
+`http://127.0.0.1:48902`, acessível só via localhost). O painel mostra status,
+countdown dos bloqueios, meta do dia, ações de bloqueio, modo pânico e
+configurações — tudo conversando com o daemon via proxy local (sem privilégios).
 
 **Atalhos:**
 - `b` — Bloquear novo domínio
@@ -483,6 +496,7 @@ Interface interativa construída com [Bubble Tea](https://github.com/charmbracel
 | `focusguard stats [--export csv\|json\|html] [--mission <nome>]` | Relatório de foco em ASCII, com exportação e filtro por missão |
 | `focusguard report` | Resumo semanal de foco |
 | `focusguard status` | Lista bloqueios ativos |
+| `focusguard web` | Abre a interface web no navegador |
 | `focusguard install` | Instala daemon como serviço de inicialização |
 | `focusguard uninstall` | Remove daemon da inicialização |
 | `focusguard interactive` | Abre modo interativo (TUI) |
@@ -495,6 +509,26 @@ Serviço em background que:
 - Expõe servidor IPC para comunicação com a CLI
 - Mantém timers de expiração e refresh periódico de IPs
 - Executa como **serviço Windows** (sem console) ou **processo Linux** com systemd
+
+### Interface Web (`cmd/focusguard-web/` + `focusguard-ui/`)
+
+Painel no navegador (React + TypeScript + Vite) servido por um binário
+**user-space** (`focusguard-web`) que faz **proxy das ações IPC para o daemon**
+— o daemon não ganha superfície HTTP e não muda nada.
+
+- **`focusguard web`** — inicia o servidor por demanda (singleton via probe de
+  porta) e abre o navegador em `http://127.0.0.1:48902`.
+- **Segurança** — bind loopback, validação de `Host` (anti-DNS-rebinding),
+  `Content-Type: application/json` obrigatório (anti-CSRF), headers
+  CSP/nosniff/X-Frame e limite de corpo.
+- **Build** — `make ui` compila o frontend e o embute no binário
+  (`go:embed`); em dev, `cd focusguard-ui && npm run dev` (Vite com proxy `/api`).
+- **Telas (MVP)** — Dashboard (status + countdown + meta do dia), Bloquear
+  (presets/domínio + duração), Modo pânico (allowlist + confirmação) e
+  Configurações (meta, atualizações, proteção).
+
+> O plano completo e o roadmap (real-time via WebSocket, telas de Pomodoro/
+> Agenda/Stats) estão em [`docs/ui-plan.md`](docs/ui-plan.md).
 
 ### System Tray (`cmd/focusguard-tray/`)
 
