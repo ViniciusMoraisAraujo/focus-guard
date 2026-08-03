@@ -73,7 +73,13 @@ O daemon roda como um **serviço Windows legítimo** (gerenciado pelo Service Co
 .\bin\focusguard.exe install
 ```
 
-Isso cria o serviço apontando para `C:\Program Files\FocusGuard\focusguard-daemon.exe` e inicia o daemon automaticamente.
+Isso copia os binários para `C:\Program Files\FocusGuard` (Sistema / Todos os
+Usuários), cria o serviço, inicia o daemon, adiciona o atalho **FocusGuard** na
+área de trabalho pública (visível para todos os usuários), registra o **tray**
+para iniciar com o Windows (HKCU Run) e instala o **watchdog** externo. O
+atalho usa o ícone embutido do sistema, extraído do executável
+(`ExtractAssociatedIcon`) para um `focusguard.ico` próprio no diretório de
+instalação.
 
 #### Via PowerShell script
 

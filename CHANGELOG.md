@@ -52,6 +52,27 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   converte os eventos semanais (RRULE FREQ=WEEKLY) de um calendário em regras
   de bloqueio recorrentes.
 
+### 🧭 TUI, ícones e instalação (integração local)
+
+- **Versão no cabeçalho da TUI** — o cabeçalho do modo interativo mostra a
+  versão atual do sistema (ex: `FocusGuard v0.6.0 - Modo Interativo`), e o
+  daemon a reporta mesmo antes da primeira verificação de atualização (que
+  depende do GitHub).
+- **Tray carrega o ícone embutido** — o `focusguard-tray` lê o
+  `focusguard.ico` dos recursos do próprio executável (`RT_GROUP_ICON` +
+  `RT_ICON`) em vez de renderizar em runtime; o fallback de renderização foi
+  removido (o tray também é gerado com `go-winres` no pipeline).
+- **Atalho com ícone extraído** — o atalho do Desktop extrai o ícone embutido
+  do executável (via `ExtractAssociatedIcon`, wrapper de `ExtractIconEx`) para
+  um `focusguard.ico` próprio no diretório de instalação, com fallback para o
+  ícone do exe.
+- **`install` registra tray e watchdog** — o `focusguard install` (e o
+  `install-daemon.ps1`) agora também registram o tray no HKCU Run e instalam o
+  serviço `FocusGuardWatchdog` quando os binários estão presentes; o
+  `uninstall` remove ambos.
+- **`verifyicon`** — script de verificação que confere se o ícone embutido
+  nos executáveis remonta byte a byte o `focusguard.ico`.
+
 ## [0.4.0] - 2026-08-02
 
 ### 🍅 Presets personalizados
