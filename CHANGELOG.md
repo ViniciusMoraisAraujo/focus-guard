@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-03
+
 ### 🌐 Interface web — todas as funcionalidades
 
 - **Todas as features no navegador** — novas telas: Pomodoro (ciclos, strict,
@@ -20,6 +22,11 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - **TUI interativa removida** — a interface web cobre tudo. `focusguard` sem
   argumentos agora abre a interface web no navegador; o pacote `internal/tui`
   e as dependências Bubble Tea saíram do projeto.
+
+### 🔧 Atualização atômica e confiável
+
+- **Update multi-binário atômico** — substituição dos executáveis com rollback
+  seguro em falha, restauração Windows-safe e reinício confiável após a aplicação.
 
 ## [0.7.0] - 2026-08-03
 
