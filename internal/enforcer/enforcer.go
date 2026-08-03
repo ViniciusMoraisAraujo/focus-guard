@@ -60,6 +60,11 @@ var DoHProviders = []DoHProvider{
 	{Name: "DoT_UDP", IPs: nil, Port: 853, IsDoT: true, Protocol: "udp"},
 }
 
+// dohProtocols is the transport coverage for port-443 DoH (DNS-over-HTTPS):
+// TCP carries the classic HTTP/2 DoH, UDP carries DoH over QUIC/HTTP/3 (RFC
+// 9250-style), which Firefox uses by default — blocking only TCP leaks.
+var dohProtocols = []string{"tcp", "udp"}
+
 type lookupFunc func(host string) ([]net.IP, error)
 type lookupFuncCtx func(ctx context.Context, host string) ([]net.IP, error)
 
@@ -221,8 +226,12 @@ const AllowMarker = "FOCUSGUARD_ALLOW"
 
 // buildBlockAllScript renders the iptables-restore payload for BlockAll: one
 // ACCEPT per allowlisted IP first (so exceptions are evaluated before the
-// catch-all) and then a single catch-all REJECT for the family mask. The
-// markers let UnblockAll sweep both kinds of rule by comment.
+// catch-all) and then a catch-all REJECT for the family mask. The catch-all is
+// split in two: a TCP rule rejecting with tcp-reset (fast RST for TCP) and a
+// protocol-agnostic rule rejecting everything else (UDP/QUIC included) with
+// icmp-port-unreachable. tcp-reset is only valid on rules that match TCP, so a
+// bare catch-all would be rejected by iptables. The markers let UnblockAll
+// sweep both kinds of rule by comment.
 func buildBlockAllScript(allowlistIPs []string, mask string) string {
 	var b strings.Builder
 	b.WriteString("*filter\n")
@@ -234,7 +243,10 @@ func buildBlockAllScript(allowlistIPs []string, mask string) string {
 		b.WriteString(AllowMarker)
 		b.WriteString("\"\n")
 	}
-	b.WriteString("-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \"")
+	b.WriteString("-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \"")
+	b.WriteString(AllBlockMarker)
+	b.WriteString("\"\n")
+	b.WriteString("-A OUTPUT -j REJECT --reject-with icmp-port-unreachable -m comment --comment \"")
 	b.WriteString(AllBlockMarker)
 	b.WriteString("\"\n")
 	b.WriteString("COMMIT\n")
@@ -242,8 +254,14 @@ func buildBlockAllScript(allowlistIPs []string, mask string) string {
 }
 
 // buildRestoreScript renders the stdin payload for iptables-restore/ip6tables
-// --noflush: a *filter header, one -A OUTPUT REJECT line per IP (with the
+// --noflush: a *filter header, two -A OUTPUT REJECT lines per IP (with the
 // family mask, matching the iptables-save format) and a COMMIT footer.
+//
+// Each IP gets a TCP rule rejecting with tcp-reset and a protocol-agnostic
+// rule rejecting everything else with icmp-port-unreachable. tcp-reset is only
+// accepted by iptables on rules that match TCP explicitly, and it only covers
+// TCP — the companion rule is what blocks UDP/QUIC (HTTP/3), otherwise a
+// browser using DoH + QUIC would keep reaching the site over UDP.
 //
 // REJECT --reject-with tcp-reset is used instead of DROP so blocked sites
 // fail fast with an RST instead of hanging on client-side timeouts — and the
@@ -261,7 +279,11 @@ func buildRestoreScript(ips []string, mask string) string {
 		b.WriteString("-A OUTPUT -d ")
 		b.WriteString(ip)
 		b.WriteString(mask)
-		b.WriteString(" -j REJECT --reject-with tcp-reset\n")
+		b.WriteString(" -p tcp -j REJECT --reject-with tcp-reset\n")
+		b.WriteString("-A OUTPUT -d ")
+		b.WriteString(ip)
+		b.WriteString(mask)
+		b.WriteString(" -j REJECT --reject-with icmp-port-unreachable\n")
 	}
 	b.WriteString("COMMIT\n")
 	return b.String()

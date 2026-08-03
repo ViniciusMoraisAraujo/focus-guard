@@ -260,7 +260,7 @@ func parseIptablesBlockedIPs(output []byte) map[string]bool {
 	blocked := make(map[string]bool)
 	for _, line := range bytes.Split(output, []byte("\n")) {
 		isDrop := bytes.Contains(line, []byte("-j DROP"))
-		isReject := bytes.Contains(line, []byte("-j REJECT --reject-with tcp-reset"))
+		isReject := bytes.Contains(line, []byte("-j REJECT"))
 		if (!isDrop && !isReject) || bytes.Contains(line, []byte("--dport")) {
 			continue
 		}
@@ -379,11 +379,12 @@ func iptablesBinFor(ip string) (string, error) {
 const maxFirewallRuleRemovals = 100
 
 // removeFirewallRule removes every matching rule for ip — first the current
-// REJECT --reject-with tcp-reset spec, then the legacy -j DROP spec from
-// versions before REJECT — looping until iptables reports "does a matching
-// rule exist" for each. This sweeps orphan rules accumulated from previous
-// crashes/races instead of removing just one, including rules created by
-// older FocusGuard releases.
+// TCP REJECT --reject-with tcp-reset spec, then the protocol-agnostic REJECT
+// (icmp-port-unreachable, which covers UDP/QUIC) and the legacy -j DROP spec
+// from versions before REJECT — looping until iptables reports "does a
+// matching rule exist" for each. This sweeps orphan rules accumulated from
+// previous crashes/races instead of removing just one, including rules created
+// by older FocusGuard releases.
 func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 	bin, err := iptablesBinFor(ip)
 	if err != nil {
@@ -391,7 +392,8 @@ func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 	}
 
 	specs := [][]string{
-		{"-j", "REJECT", "--reject-with", "tcp-reset"},
+		{"-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset"},
+		{"-j", "REJECT", "--reject-with", "icmp-port-unreachable"},
 		{"-j", "DROP"},
 	}
 	for _, spec := range specs {
@@ -463,7 +465,7 @@ func countIptablesRules(output []byte) EnforcerStatus {
 	for _, line := range bytes.Split(output, []byte("\n")) {
 		line = bytes.TrimSpace(line)
 		isDrop := bytes.HasSuffix(line, []byte("-j DROP"))
-		isReject := bytes.Contains(line, []byte("-j REJECT --reject-with tcp-reset"))
+		isReject := bytes.Contains(line, []byte("-j REJECT"))
 		if !isDrop && !isReject {
 			continue
 		}
@@ -490,8 +492,8 @@ func availableDoTBins() []string {
 	return bins
 }
 
-func doHRuleArgs(jump, ip string, port int) []string {
-	return []string{jump, "OUTPUT", "-d", ip, "-p", "tcp", "--dport", fmt.Sprintf("%d", port), "-j", "DROP"}
+func doHRuleArgs(jump, ip string, port int, protocol string) []string {
+	return []string{jump, "OUTPUT", "-d", ip, "-p", protocol, "--dport", fmt.Sprintf("%d", port), "-j", "DROP"}
 }
 
 // BlockAll cuts off ALL outbound internet with a single catch-all REJECT rule
@@ -687,15 +689,17 @@ func (e *linuxEnforcer) addIptablesDoHRule(provider DoHProvider) error {
 			continue
 		}
 
-		checkCmd := exec.CommandContext(ctx, bin, doHRuleArgs("-C", ip, provider.Port)...)
-		if err := checkCmd.Run(); err == nil {
-			continue
-		}
+		for _, proto := range dohProtocols {
+			checkCmd := exec.CommandContext(ctx, bin, doHRuleArgs("-C", ip, provider.Port, proto)...)
+			if err := checkCmd.Run(); err == nil {
+				continue
+			}
 
-		addCmd := exec.CommandContext(ctx, bin, doHRuleArgs("-A", ip, provider.Port)...)
-		if out, err := addCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("%s DoH block falhou para %s (%s): %w (%s)",
-				bin, provider.Name, ip, err, strings.TrimSpace(string(out)))
+			addCmd := exec.CommandContext(ctx, bin, doHRuleArgs("-A", ip, provider.Port, proto)...)
+			if out, err := addCmd.CombinedOutput(); err != nil {
+				return fmt.Errorf("%s DoH block falhou para %s (%s/%s): %w (%s)",
+					bin, provider.Name, ip, proto, err, strings.TrimSpace(string(out)))
+			}
 		}
 	}
 	return nil
@@ -725,13 +729,15 @@ func (e *linuxEnforcer) removeIptablesDoHRule(provider DoHProvider) error {
 			continue
 		}
 
-		cmd := exec.CommandContext(ctx, bin, doHRuleArgs("-D", ip, provider.Port)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			if strings.Contains(string(out), "does a matching rule exist") {
-				continue
+		for _, proto := range dohProtocols {
+			cmd := exec.CommandContext(ctx, bin, doHRuleArgs("-D", ip, provider.Port, proto)...)
+			if out, err := cmd.CombinedOutput(); err != nil {
+				if strings.Contains(string(out), "does a matching rule exist") {
+					continue
+				}
+				return fmt.Errorf("%s DoH remove falhou para %s (%s/%s): %w (%s)",
+					bin, provider.Name, ip, proto, err, strings.TrimSpace(string(out)))
 			}
-			return fmt.Errorf("%s DoH remove falhou para %s (%s): %w (%s)",
-				bin, provider.Name, ip, err, strings.TrimSpace(string(out)))
 		}
 	}
 	return nil

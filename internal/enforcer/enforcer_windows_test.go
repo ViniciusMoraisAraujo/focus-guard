@@ -349,11 +349,11 @@ func TestDoTRuleName_MigrationStable(t *testing.T) {
 }
 
 func TestAddDoHRuleArgs(t *testing.T) {
-	args := addDoHRuleArgs("FocusGuard_DoH_1_1_1_1", "1.1.1.1", 443)
+	args := addDoHRuleArgs("FocusGuard_DoH_1_1_1_1_tcp", "1.1.1.1", 443, "tcp")
 
 	want := []string{
 		"advfirewall", "firewall", "add", "rule",
-		"name=FocusGuard_DoH_1_1_1_1",
+		"name=FocusGuard_DoH_1_1_1_1_tcp",
 		"dir=out",
 		"action=block",
 		"remoteip=1.1.1.1",
@@ -362,6 +362,25 @@ func TestAddDoHRuleArgs(t *testing.T) {
 	}
 	if !reflect.DeepEqual(args, want) {
 		t.Errorf("addDoHRuleArgs() = %v, want %v", args, want)
+	}
+}
+
+func TestAddDoHRuleArgs_UDP(t *testing.T) {
+	// DoH sobre QUIC/HTTP/3 (UDP:443) precisa de uma regra própria — sem ela
+	// o Firefox contorna o bloqueio TCP-only.
+	args := addDoHRuleArgs("FocusGuard_DoH_1_1_1_1_udp", "1.1.1.1", 443, "udp")
+
+	want := []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=FocusGuard_DoH_1_1_1_1_udp",
+		"dir=out",
+		"action=block",
+		"remoteip=1.1.1.1",
+		"remoteport=443",
+		"protocol=udp",
+	}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("addDoHRuleArgs(udp) = %v, want %v", args, want)
 	}
 }
 

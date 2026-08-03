@@ -548,7 +548,20 @@ func addDoTRuleArgs(ruleName, protocol string, port int) []string {
 	}
 }
 
-func addDoHRuleArgs(ruleName, ip string, port int) []string {
+// doHRuleName returns the per-protocol DoH rule name for an IP. The protocol
+// suffix lets TCP and UDP (QUIC/HTTP/3) rules coexist on the same resolver
+// address.
+func doHRuleName(ip, protocol string) string {
+	return fmt.Sprintf("FocusGuard_DoH_%s_%s", strings.ReplaceAll(ip, ":", "_"), protocol)
+}
+
+// legacyDoHRuleName is the pre-QUIC rule name (single TCP-only rule per IP).
+// Kept for migration: upgrading must delete these before adding new rules.
+func legacyDoHRuleName(ip string) string {
+	return fmt.Sprintf("FocusGuard_DoH_%s", strings.ReplaceAll(ip, ":", "_"))
+}
+
+func addDoHRuleArgs(ruleName, ip string, port int, protocol string) []string {
 	return []string{
 		"advfirewall", "firewall", "add", "rule",
 		"name=" + ruleName,
@@ -556,7 +569,7 @@ func addDoHRuleArgs(ruleName, ip string, port int) []string {
 		"action=block",
 		"remoteip=" + ip,
 		fmt.Sprintf("remoteport=%d", port),
-		"protocol=tcp",
+		"protocol=" + protocol,
 	}
 }
 
@@ -620,18 +633,37 @@ func (e *windowsEnforcer) addDoHRule(provider DoHProvider) error {
 	}
 
 	for _, ip := range provider.IPs {
-		ruleName := fmt.Sprintf("FocusGuard_DoH_%s", strings.ReplaceAll(ip, ":", "_"))
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-
-		checkCmd := exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...)
-		if err := checkCmd.Run(); err == nil {
-			continue
+		// delete-before-add (migração): a regra antiga (tcp-only, sem sufixo
+		// de protocolo) precisa ser substituída pelas novas regras
+		// por-protocolo — o check de existência pularia a regra antiga.
+		legacyName := legacyDoHRuleName(ip)
+		delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		delCmd := exec.CommandContext(delCtx, "netsh", deleteRuleArgs(legacyName)...)
+		out, err := delCmd.CombinedOutput()
+		delCancel()
+		if err != nil {
+			outStr := string(out)
+			if !strings.Contains(outStr, "No rules match") && !strings.Contains(outStr, "Nenhuma regra") {
+				return fmt.Errorf("netsh DoH remove prévio falhou para %s (%s): %w (%s)", provider.Name, ip, err, strings.TrimSpace(outStr))
+			}
 		}
 
-		addCmd := exec.CommandContext(ctx, "netsh", addDoHRuleArgs(ruleName, ip, provider.Port)...)
-		if out, err := addCmd.CombinedOutput(); err != nil {
-			return fmt.Errorf("netsh DoH block falhou para %s (%s): %w (%s)", provider.Name, ip, err, strings.TrimSpace(string(out)))
+		for _, proto := range dohProtocols {
+			ruleName := doHRuleName(ip, proto)
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+
+			checkCmd := exec.CommandContext(ctx, "netsh", showRuleArgs(ruleName)...)
+			if err := checkCmd.Run(); err == nil {
+				cancel()
+				continue
+			}
+
+			addCmd := exec.CommandContext(ctx, "netsh", addDoHRuleArgs(ruleName, ip, provider.Port, proto)...)
+			if out, err := addCmd.CombinedOutput(); err != nil {
+				cancel()
+				return fmt.Errorf("netsh DoH block falhou para %s (%s/%s): %w (%s)", provider.Name, ip, proto, err, strings.TrimSpace(string(out)))
+			}
+			cancel()
 		}
 	}
 	return nil
@@ -654,18 +686,27 @@ func (e *windowsEnforcer) removeDoHRule(provider DoHProvider) error {
 		return nil
 	}
 
+	// Removes the current per-protocol rules plus the legacy pre-QUIC rule
+	// name (tcp-only), so an upgrade that replaced a legacy rule never leaves
+	// a stale one behind.
 	for _, ip := range provider.IPs {
-		ruleName := fmt.Sprintf("FocusGuard_DoH_%s", strings.ReplaceAll(ip, ":", "_"))
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
+		names := []string{legacyDoHRuleName(ip)}
+		for _, proto := range dohProtocols {
+			names = append(names, doHRuleName(ip, proto))
+		}
+		for _, ruleName := range names {
+			ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
-		cmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
-		if out, err := cmd.CombinedOutput(); err != nil {
-			outStr := string(out)
-			if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
-				continue
+			cmd := exec.CommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
+			out, err := cmd.CombinedOutput()
+			cancel()
+			if err != nil {
+				outStr := string(out)
+				if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
+					continue
+				}
+				return fmt.Errorf("netsh DoH remove falhou para %s (%s): %w (%s)", provider.Name, ruleName, err, strings.TrimSpace(outStr))
 			}
-			return fmt.Errorf("netsh DoH remove falhou para %s (%s): %w (%s)", provider.Name, ip, err, strings.TrimSpace(outStr))
 		}
 	}
 	return nil

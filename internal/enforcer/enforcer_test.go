@@ -416,7 +416,8 @@ func TestGroupIPsByFamily(t *testing.T) {
 }
 
 // TestBuildRestoreScript verifies the iptables-restore --noflush stdin format:
-// a *filter header, one -A line per IP with the family mask, and a COMMIT.
+// a *filter header, two -A lines per IP (TCP tcp-reset + protocol-agnostic
+// icmp-port-unreachable for UDP/QUIC) with the family mask, and a COMMIT.
 func TestBuildRestoreScript(t *testing.T) {
 	tests := []struct {
 		name string
@@ -428,13 +429,21 @@ func TestBuildRestoreScript(t *testing.T) {
 			"v4",
 			[]string{"1.1.1.1", "8.8.8.8"},
 			"/32",
-			"*filter\n-A OUTPUT -d 1.1.1.1/32 -j REJECT --reject-with tcp-reset\n-A OUTPUT -d 8.8.8.8/32 -j REJECT --reject-with tcp-reset\nCOMMIT\n",
+			"*filter\n" +
+				"-A OUTPUT -d 1.1.1.1/32 -p tcp -j REJECT --reject-with tcp-reset\n" +
+				"-A OUTPUT -d 1.1.1.1/32 -j REJECT --reject-with icmp-port-unreachable\n" +
+				"-A OUTPUT -d 8.8.8.8/32 -p tcp -j REJECT --reject-with tcp-reset\n" +
+				"-A OUTPUT -d 8.8.8.8/32 -j REJECT --reject-with icmp-port-unreachable\n" +
+				"COMMIT\n",
 		},
 		{
 			"v6",
 			[]string{"2001:db8::1"},
 			"/128",
-			"*filter\n-A OUTPUT -d 2001:db8::1/128 -j REJECT --reject-with tcp-reset\nCOMMIT\n",
+			"*filter\n" +
+				"-A OUTPUT -d 2001:db8::1/128 -p tcp -j REJECT --reject-with tcp-reset\n" +
+				"-A OUTPUT -d 2001:db8::1/128 -j REJECT --reject-with icmp-port-unreachable\n" +
+				"COMMIT\n",
 		},
 		{
 			"empty",

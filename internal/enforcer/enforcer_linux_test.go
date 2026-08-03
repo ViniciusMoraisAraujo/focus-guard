@@ -70,14 +70,17 @@ func TestIptablesBinFor(t *testing.T) {
 }
 
 func TestParseIptablesBlockedIPs(t *testing.T) {
-	// Mistura regras legadas (-j DROP) e atuais (-j REJECT --reject-with
-	// tcp-reset): ambas devem ser reconhecidas como IPs bloqueados.
+	// Mistura regras legadas (-j DROP), atuais (-j REJECT --reject-with
+	// tcp-reset) e a companion rule de não-TCP (-j REJECT --reject-with
+	// icmp-port-unreachable): todas devem ser reconhecidas como IPs bloqueados.
 	output := `-P OUTPUT ACCEPT
 -A OUTPUT -d 1.1.1.1/32 -j DROP
 -A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
 -A OUTPUT -d 2001:db8::1/128 -j DROP
--A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset
+-A OUTPUT -d 9.9.9.9/32 -p tcp -j REJECT --reject-with tcp-reset
+-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with icmp-port-unreachable
 -A OUTPUT -d 2001:db8::2/128 -j REJECT --reject-with tcp-reset
+-A OUTPUT -d 2001:db8::2/128 -j REJECT --reject-with icmp-port-unreachable
 -A OUTPUT -p tcp --dport 853 -j DROP
 -A OUTPUT -d 10.0.0.1/32 -j ACCEPT
 `
@@ -91,10 +94,10 @@ func TestParseIptablesBlockedIPs(t *testing.T) {
 		t.Error("expected 2001:db8::1 (legacy DROP) to be parsed as blocked")
 	}
 	if !blocked["9.9.9.9"] {
-		t.Error("expected 9.9.9.9 (REJECT tcp-reset) to be parsed as blocked")
+		t.Error("expected 9.9.9.9 (REJECT tcp-reset + icmp-port-unreachable) to be parsed as blocked")
 	}
 	if !blocked["2001:db8::2"] {
-		t.Error("expected 2001:db8::2 (REJECT tcp-reset) to be parsed as blocked")
+		t.Error("expected 2001:db8::2 (REJECT tcp-reset + icmp-port-unreachable) to be parsed as blocked")
 	}
 	if blocked["8.8.8.8"] {
 		t.Error("DoH rule (--dport) should not be counted as an IP block")
@@ -373,7 +376,7 @@ func TestDoTRuleArgs_UDP(t *testing.T) {
 }
 
 func TestDoHRuleArgs(t *testing.T) {
-	args := doHRuleArgs("-A", "1.1.1.1", 443)
+	args := doHRuleArgs("-A", "1.1.1.1", 443, "tcp")
 
 	want := []string{"-A", "OUTPUT", "-d", "1.1.1.1", "-p", "tcp", "--dport", "443", "-j", "DROP"}
 	if !reflect.DeepEqual(args, want) {
@@ -381,20 +384,34 @@ func TestDoHRuleArgs(t *testing.T) {
 	}
 }
 
+func TestDoHRuleArgs_UDP(t *testing.T) {
+	// DoH sobre QUIC/HTTP/3 (UDP:443) precisa de uma regra própria — sem ela
+	// o Firefox contorna o bloqueio TCP-only.
+	args := doHRuleArgs("-A", "1.1.1.1", 443, "udp")
+
+	want := []string{"-A", "OUTPUT", "-d", "1.1.1.1", "-p", "udp", "--dport", "443", "-j", "DROP"}
+	if !reflect.DeepEqual(args, want) {
+		t.Errorf("doHRuleArgs(udp) = %v, want %v", args, want)
+	}
+}
+
 func TestCountIptablesRules(t *testing.T) {
-	// Regras atuais (REJECT tcp-reset) e legadas (DROP) contam para o Status.
+	// Regras atuais (REJECT tcp-reset + companion icmp-port-unreachable),
+	// DoH por porta (tcp e udp) e legadas (DROP) contam para o Status.
 	output := `-P OUTPUT ACCEPT
 -A OUTPUT -d 1.1.1.1/32 -j DROP
 -A OUTPUT -d 8.8.8.8/32 -p tcp --dport 443 -j DROP
--A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset
+-A OUTPUT -d 8.8.8.8/32 -p udp --dport 443 -j DROP
+-A OUTPUT -d 9.9.9.9/32 -p tcp -j REJECT --reject-with tcp-reset
+-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with icmp-port-unreachable
 -A OUTPUT -p tcp --dport 853 -j DROP
 -A OUTPUT -d 10.0.0.1/32 -j ACCEPT
 `
 
 	status := countIptablesRules([]byte(output))
 
-	if status.FirewallRules != 4 {
-		t.Errorf("FirewallRules = %d, want 4", status.FirewallRules)
+	if status.FirewallRules != 6 {
+		t.Errorf("FirewallRules = %d, want 6", status.FirewallRules)
 	}
 	if !status.DoHActive {
 		t.Error("DoHActive deve ser true com regras de porta 443/853")
@@ -492,10 +509,11 @@ func TestRemoveFirewallRule_RemovesAllDuplicateRules(t *testing.T) {
 		t.Fatalf("removeFirewallRule: %v", err)
 	}
 
-	// Fase 1: sweep REJECT (3 remoções + 1 probe no-match). Fase 2: sweep
-	// legado DROP (1 probe no-match). Total = 5 invocations.
-	if len(runner.calls) != 5 {
-		t.Errorf("expected 5 iptables invocations (3 REJECT removals + 1 REJECT probe + 1 DROP probe), got %d", len(runner.calls))
+	// Fase 1: sweep REJECT tcp (3 remoções + 1 probe no-match). Fase 2: sweep
+	// REJECT icmp-port-unreachable (1 probe no-match). Fase 3: sweep legado
+	// DROP (1 probe no-match). Total = 6 invocations.
+	if len(runner.calls) != 6 {
+		t.Errorf("expected 6 iptables invocations (3 REJECT removals + 3 no-match probes), got %d", len(runner.calls))
 	}
 	for i, call := range runner.calls {
 		if len(call) < 5 || call[0] != "iptables" {
@@ -505,14 +523,18 @@ func TestRemoveFirewallRule_RemovesAllDuplicateRules(t *testing.T) {
 			t.Errorf("call %d should be iptables -D ... 1.2.3.4, got %v", i, call)
 		}
 	}
-	// Os 4 primeiros usam a spec REJECT; o 5º é o probe da spec DROP legada.
+	// Os 4 primeiros usam a spec REJECT tcp; o 5º é o probe da spec REJECT
+	// icmp-port-unreachable; o 6º é o probe da spec DROP legada.
 	for i := 0; i < 4; i++ {
 		if !slices.Contains(runner.calls[i], "REJECT") {
 			t.Errorf("call %d should be the REJECT sweep, got %v", i, runner.calls[i])
 		}
 	}
-	if !slices.Contains(runner.calls[4], "DROP") {
-		t.Errorf("call 4 should be the legacy DROP probe, got %v", runner.calls[4])
+	if !slices.Contains(runner.calls[4], "icmp-port-unreachable") {
+		t.Errorf("call 4 should be the icmp-port-unreachable probe, got %v", runner.calls[4])
+	}
+	if !slices.Contains(runner.calls[5], "DROP") {
+		t.Errorf("call 5 should be the legacy DROP probe, got %v", runner.calls[5])
 	}
 }
 
@@ -555,9 +577,9 @@ func TestRemoveFirewallRule_SweepsLegacyDropAfterReject(t *testing.T) {
 	origExec := execCommandContext
 	defer func() { execCommandContext = origExec }()
 
-	// Sequência: 1 remoção REJECT, probe no-match, 1 remoção DROP legada,
-	// probe no-match.
-	runner := &seqRunner{results: []seqResult{successResult(), noMatchResult(), successResult(), noMatchResult()}}
+	// Sequência: 1 remoção REJECT tcp, probe no-match, probe icmp no-match,
+	// 1 remoção DROP legada, probe no-match.
+	runner := &seqRunner{results: []seqResult{successResult(), noMatchResult(), noMatchResult(), successResult(), noMatchResult()}}
 	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
 		runner.calls = append(runner.calls, append([]string{name}, args...))
 		return runner
@@ -568,14 +590,17 @@ func TestRemoveFirewallRule_SweepsLegacyDropAfterReject(t *testing.T) {
 		t.Fatalf("removeFirewallRule: %v", err)
 	}
 
-	if len(runner.calls) != 4 {
-		t.Fatalf("expected 4 invocations, got %d: %v", len(runner.calls), runner.calls)
+	if len(runner.calls) != 5 {
+		t.Fatalf("expected 5 invocations, got %d: %v", len(runner.calls), runner.calls)
 	}
 	if !slices.Contains(runner.calls[0], "REJECT") {
 		t.Errorf("call 0 should be REJECT removal, got %v", runner.calls[0])
 	}
-	if !slices.Contains(runner.calls[2], "DROP") {
-		t.Errorf("call 2 should be legacy DROP removal, got %v", runner.calls[2])
+	if !slices.Contains(runner.calls[2], "icmp-port-unreachable") {
+		t.Errorf("call 2 should be the icmp-port-unreachable probe, got %v", runner.calls[2])
+	}
+	if !slices.Contains(runner.calls[3], "DROP") {
+		t.Errorf("call 3 should be legacy DROP removal, got %v", runner.calls[3])
 	}
 }
 
@@ -594,9 +619,9 @@ func TestRemoveFirewallRule_NoRulesIsNoOp(t *testing.T) {
 		t.Fatalf("removeFirewallRule with no rules should not error: %v", err)
 	}
 
-	// 1 probe no-match para a spec REJECT + 1 probe para a DROP legada.
-	if len(runner.calls) != 2 {
-		t.Errorf("expected 2 no-match probes (REJECT + DROP), got %d calls", len(runner.calls))
+	// 3 probes no-match: REJECT tcp + REJECT icmp-port-unreachable + DROP legada.
+	if len(runner.calls) != 3 {
+		t.Errorf("expected 3 no-match probes (REJECT tcp + icmp + DROP), got %d calls", len(runner.calls))
 	}
 }
 
@@ -742,12 +767,16 @@ func TestBuildBlockAllScript_AllowlistFirstThenCatchAll(t *testing.T) {
 	}
 	// ACCEPT da allowlist ANTES do catch-all (ordem de avaliação do iptables)
 	allowIdx := strings.Index(script, "-A OUTPUT -d 1.1.1.1/32 -j ACCEPT -m comment --comment \""+AllowMarker)
-	catchIdx := strings.Index(script, "-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \""+AllBlockMarker)
+	catchIdx := strings.Index(script, "-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \""+AllBlockMarker)
+	nonTCPIdx := strings.Index(script, "-A OUTPUT -j REJECT --reject-with icmp-port-unreachable -m comment --comment \""+AllBlockMarker)
 	if allowIdx < 0 {
 		t.Errorf("script deve conter ACCEPT da allowlist com marker:\n%s", script)
 	}
 	if catchIdx < 0 {
-		t.Errorf("script deve conter catch-all REJECT com marker:\n%s", script)
+		t.Errorf("script deve conter catch-all REJECT tcp com marker:\n%s", script)
+	}
+	if nonTCPIdx < 0 {
+		t.Errorf("script deve conter catch-all REJECT não-TCP (UDP/QUIC) com marker:\n%s", script)
 	}
 	if allowIdx > catchIdx {
 		t.Errorf("ACCEPT da allowlist deve vir antes do catch-all:\n%s", script)
@@ -858,7 +887,7 @@ func TestBlockAll_NoAllowlistOnlyCatchAll(t *testing.T) {
 
 func TestUnblockAll_SweepsMarkedRules(t *testing.T) {
 	a := &allBlockStub{dump: map[string]string{
-		"iptables":  "-A OUTPUT -d 1.1.1.1/32 -j ACCEPT -m comment --comment \"FOCUSGUARD_ALLOW\"\n-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \"FOCUSGUARD_ALL\"\n-A OUTPUT -d 9.9.9.9/32 -j REJECT --reject-with tcp-reset\n",
+		"iptables":  "-A OUTPUT -d 1.1.1.1/32 -j ACCEPT -m comment --comment \"FOCUSGUARD_ALLOW\"\n-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \"FOCUSGUARD_ALL\"\n-A OUTPUT -j REJECT --reject-with icmp-port-unreachable -m comment --comment \"FOCUSGUARD_ALL\"\n-A OUTPUT -d 9.9.9.9/32 -p tcp -j REJECT --reject-with tcp-reset\n",
 		"ip6tables": "",
 	}}
 	stubAllBlockExec(t, a)
@@ -868,8 +897,8 @@ func TestUnblockAll_SweepsMarkedRules(t *testing.T) {
 		t.Fatalf("UnblockAll: %v", err)
 	}
 
-	// 2 probes -S + 2 deletes (allow + catch-all). A regra de domínio normal
-	// (9.9.9.9, sem marker) não pode ser tocada.
+	// 2 probes -S + 3 deletes (allow + catch-all tcp + catch-all não-TCP). A
+	// regra de domínio normal (9.9.9.9, sem marker) não pode ser tocada.
 	delCalls := 0
 	for _, c := range a.calls {
 		if len(c) > 1 && c[1] == "-D" {
@@ -879,14 +908,14 @@ func TestUnblockAll_SweepsMarkedRules(t *testing.T) {
 			}
 		}
 	}
-	if delCalls != 2 {
-		t.Errorf("esperava 2 deletes (allow + catch-all), got %d: %v", delCalls, a.calls)
+	if delCalls != 3 {
+		t.Errorf("esperava 3 deletes (allow + 2 catch-all), got %d: %v", delCalls, a.calls)
 	}
 }
 
 func TestAllBlockedByStatus_DetectsMarker(t *testing.T) {
 	a := &allBlockStub{dump: map[string]string{
-		"iptables":  "-A OUTPUT -j REJECT --reject-with tcp-reset -m comment --comment \"FOCUSGUARD_ALL\"\n",
+		"iptables":  "-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \"FOCUSGUARD_ALL\"\n",
 		"ip6tables": "",
 	}}
 	stubAllBlockExec(t, a)
@@ -1006,8 +1035,11 @@ func TestAddFirewallRulesBatch_V4SingleRestore(t *testing.T) {
 	}
 	script := b.stdins[0]
 	for _, ip := range []string{"1.1.1.1", "8.8.8.8", "9.9.9.9"} {
-		if !strings.Contains(script, "-A OUTPUT -d "+ip+"/32 -j REJECT --reject-with tcp-reset") {
-			t.Errorf("script missing REJECT rule for %s:\n%s", ip, script)
+		if !strings.Contains(script, "-A OUTPUT -d "+ip+"/32 -p tcp -j REJECT --reject-with tcp-reset") {
+			t.Errorf("script missing TCP REJECT rule for %s:\n%s", ip, script)
+		}
+		if !strings.Contains(script, "-A OUTPUT -d "+ip+"/32 -j REJECT --reject-with icmp-port-unreachable") {
+			t.Errorf("script missing non-TCP REJECT rule for %s (UDP/QUIC leak):\n%s", ip, script)
 		}
 		if strings.Contains(script, "-j DROP") {
 			t.Errorf("script must use REJECT tcp-reset, not DROP:\n%s", script)
@@ -1060,7 +1092,7 @@ func TestAddFirewallRulesBatch_SkipsExisting(t *testing.T) {
 	if strings.Contains(b.stdins[0], "1.1.1.1") {
 		t.Errorf("already-blocked IP must not be re-added:\n%s", b.stdins[0])
 	}
-	if !strings.Contains(b.stdins[0], "-A OUTPUT -d 2.2.2.2/32 -j REJECT --reject-with tcp-reset") {
+	if !strings.Contains(b.stdins[0], "-A OUTPUT -d 2.2.2.2/32 -p tcp -j REJECT --reject-with tcp-reset") {
 		t.Errorf("missing IP 2.2.2.2 should be added:\n%s", b.stdins[0])
 	}
 
