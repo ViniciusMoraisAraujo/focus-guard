@@ -31,7 +31,7 @@ auto-update multi-binário com rollback.
 > 🚧 **Interface web (em andamento):** `focusguard-web` (user-space, por
 > demanda) serve a UI React + TS (`focusguard-ui/`) e faz **proxy das ações IPC
 > para o daemon** em `http://127.0.0.1:48902` — **sem mudanças no daemon**.
-> F1 (servidor HTTP) e F2 (4 telas do MVP) implementadas em 2026-08-03; veja o
+> F1 (servidor HTTP) e F2 (10 telas) implementadas em 2026-08-03; veja o
 > plano completo e o roadmap em `docs/ui-plan.md` antes de criar código
 > relacionado.
 
@@ -79,8 +79,9 @@ auto-update multi-binário com rollback.
 ### Fluxo de dados
 
 ```
-CLI (focusguard) ←────── IPC (Unix socket, JSON) ──────→ Daemon (focusguard-daemon)
-Tray (focusguard-tray) ──┘                                        │
+CLI (focusguard) ────────┐
+Tray (focusguard-tray) ──┼── IPC (Unix socket, JSON) ──→ Daemon (focusguard-daemon)
+Web (focusguard-web) ────┘                                        │
                                                              [Scheduler]  ← fonte de verdade em RAM
                                                           ┌────────┴────────┐
                                                      [Store]          [Enforcer]
@@ -119,7 +120,7 @@ Tray (focusguard-tray) ──┘                                        │
 | `goal` | Meta diária de foco (goal.json) |
 | `hostswatch` | Watcher do `hosts`: fsnotify + hash SHA-256 dos self-writes; detecta/reverte adulterações |
 | `httpapi` | Servidor HTTP da interface web: proxy das ações IPC (`/api/action`, `/api/ping`, `/api/health`) + UI estática com SPA fallback + guardas de segurança localhost (Host, Content-Type, CSP) |
-| `icon` | Desenho do escudo/checkmark (stdlib pura); `GenerateICO` multi-tamanho + `GeneratePNG` |
+| `icon` | Renderiza o artwork canônico `img/focusguard.png` em qualquer tamanho (CatmullRom via `golang.org/x/image`); `GenerateICO` multi-tamanho + `GeneratePNG` |
 | `ipc` | Protocolo cliente-servidor: `Request`/`Response` JSON sobre Unix socket; `SendWithTimeout` |
 | `policy` | Modelo `Block` e regras de negócio (`IsActive`, `CanUnblock`, `RemainingTime`) |
 | `pomodoro` | Sessões work/rest/cycles (`--strict`, `--save`/defaults, missões/labels) |
@@ -132,7 +133,7 @@ Tray (focusguard-tray) ──┘                                        │
 | `store` | Persistência JSON atômica (temp file + rename) + réplicas AES-256-GCM atreladas ao hardware |
 | `tamper` | Log JSONL append-only de tentativas de burla detectadas/revertidas (`tamper-log`) |
 | `tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
-| `update` | Auto-update via go-selfupdate: canais beta/stable, atualização **multi-binário atômica** (`UpdateToAll`) |
+| `update` | Auto-update via go-selfupdate: canais beta/stable, atualização **multi-binário atômica** (`UpdateToAll`); pós-update o daemon **reinicia na hora** (encerra a sessão pomodoro, preserva os bloqueios) |
 | `watchdog` | Health check systemd (`NOTIFY_SOCKET` → `READY=1`/`WATCHDOG=1`) |
 
 > A maioria desses pacotes tem teste dedicado (`*_test.go` no mesmo diretório).
@@ -218,7 +219,8 @@ go test ./... -count=1 -timeout=60s   # make test
 ├── Makefile                    # build, icon, winres, ui, test, vet, fmt, tidy, clean, install, uninstall
 ├── cmd/focusguard-web/         # servidor da interface web (user-space, embed da UI)
 ├── internal/httpapi/           # HTTP: proxy IPC + estático + segurança localhost
-├── focusguard-ui/              # frontend React + Vite + TS (4 telas do MVP)
+├── focusguard-ui/              # frontend React + Vite + TS (10 telas)
+│   └── src/screens/              # Dashboard, Bloquear, Panico, Configuracoes, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca
 ├── .goreleaser.yaml            # pipeline de release
 ├── .github/workflows/release.yml  # CI: tag v* → GoReleaser
 ├── .gitattributes              # *.sh → eol=lf
@@ -250,18 +252,19 @@ go test ./... -count=1 -timeout=60s   # make test
 ```
 
 Tipos usados no histórico: `feat`, `fix`, `perf`, `docs`, `test`, `ci`,
-`chore`. Escopos típicos: `tui`, `install`, `icon`, `tray`, `update`, `store`,
+`chore`. Escopos típicos: `ui`, `install`, `icon`, `tray`, `update`, `store`,
 `scheduler`, `enforcer`, `watchers`, `daemon`, `ipc`, `autostart`, `focus`,
 `changelog`, `readme`, `release`.
 
 Exemplos reais do repositório:
 
 ```
-feat(tui): show system version in interactive header
+refactor(cli): remove interactive TUI, open web UI by default
 feat(install): install to Program Files with desktop shortcut, tray and watchdog
 feat(icon): add focusguard.ico embedded in executables, tray and shortcut
 fix(enforcer): roll back partial firewall rules on block failure
 fix(update): atomic multi-binary update, semver compare and auto-restart
+feat(update): restart daemon immediately on version update, keep blocks
 perf(store): drop fsync from state.json saves
 docs(changelog): add v0.6.0 release section
 ci(release): allow different binary counts in linux archive
@@ -344,6 +347,7 @@ Changelog** em PT-BR, com seções datadas e categorias por emoji
 - **Não regresse o fallback de ícone** — o tray usa **exclusivamente** o ícone
   embutido (`RT_GROUP_ICON` + `RT_ICON`); não reintroduza renderização em
   runtime nem dependa de assets externos em runtime.
+- **Update reinicia na hora** — aplicar um update encerra a sessão pomodoro (best-effort) e reinicia o daemon imediatamente (exit 1 → supervisor sobe a versão nova). Os bloqueios **não** são tocados: ficam no state.json e o boot os restaura. Não reintroduza o mecanismo de restart pendente (pendingRestart/watcher) — foi removido de propósito.
 - **goreleaser hook sem shell** — o hook do `go-winres` usa `sh -c` porque o
   GoReleaser executa hooks sem shell; mantenha o condicional ao mexer.
 - **IPC é o contrato** — CLI/tray/daemon/**web** conversam pelo mesmo protocolo;
