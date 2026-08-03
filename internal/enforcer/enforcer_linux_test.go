@@ -1253,3 +1253,57 @@ func TestSyncLocked_CleansStaleMarkers(t *testing.T) {
 		t.Errorf("original hosts lines must be preserved:\n%s", content)
 	}
 }
+
+// TestSyncLocked_SweepsOrphans verifies Sync removes domain block rules that
+// are no longer in activeBlocks (crashed-before-Unblock leftovers) while
+// preserving DoH/DoT rules and the catch-all.
+func TestSyncLocked_SweepsOrphans(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	dump := "-A OUTPUT -d 1.1.1.1/32 -j REJECT --reject-with tcp-reset\n" +
+		"-A OUTPUT -d 3.3.3.3/32 -j REJECT --reject-with tcp-reset\n" +
+		"-A OUTPUT -d 8.8.8.8/32 -p udp --dport 853 -j REJECT --reject-with tcp-reset\n" +
+		"-A OUTPUT -j REJECT --reject-with tcp-reset\n"
+	// Consulta iptables, consulta ip6tables, depois o sweep do órfão 3.3.3.3:
+	// -D REJECT tcp (ok), -D REJECT tcp (no-match), -D icmp (no-match),
+	// -D DROP legado (no-match).
+	runner := &seqRunner{results: []seqResult{
+		{out: []byte(dump)},
+		{out: nil},
+		successResult(), noMatchResult(), noMatchResult(), noMatchResult(),
+	}}
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		runner.calls = append(runner.calls, append([]string{name}, args...))
+		return runner
+	}
+
+	tempDir := t.TempDir()
+	hostsPath := filepath.Join(tempDir, "hosts")
+	if err := os.WriteFile(hostsPath, []byte("127.0.0.1 localhost\n::1 localhost\n"), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	enf := &linuxEnforcer{hostsPath: hostsPath}
+
+	if err := enf.syncLocked(map[string][]string{"a.com": {"1.1.1.1"}}); err != nil {
+		t.Fatalf("syncLocked: %v", err)
+	}
+
+	var deletes [][]string
+	for _, call := range runner.calls {
+		if len(call) > 0 && call[0] == "iptables" && slices.Contains(call, "-D") {
+			deletes = append(deletes, call)
+		}
+	}
+	if len(deletes) != 1 {
+		t.Fatalf("expected exactly 1 orphan -D removal, got %d: %v", len(deletes), runner.calls)
+	}
+	if !slices.Contains(deletes[0], "3.3.3.3") {
+		t.Errorf("orphan removal should target 3.3.3.3, got %v", deletes[0])
+	}
+	for _, bad := range []string{"8.8.8.8", "1.1.1.1"} {
+		if slices.Contains(deletes[0], bad) {
+			t.Errorf("DoH/active rule %s must not be swept, got %v", bad, deletes[0])
+		}
+	}
+}

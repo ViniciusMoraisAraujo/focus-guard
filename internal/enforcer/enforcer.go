@@ -9,6 +9,7 @@ import (
 	"net"
 	"os/exec"
 	"strings"
+	"time"
 )
 
 type Enforcer interface {
@@ -217,6 +218,12 @@ func groupIPsByFamily(ips []string) (v4, v6 []string) {
 	return v4, v6
 }
 
+// statusCacheTTL bounds how long Status() may return a cached firewall
+// snapshot before re-querying. The tray polls the daemon status every ~10s; a
+// TTL above that skips most netsh/iptables invocations. Mutations invalidate
+// the cache immediately, so the TTL only delays reflecting external changes.
+const statusCacheTTL = 15 * time.Second
+
 // AllBlockMarker is the iptables comment tagging the catch-all REJECT rule
 // that implements the all-internet block. Removal sweeps by this marker.
 const AllBlockMarker = "FOCUSGUARD_ALL"
@@ -291,18 +298,44 @@ func buildRestoreScript(ips []string, mask string) string {
 
 // buildNetshAddScript renders the script fed to a single netsh process via
 // stdin: one full-context add rule line per IP (netsh scripting needs the
-// advfirewall firewall context on every line) followed by exit.
+// advfirewall firewall context on every line) followed by exit. Rule names
+// normalize ':' to '_' so IPv6 addresses produce valid names (the same
+// convention DoH and Allow rules use); for IPv6 a delete-before-add of the
+// legacy raw-':' name migrates rules created before the normalization.
 func buildNetshAddScript(ips []string) string {
 	var b strings.Builder
 	for _, ip := range ips {
+		if strings.Contains(ip, ":") {
+			b.WriteString("advfirewall firewall delete rule name=FocusGuard_")
+			b.WriteString(ip)
+			b.WriteString("\r\n")
+		}
 		b.WriteString("advfirewall firewall add rule name=FocusGuard_")
-		b.WriteString(ip)
+		b.WriteString(strings.ReplaceAll(ip, ":", "_"))
 		b.WriteString(" dir=out action=block remoteip=")
 		b.WriteString(ip)
 		b.WriteString("\r\n")
 	}
 	b.WriteString("exit\r\n")
 	return b.String()
+}
+
+// expectedBlockedIPs returns the set of IPs that must be blocked per
+// activeBlocks (the union of every domain's resolved IPs), keyed by the
+// canonical net.IP.String() form so IPv4/IPv6 textual variants compare equal.
+// Sync uses it both to compute missing rules and to sweep orphan rules.
+func expectedBlockedIPs(activeBlocks map[string][]string) map[string]bool {
+	expected := make(map[string]bool)
+	for _, ips := range activeBlocks {
+		for _, ip := range dedupeIPs(ips) {
+			parsed := net.ParseIP(ip)
+			if parsed == nil {
+				continue
+			}
+			expected[parsed.String()] = true
+		}
+	}
+	return expected
 }
 
 // execCommandContext is an indirection for firewall command execution so tests

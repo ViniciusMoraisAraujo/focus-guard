@@ -507,6 +507,13 @@ func TestBuildNetshAddScript(t *testing.T) {
 				"exit\r\n",
 		},
 		{
+			"ipv6 normalizes rule name with migration",
+			[]string{"2606:4700:4700::1111"},
+			"advfirewall firewall delete rule name=FocusGuard_2606:4700:4700::1111\r\n" +
+				"advfirewall firewall add rule name=FocusGuard_2606_4700_4700__1111 dir=out action=block remoteip=2606:4700:4700::1111\r\n" +
+				"exit\r\n",
+		},
+		{
 			"empty",
 			nil,
 			"exit\r\n",
@@ -520,6 +527,22 @@ func TestBuildNetshAddScript(t *testing.T) {
 				t.Errorf("buildNetshAddScript(%v) = %q, want %q", tt.ips, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestExpectedBlockedIPs(t *testing.T) {
+	active := map[string][]string{
+		"a.com": {"1.1.1.1", "8.8.8.8", "", "1.1.1.1"}, // vazio e duplicata ignorados
+		"b.com": {"2001:db8::1"},
+	}
+	got := expectedBlockedIPs(active)
+	want := map[string]bool{
+		"1.1.1.1":     true,
+		"8.8.8.8":     true,
+		"2001:db8::1": true,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("expectedBlockedIPs() = %v, want %v", got, want)
 	}
 }
 

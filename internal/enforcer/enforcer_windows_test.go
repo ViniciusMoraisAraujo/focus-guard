@@ -595,6 +595,58 @@ func TestSyncLocked_WritesHostsOnce(t *testing.T) {
 	}
 }
 
+// TestSyncLocked_SweepsOrphanRules verifies Sync removes domain block rules
+// that are no longer in activeBlocks (crashed-before-Unblock leftovers) while
+// preserving DoH/DoT/allow/catch-all rules.
+func TestSyncLocked_SweepsOrphanRules(t *testing.T) {
+	// 1.1.1.1 pertence a um bloco ativo (mantido); 3.3.3.3 é órfão (removido);
+	// DoH/Allow/AllInternet e o catch-all nunca podem ser tocados.
+	dump := "Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n\n" +
+		"Regra:\n    Nome da regra:    FocusGuard_3.3.3.3\n\n" +
+		"Regra:\n    Nome da regra:    FocusGuard_DoH_8_8_8_8_tcp\n\n" +
+		"Regra:\n    Nome da regra:    FocusGuard_Allow_2001_db8__1\n\n" +
+		"Regra:\n    Nome da regra:    FocusGuard_AllInternet\n"
+	b := &batchStubWin{showDumps: []string{dump}}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	active := map[string][]string{
+		"a.com": {"1.1.1.1"},
+	}
+	if err := e.syncLocked(active); err != nil {
+		t.Fatalf("syncLocked: %v", err)
+	}
+
+	var deleted [][]string
+	for _, c := range b.calls {
+		if c[0] == "netsh" && slices.Contains(c, "delete") {
+			deleted = append(deleted, c)
+		}
+	}
+
+	var delOrphan, delActive, delOther bool
+	for _, d := range deleted {
+		joined := strings.Join(d, " ")
+		switch {
+		case strings.Contains(joined, "name=FocusGuard_3.3.3.3"):
+			delOrphan = true
+		case strings.Contains(joined, "name=FocusGuard_1.1.1.1"):
+			delActive = true
+		case strings.Contains(joined, "DoH_") || strings.Contains(joined, "Allow_") || strings.Contains(joined, "AllInternet"):
+			delOther = true
+		}
+	}
+	if !delOrphan {
+		t.Errorf("esperava remover a regra órfã FocusGuard_3.3.3.3, got deletes: %v", deleted)
+	}
+	if delActive {
+		t.Errorf("regra de bloco ativo FocusGuard_1.1.1.1 NÃO pode ser removida: %v", deleted)
+	}
+	if delOther {
+		t.Errorf("regras DoH/Allow/AllInternet NÃO podem ser removidas pelo sweep: %v", deleted)
+	}
+}
+
 // TestStatus_UsesNetshNotPowerShell verifies Status() queries the firewall
 // with a single native netsh invocation (no PowerShell runtime) and reuses the
 // existing countFocusGuardRules parser.
@@ -666,6 +718,41 @@ func TestAllBlockRuleName_Stable(t *testing.T) {
 	}
 	if allowRuleName("2001:db8::1") != "FocusGuard_Allow_2001_db8__1" {
 		t.Errorf("allowRuleName(v6) = %q, want colons replaced", allowRuleName("2001:db8::1"))
+	}
+}
+
+func TestDomainRuleName_NormalizesIPv6(t *testing.T) {
+	if got := domainRuleName("1.1.1.1"); got != "FocusGuard_1.1.1.1" {
+		t.Errorf("domainRuleName(v4) = %q", got)
+	}
+	if got := domainRuleName("2606:4700:4700::1111"); got != "FocusGuard_2606_4700_4700__1111" {
+		t.Errorf("domainRuleName(v6) = %q, want colons replaced", got)
+	}
+	if got := legacyDomainRuleName("2606:4700:4700::1111"); got != "FocusGuard_2606:4700:4700::1111" {
+		t.Errorf("legacyDomainRuleName(v6) = %q, want raw colons kept", got)
+	}
+}
+
+func TestDomainIPFromRuleName(t *testing.T) {
+	cases := []struct {
+		name  string
+		want  string
+		isIP  bool
+	}{
+		{"FocusGuard_1.1.1.1", "1.1.1.1", true},
+		{"FocusGuard_2606:4700:4700::1111", "2606:4700:4700::1111", true},  // legado cru
+		{"FocusGuard_2606_4700_4700__1111", "2606:4700:4700::1111", true},   // normalizado
+		{"FocusGuard_DoH_8_8_8_8_tcp", "", false},
+		{"FocusGuard_DoT_TCP", "", false},
+		{"FocusGuard_Allow_2001_db8__1", "", false},
+		{"FocusGuard_AllInternet", "", false},
+		{"Other_1.1.1.1", "", false},
+	}
+	for _, tt := range cases {
+		got, ok := domainIPFromRuleName(tt.name)
+		if ok != tt.isIP || got != tt.want {
+			t.Errorf("domainIPFromRuleName(%q) = (%q, %v), want (%q, %v)", tt.name, got, ok, tt.want, tt.isIP)
+		}
 	}
 }
 
@@ -784,6 +871,26 @@ func TestUnblockAll_DeletesCatchAllAndAllowRules(t *testing.T) {
 	if deletedDomain {
 		t.Error("regra de domínio normal (FocusGuard_9.9.9.9) NÃO pode ser deletada")
 	}
+
+	// A enumeração das allow rules (show) deve acontecer ANTES de qualquer
+	// delete: se um crash ocorrer no meio, o catch-all já foi removido e a
+	// internet volta; regras allow sobram apenas como lixo inerte.
+	firstShow := -1
+	firstDelete := -1
+	for i, c := range b.calls {
+		if c[0] == "netsh" && slices.Contains(c, "name=all") && firstShow == -1 {
+			firstShow = i
+		}
+		if c[0] == "netsh" && slices.Contains(c, "delete") && firstDelete == -1 {
+			firstDelete = i
+		}
+	}
+	if firstShow == -1 {
+		t.Error("esperava consulta netsh show rule name=all para enumerar as allow rules")
+	}
+	if firstDelete != -1 && firstShow > firstDelete {
+		t.Errorf("show de enumeração (#%d) deve preceder os deletes (#%d)", firstShow, firstDelete)
+	}
 }
 
 func TestCountFocusGuardRules_DetectsAllBlocked(t *testing.T) {
@@ -849,5 +956,72 @@ func TestStatus_UsesNetshNotPowerShell(t *testing.T) {
 		if !slices.Contains(netshCalls[0], "dir=out") {
 			t.Errorf("expected netsh show to filter dir=out, got %v", netshCalls[0])
 		}
+	}
+}
+
+// TestStatus_CacheWithinTTL verifies a second Status() within the TTL does not
+// re-query netsh (keeps the mutation lock free).
+func TestStatus_CacheWithinTTL(t *testing.T) {
+	b := &batchStubWin{showDumps: []string{
+		"Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n",
+	}}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	for i := 0; i < 3; i++ {
+		if _, err := e.Status(); err != nil {
+			t.Fatalf("Status #%d: %v", i+1, err)
+		}
+	}
+
+	var netshCalls [][]string
+	for _, c := range b.calls {
+		if c[0] == "netsh" {
+			netshCalls = append(netshCalls, c)
+		}
+	}
+	if len(netshCalls) != 1 {
+		t.Errorf("Status 3x dentro do TTL deve consultar netsh apenas 1x, got %d calls: %v", len(netshCalls), b.calls)
+	}
+}
+
+// TestStatus_MutationInvalidatesCache verifies mutating methods refresh the
+// cache so the next Status() reflects the change (no stale 15s window).
+func TestStatus_MutationInvalidatesCache(t *testing.T) {
+	first := batchStubWin{showDumps: []string{
+		"Regra:\n    Nome da regra:    FocusGuard_1.1.1.1\n",
+	}}
+	stubBatchExecWin(t, &first)
+
+	e := newTestEnforcer(t)
+	if _, err := e.Status(); err != nil {
+		t.Fatalf("Status: %v", err)
+	}
+
+	// Agora o bloco é removido: Status seguinte deve re-consultar e ver 0 regras.
+	second := batchStubWin{showDumps: []string{
+		"",
+	}}
+	stubBatchExecWin(t, &second)
+
+	if err := e.UnblockDomain("a.com", []string{"1.1.1.1"}); err != nil {
+		t.Fatalf("UnblockDomain: %v", err)
+	}
+	st, err := e.Status()
+	if err != nil {
+		t.Fatalf("Status pós-mutação: %v", err)
+	}
+	if st.FirewallRules != 0 {
+		t.Errorf("após invalidar cache, FirewallRules = %d, want 0", st.FirewallRules)
+	}
+
+	var netshShows [][]string
+	for _, c := range second.calls {
+		if c[0] == "netsh" && slices.Contains(c, "show") {
+			netshShows = append(netshShows, c)
+		}
+	}
+	if len(netshShows) != 1 {
+		t.Errorf("mudança deve invalidar o cache e gerar nova consulta, got %d netsh show calls: %v", len(netshShows), second.calls)
 	}
 }

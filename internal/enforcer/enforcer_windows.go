@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"net"
 	"os"
 	"os/exec"
 	"strings"
@@ -19,6 +20,10 @@ type windowsEnforcer struct {
 	adminOnce    sync.Once
 	adminErr     error
 	onHostsWrite func()
+
+	statusMu       sync.Mutex
+	lastStatus     EnforcerStatus
+	lastStatusTime time.Time
 }
 
 func (e *windowsEnforcer) SetOnHostsWrite(fn func()) {
@@ -55,7 +60,11 @@ func (e *windowsEnforcer) BlockDomain(domain string, ips []string) error {
 		return err
 	}
 
-	return e.blockDomainLocked(domain, ips)
+	if err := e.blockDomainLocked(domain, ips); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 // blockDomainLocked applies a block while holding the lock. If the batched
@@ -85,7 +94,11 @@ func (e *windowsEnforcer) UnblockDomain(domain string, ips []string) error {
 		return err
 	}
 
-	return e.unblockDomainLocked(domain, ips)
+	if err := e.unblockDomainLocked(domain, ips); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 func (e *windowsEnforcer) unblockDomainLocked(domain string, ips []string) error {
@@ -115,7 +128,11 @@ func (e *windowsEnforcer) Sync(activeBlocks map[string][]string) error {
 		return err
 	}
 
-	return e.syncLocked(activeBlocks)
+	if err := e.syncLocked(activeBlocks); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 // syncLocked applies a batch of active blocks with a single hosts-file rewrite
@@ -155,7 +172,7 @@ func (e *windowsEnforcer) syncLocked(activeBlocks map[string][]string) error {
 	var missing []string
 	for _, ips := range activeBlocks {
 		for _, ip := range dedupeIPs(ips) {
-			if existing[fmt.Sprintf("FocusGuard_%s", ip)] {
+			if existing[domainRuleName(ip)] {
 				continue
 			}
 			missing = append(missing, ip)
@@ -167,7 +184,30 @@ func (e *windowsEnforcer) syncLocked(activeBlocks map[string][]string) error {
 			return fmt.Errorf("enforcer: failed to sync firewall rules: %w", err)
 		}
 	}
-	return nil
+
+	// Sweep de regras órfãs de domínio (restos de crash/sigkill antes de um
+	// UnblockDomain): remove o que está no firewall mas não pertence a nenhum
+	// bloco ativo. domainIPFromRuleName garante que regras DoH/DoT/allow e o
+	// catch-all do BlockAll nunca sejam tocados por aqui.
+	return e.sweepOrphanRules(existing, expectedBlockedIPs(activeBlocks))
+}
+
+// sweepOrphanRules deletes every domain block rule present in the firewall
+// whose IP is not in the expected set, preserving DoH/DoT/allow/catch-all
+// rules. Rules are removed by replaying their exact firewall name (legacy or
+// normalized) via removeFirewallRule, so both naming conventions are swept.
+func (e *windowsEnforcer) sweepOrphanRules(existing map[string]bool, expected map[string]bool) error {
+	var firstErr error
+	for name := range existing {
+		ip, ok := domainIPFromRuleName(name)
+		if !ok || expected[ip] {
+			continue
+		}
+		if err := e.removeFirewallRule(ip); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // existingFocusGuardRules consults the firewall once and returns the names of
@@ -198,7 +238,7 @@ func (e *windowsEnforcer) addFirewallRulesBatch(ips []string) error {
 	existing := e.existingFocusGuardRules()
 	var missing []string
 	for _, ip := range allIPs {
-		if !existing[fmt.Sprintf("FocusGuard_%s", ip)] {
+		if !existing[domainRuleName(ip)] {
 			missing = append(missing, ip)
 		}
 	}
@@ -225,8 +265,8 @@ func (e *windowsEnforcer) runNetshAddBatch(ips []string) error {
 	// netsh pode mascarar falha interna com exit 0: confirma a aplicação real.
 	after := e.existingFocusGuardRules()
 	for _, ip := range ips {
-		if !after[fmt.Sprintf("FocusGuard_%s", ip)] {
-			return fmt.Errorf("netsh firewall add em lote incompleto: regra FocusGuard_%s ausente", ip)
+		if !after[domainRuleName(ip)] {
+			return fmt.Errorf("netsh firewall add em lote incompleto: regra %s ausente", domainRuleName(ip))
 		}
 	}
 
@@ -351,17 +391,22 @@ func (e *windowsEnforcer) writeHostsLines(lines []string) error {
 }
 
 func (e *windowsEnforcer) removeFirewallRule(ip string) error {
-	ruleName := fmt.Sprintf("FocusGuard_%s", ip)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
+	// Sweep do nome normalizado (atual) e do legado cru (IPv6 com ':'), para a
+	// migração nunca deixar regras antigas para trás.
+	names := []string{domainRuleName(ip), legacyDomainRuleName(ip)}
+	for _, ruleName := range names {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 
-	cmd := execCommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		outStr := string(out)
-		if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
-			return nil
+		cmd := execCommandContext(ctx, "netsh", deleteRuleArgs(ruleName)...)
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			outStr := string(out)
+			if strings.Contains(outStr, "No rules match") || strings.Contains(outStr, "Nenhuma regra") {
+				continue
+			}
+			return fmt.Errorf("netsh firewall delete falhou: %w (%s)", err, strings.TrimSpace(outStr))
 		}
-		return fmt.Errorf("netsh firewall delete falhou: %w (%s)", err, strings.TrimSpace(outStr))
 	}
 
 	return nil
@@ -374,6 +419,39 @@ func allBlockRuleName() string { return "FocusGuard_AllInternet" }
 // addresses produce a valid rule name.
 func allowRuleName(ip string) string {
 	return "FocusGuard_Allow_" + strings.ReplaceAll(ip, ":", "_")
+}
+
+// domainRuleName builds the (normalized) name of a domain block rule for an
+// IP, replacing ':' so IPv6 addresses produce a valid, consistent rule name —
+// the same convention DoH and Allow rules already use.
+func domainRuleName(ip string) string {
+	return "FocusGuard_" + strings.ReplaceAll(ip, ":", "_")
+}
+
+// legacyDomainRuleName is the pre-normalization domain rule name (raw IP, with
+// ':' for IPv6). Kept for migration: batch add deletes it before adding the
+// normalized rule, and removeFirewallRule sweeps both names.
+func legacyDomainRuleName(ip string) string {
+	return "FocusGuard_" + ip
+}
+
+// domainIPFromRuleName extracts the blocked IP from a domain rule name in
+// either the legacy (raw ':' IPv6) or normalized ('_' for ':') form, keyed by
+// canonical net.IP.String(). The bool reports whether the name is a domain
+// rule at all — DoH/DoT/allow/catch-all names (FocusGuard_DoH_*, DoT_*,
+// Allow_*, AllInternet) never parse as an IP and are therefore never swept.
+func domainIPFromRuleName(name string) (string, bool) {
+	const prefix = "FocusGuard_"
+	if !strings.HasPrefix(name, prefix) {
+		return "", false
+	}
+	suffix := name[len(prefix):]
+	for _, candidate := range []string{suffix, strings.ReplaceAll(suffix, "_", ":")} {
+		if ip := net.ParseIP(candidate); ip != nil {
+			return ip.String(), true
+		}
+	}
+	return "", false
 }
 
 // BlockAll cuts off ALL outbound internet (panic mode) with a single catch-all
@@ -418,6 +496,7 @@ func (e *windowsEnforcer) BlockAll(allowlistIPs []string) error {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		return fmt.Errorf("netsh block-all falhou: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
+	e.invalidateStatusCache()
 	return nil
 }
 
@@ -430,13 +509,34 @@ func (e *windowsEnforcer) UnblockAll() error {
 	if err := e.checkAdmin(); err != nil {
 		return err
 	}
-	return e.unblockAllLocked()
+	if err := e.unblockAllLocked(); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
-// unblockAllLocked deletes the catch-all block rule and sweeps every allow
-// rule (FocusGuard_Allow_*) present in the firewall. The caller must hold e.mu.
+// unblockAllLocked removes the catch-all block rule and sweeps every allow
+// rule (FocusGuard_Allow_*) present in the firewall. The allow names are
+// enumerated BEFORE any deletion — the name=all query is the slow part, and
+// moving it before the deletes shrinks the window in which an interruption
+// could leave allow rules orphaned. The caller must hold e.mu.
 func (e *windowsEnforcer) unblockAllLocked() error {
-	// Catch-all primeiro.
+	// Enumerar as allow rules primeiro (best-effort: se a consulta falhar,
+	// ainda seguimos e removemos o catch-all abaixo).
+	var allows map[string]bool
+	listCtx, listCancel := context.WithTimeout(context.Background(), 5*time.Second)
+	listCmd := execCommandContext(listCtx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
+	out, err := listCmd.CombinedOutput()
+	listCancel()
+	if err == nil {
+		allows = parseFocusGuardAllowRuleNames(out)
+	}
+
+	// Catch-all primeiro: se o processo for interrompido no meio da sequência,
+	// a internet volta a funcionar e sobram apenas allow rules inertes (cruft,
+	// limpo no próximo BlockAll) — jamais uma internet bloqueada por um
+	// catch-all órfão.
 	delCtx, delCancel := context.WithTimeout(context.Background(), 3*time.Second)
 	cmd := execCommandContext(delCtx, "netsh", deleteRuleArgs(allBlockRuleName())...)
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -448,15 +548,8 @@ func (e *windowsEnforcer) unblockAllLocked() error {
 	}
 	delCancel()
 
-	// Sweep das allow rules: consulta única name=all e deleta cada uma.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	listCmd := execCommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
-	out, err := listCmd.CombinedOutput()
-	if err != nil {
-		return nil // sem consulta: nada a limpar por aqui
-	}
-	for name := range parseFocusGuardAllowRuleNames(out) {
+	// Deletes já enumerados, em sequência rápida.
+	for name := range allows {
 		dctx, dcancel := context.WithTimeout(context.Background(), 3*time.Second)
 		dcmd := execCommandContext(dctx, "netsh", deleteRuleArgs(name)...)
 		if dout, derr := dcmd.CombinedOutput(); derr != nil {
@@ -489,8 +582,15 @@ func parseFocusGuardAllowRuleNames(output []byte) map[string]bool {
 }
 
 func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	// Cache com mutex próprio: Status nunca segura e.mu, então uma consulta
+	// lenta de netsh (show rule name=all pode levar segundos) não bloqueia
+	// BlockDomain/UnblockDomain/Sync. Mutações invalidam o cache.
+	e.statusMu.Lock()
+	defer e.statusMu.Unlock()
+
+	if time.Since(e.lastStatusTime) < statusCacheTTL {
+		return e.lastStatus, nil
+	}
 
 	if err := e.checkAdmin(); err != nil {
 		return EnforcerStatus{}, err
@@ -506,7 +606,19 @@ func (e *windowsEnforcer) Status() (EnforcerStatus, error) {
 	if err != nil {
 		return EnforcerStatus{}, fmt.Errorf("netsh show rules falhou: %w", err)
 	}
-	return countFocusGuardRules(out), nil
+
+	e.lastStatus = countFocusGuardRules(out)
+	e.lastStatusTime = time.Now()
+	return e.lastStatus, nil
+}
+
+// invalidateStatusCache drops the cached Status snapshot so the next call
+// re-queries the firewall. Called after every successful mutation so the tray
+// and CLI reflect the change immediately instead of waiting out the TTL.
+func (e *windowsEnforcer) invalidateStatusCache() {
+	e.statusMu.Lock()
+	e.lastStatusTime = time.Time{}
+	e.statusMu.Unlock()
 }
 
 func countFocusGuardRules(output []byte) EnforcerStatus {
@@ -590,6 +702,7 @@ func (e *windowsEnforcer) BlockDoH() error {
 			return err
 		}
 	}
+	e.invalidateStatusCache()
 	return nil
 }
 
@@ -606,6 +719,7 @@ func (e *windowsEnforcer) UnblockDoH() error {
 			return err
 		}
 	}
+	e.invalidateStatusCache()
 	return nil
 }
 

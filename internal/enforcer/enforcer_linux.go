@@ -18,6 +18,10 @@ type linuxEnforcer struct {
 	mu           sync.Mutex
 	hostsPath    string
 	onHostsWrite func()
+
+	statusMu       sync.Mutex
+	lastStatus     EnforcerStatus
+	lastStatusTime time.Time
 }
 
 func NewEnforcer() Enforcer {
@@ -47,7 +51,11 @@ func (e *linuxEnforcer) BlockDomain(domain string, ips []string) error {
 		return err
 	}
 
-	return e.blockDomainLocked(domain, ips)
+	if err := e.blockDomainLocked(domain, ips); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 // blockDomainLocked applies a block while holding the lock. If the batched
@@ -77,7 +85,11 @@ func (e *linuxEnforcer) UnblockDomain(domain string, ips []string) error {
 		return err
 	}
 
-	return e.unblockDomainLocked(domain, ips)
+	if err := e.unblockDomainLocked(domain, ips); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 func (e *linuxEnforcer) unblockDomainLocked(domain string, ips []string) error {
@@ -107,7 +119,11 @@ func (e *linuxEnforcer) Sync(activeBlocks map[string][]string) error {
 		return err
 	}
 
-	return e.syncLocked(activeBlocks)
+	if err := e.syncLocked(activeBlocks); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 // syncLocked applies a batch of active blocks with a single hosts-file rewrite
@@ -160,7 +176,23 @@ func (e *linuxEnforcer) syncLocked(activeBlocks map[string][]string) error {
 		}
 	}
 
-	return nil
+	// Sweep de regras órfãs de domínio (restos de crash/sigkill antes de um
+	// UnblockDomain): remove o que está no firewall mas não pertence a nenhum
+	// bloco ativo. existingBlockedIPs só contém IPs de regras de domínio
+	// (REJECT/DROP com -d, sem --dport), então regras DoH/DoT, o catch-all e
+	// as allow rules nunca são tocados aqui.
+	expected := expectedBlockedIPs(activeBlocks)
+	var firstErr error
+	for ip := range existing {
+		parsed := net.ParseIP(ip)
+		if parsed == nil || expected[parsed.String()] {
+			continue
+		}
+		if err := e.removeFirewallRule(ip); err != nil && firstErr == nil {
+			firstErr = err
+		}
+	}
+	return firstErr
 }
 
 // existingBlockedIPs consults the firewall once and returns the IPs with an
@@ -421,8 +453,12 @@ func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 }
 
 func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
-	e.mu.Lock()
-	defer e.mu.Unlock()
+	e.statusMu.Lock()
+	defer e.statusMu.Unlock()
+
+	if time.Since(e.lastStatusTime) < statusCacheTTL {
+		return e.lastStatus, nil
+	}
 
 	if err := checkRoot(); err != nil {
 		return EnforcerStatus{}, err
@@ -439,8 +475,8 @@ func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 	status := EnforcerStatus{}
 	queried := 0
 	for _, bin := range bins {
-		cmd := exec.CommandContext(ctx, bin, "-S", "OUTPUT")
-		out, err := cmd.Output()
+		cmd := execCommandContext(ctx, bin, "-S", "OUTPUT")
+		out, err := cmd.CombinedOutput()
 		if err != nil {
 			continue
 		}
@@ -456,7 +492,18 @@ func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 	}
 	status.AllBlocked = e.allBlockedByStatus()
 
+	e.lastStatus = status
+	e.lastStatusTime = time.Now()
 	return status, nil
+}
+
+// invalidateStatusCache drops the cached Status snapshot so the next call
+// re-queries the firewall. Called after every successful mutation so the tray
+// and CLI reflect the change immediately instead of waiting out the TTL.
+func (e *linuxEnforcer) invalidateStatusCache() {
+	e.statusMu.Lock()
+	e.lastStatusTime = time.Time{}
+	e.statusMu.Unlock()
 }
 
 func countIptablesRules(output []byte) EnforcerStatus {
@@ -508,7 +555,11 @@ func (e *linuxEnforcer) BlockAll(allowlistIPs []string) error {
 	if err := checkRoot(); err != nil {
 		return err
 	}
-	return e.blockAllLocked(allowlistIPs)
+	if err := e.blockAllLocked(allowlistIPs); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 // blockAllLocked applies the all-internet block while holding the lock. The
@@ -562,7 +613,11 @@ func (e *linuxEnforcer) UnblockAll() error {
 	if err := checkRoot(); err != nil {
 		return err
 	}
-	return e.unblockAllLocked()
+	if err := e.unblockAllLocked(); err != nil {
+		return err
+	}
+	e.invalidateStatusCache()
+	return nil
 }
 
 // unblockAllLocked sweeps every OUTPUT rule carrying the all/allow markers in
@@ -644,6 +699,7 @@ func (e *linuxEnforcer) BlockDoH() error {
 			return err
 		}
 	}
+	e.invalidateStatusCache()
 	return nil
 }
 
@@ -660,6 +716,7 @@ func (e *linuxEnforcer) UnblockDoH() error {
 			return err
 		}
 	}
+	e.invalidateStatusCache()
 	return nil
 }
 
