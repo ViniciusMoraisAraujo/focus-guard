@@ -2,7 +2,6 @@ package tray
 
 import (
 	"bytes"
-	"image"
 	"image/png"
 	"testing"
 )
@@ -43,46 +42,28 @@ func TestGenerateIcon_IsNotBlank(t *testing.T) {
 	}
 }
 
-func TestRenderShield_CenterOpaqueCornersTransparent(t *testing.T) {
-	img := RenderShield(64, 4)
-	if b := img.Bounds(); b.Dx() != 64 || b.Dy() != 64 {
-		t.Fatalf("icone %dx%d, want 64x64", b.Dx(), b.Dy())
+func TestIcoFromPNG_Header(t *testing.T) {
+	pngData, err := GenerateIcon()
+	if err != nil {
+		t.Fatalf("GenerateIcon erro: %v", err)
 	}
+	ico := icoFromPNG(pngData)
 
-	if _, _, _, a := img.At(32, 32).RGBA(); a == 0 {
-		t.Error("centro do escudo deveria ser opaco")
+	wantHeader := []byte{0, 0, 1, 0, 1, 0} // reserved, type=icon, count=1
+	if !bytes.HasPrefix(ico, wantHeader) {
+		t.Errorf("header do ico = %x, want %x", ico[:6], wantHeader)
 	}
-	for _, c := range []image.Point{{0, 0}, {63, 0}, {0, 63}, {63, 63}} {
-		if _, _, _, a := img.At(c.X, c.Y).RGBA(); a != 0 {
-			t.Errorf("canto %v deveria ser transparente", c)
-		}
+	if ico[6] != iconSize || ico[7] != iconSize {
+		t.Errorf("dimensoes do entry = %dx%d, want %d", ico[6], ico[7], iconSize)
 	}
-}
-
-func TestRenderShield_ContainsNavyAndGreen(t *testing.T) {
-	img := RenderShield(64, 4)
-
-	hasNavy := false
-	hasGreen := false
-	for y := 0; y < 64; y++ {
-		for x := 0; x < 64; x++ {
-			r, g, b, a := img.At(x, y).RGBA()
-			if a == 0 {
-				continue
-			}
-			r8, g8, b8 := uint8(r>>8), uint8(g>>8), uint8(b>>8)
-			if b8 > 80 && b8 > g8 && r8 < 70 {
-				hasNavy = true
-			}
-			if g8 > 140 && g8 > r8 && g8 > b8 {
-				hasGreen = true
-			}
-		}
+	n := int(ico[14]) | int(ico[15])<<8 | int(ico[16])<<16 | int(ico[17])<<24
+	if n != len(pngData) {
+		t.Errorf("bytesInRes = %d, want %d", n, len(pngData))
 	}
-	if !hasNavy {
-		t.Error("escudo deveria conter pixels azul-marinho")
+	if want := 22 + len(pngData); len(ico) != want {
+		t.Errorf("len(ico) = %d, want %d", len(ico), want)
 	}
-	if !hasGreen {
-		t.Error("escudo deveria conter o checkmark verde")
+	if !bytes.Equal(ico[22:], pngData) {
+		t.Error("payload PNG do ico nao corresponde")
 	}
 }
