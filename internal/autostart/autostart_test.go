@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 type fakeCmd struct {
@@ -16,6 +17,15 @@ type fakeCmd struct {
 func (c *fakeCmd) CombinedOutput() ([]byte, error) {
 	return c.fn()
 }
+
+type fakeFileInfo struct{}
+
+func (fakeFileInfo) Name() string       { return "" }
+func (fakeFileInfo) Size() int64        { return 0 }
+func (fakeFileInfo) Mode() os.FileMode  { return 0 }
+func (fakeFileInfo) ModTime() time.Time { return time.Time{} }
+func (fakeFileInfo) IsDir() bool        { return false }
+func (fakeFileInfo) Sys() interface{}   { return nil }
 
 func TestInstall_CreatesService(t *testing.T) {
 	var capturedCmds []struct {
@@ -55,8 +65,8 @@ func TestInstall_CreatesService(t *testing.T) {
 		t.Fatalf("Install returned error: %v", err)
 	}
 
-	if len(capturedCmds) < 2 {
-		t.Fatalf("expected at least 2 sc commands, got %d", len(capturedCmds))
+	if len(capturedCmds) != 3 {
+		t.Fatalf("expected 3 sc commands (create, failure, start), got %d", len(capturedCmds))
 	}
 
 	createCmd := capturedCmds[0]
@@ -91,6 +101,12 @@ func TestInstall_CreatesService(t *testing.T) {
 
 	if !strings.Contains(capturedDir, "FocusGuard") {
 		t.Errorf("expected FocusGuard dir, got %q", capturedDir)
+	}
+
+	startCmd := capturedCmds[2]
+	startArgsJoined := strings.Join(startCmd.args, " ")
+	if startCmd.name != "sc" || !strings.Contains(startArgsJoined, "start") || !strings.Contains(startArgsJoined, serviceName) {
+		t.Errorf("expected sc start %s as third command, got %v", serviceName, startCmd.args)
 	}
 }
 
@@ -1077,5 +1093,435 @@ func TestIsTrayInstalled_OtherError(t *testing.T) {
 	_, err := IsTrayInstalled()
 	if err == nil {
 		t.Fatal("expected error when reg query fails with access denied")
+	}
+}
+
+func TestInstallDir_Windows(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	t.Setenv("ProgramFiles", `C:\Program Files`)
+	if got := InstallDir(); got != `C:\Program Files\FocusGuard` {
+		t.Errorf("expected C:\\Program Files\\FocusGuard, got %q", got)
+	}
+}
+
+func TestInstallDir_FallbackWhenProgramFilesMissing(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	t.Setenv("ProgramFiles", "")
+	if got := InstallDir(); got != `C:\Program Files\FocusGuard` {
+		t.Errorf("expected fallback C:\\Program Files\\FocusGuard, got %q", got)
+	}
+}
+
+func TestInstallDir_NonWindows(t *testing.T) {
+	origGoos := goos
+	goos = "linux"
+	defer func() { goos = origGoos }()
+
+	if got := InstallDir(); got != "" {
+		t.Errorf("expected empty install dir on non-windows, got %q", got)
+	}
+}
+
+func TestInstallBinaries_CopiesExistingBinaries(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	base := t.TempDir()
+	t.Setenv("ProgramFiles", base)
+	src := t.TempDir()
+
+	present := []string{"focusguard.exe", "focusguard-daemon.exe", "focusguard-tray.exe"}
+	for _, name := range present {
+		if err := os.WriteFile(filepath.Join(src, name), []byte("bin-"+name), 0644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// focusguard-watchdog.exe ausente intencionalmente.
+
+	dir, err := InstallBinaries(src)
+	if err != nil {
+		t.Fatalf("InstallBinaries returned error: %v", err)
+	}
+	wantDir := filepath.Join(base, "FocusGuard")
+	if dir != wantDir {
+		t.Errorf("expected install dir %q, got %q", wantDir, dir)
+	}
+	for _, name := range present {
+		data, err := os.ReadFile(filepath.Join(wantDir, name))
+		if err != nil {
+			t.Errorf("expected %s to be copied: %v", name, err)
+			continue
+		}
+		if string(data) != "bin-"+name {
+			t.Errorf("expected %s content %q, got %q", name, "bin-"+name, string(data))
+		}
+	}
+	if _, err := os.Stat(filepath.Join(wantDir, "focusguard-watchdog.exe")); !os.IsNotExist(err) {
+		t.Error("absent binaries should not be copied")
+	}
+}
+
+func TestInstallBinaries_SkipsSelfCopy(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	base := t.TempDir()
+	src := filepath.Join(base, "FocusGuard")
+	if err := os.MkdirAll(src, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "focusguard.exe"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("ProgramFiles", base)
+
+	dir, err := InstallBinaries(src)
+	if err != nil {
+		t.Fatalf("InstallBinaries should tolerate src == dst, got: %v", err)
+	}
+	if dir != src {
+		t.Errorf("expected install dir %q, got %q", src, dir)
+	}
+}
+
+func TestCreateDesktopShortcut_CallsPowerShell(t *testing.T) {
+	var captured []struct {
+		name string
+		args []string
+	}
+
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
+		return &fakeCmd{fn: func() ([]byte, error) { return []byte("ok"), nil }}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	// Simula o daemon instalado ao lado do CLI, para o ícone ser extraído dele.
+	origStat := osStat
+	osStat = func(name string) (os.FileInfo, error) {
+		if name == `C:\Program Files\FocusGuard\focusguard-daemon.exe` {
+			return fakeFileInfo{}, nil
+		}
+		return nil, os.ErrNotExist
+	}
+	defer func() { osStat = origStat }()
+
+	public := t.TempDir()
+	t.Setenv("PUBLIC", public)
+
+	target := `C:\Program Files\FocusGuard\focusguard.exe`
+	if err := CreateDesktopShortcut(target); err != nil {
+		t.Fatalf("CreateDesktopShortcut returned error: %v", err)
+	}
+
+	if len(captured) != 2 {
+		t.Fatalf("expected 2 powershell commands (extract icon + shortcut), got %d", len(captured))
+	}
+	if captured[0].name != "powershell" || captured[1].name != "powershell" {
+		t.Errorf("expected powershell for both commands, got %q, %q", captured[0].name, captured[1].name)
+	}
+
+	// Primeira chamada: extração do ícone embutido do daemon.
+	extractScript := strings.Join(captured[0].args, " ")
+	for _, want := range []string{
+		"ExtractAssociatedIcon",
+		`C:\Program Files\FocusGuard\focusguard-daemon.exe`,
+		`C:\Program Files\FocusGuard\focusguard.ico`,
+	} {
+		if !strings.Contains(extractScript, want) {
+			t.Errorf("expected %q in extract script, got: %s", want, extractScript)
+		}
+	}
+
+	// Segunda chamada: atalho com IconLocation no .ico extraído.
+	script := strings.Join(captured[1].args, " ")
+	for _, want := range []string{
+		"CreateShortcut",
+		"FocusGuard.lnk",
+		target,
+		filepath.Join(public, "Desktop"),
+		`IconLocation = 'C:\Program Files\FocusGuard\focusguard.ico'`,
+		".Save()",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("expected %q in powershell script, got: %s", want, script)
+		}
+	}
+}
+
+func TestExtractIcon_CallsPowerShell(t *testing.T) {
+	var captured []struct {
+		name string
+		args []string
+	}
+
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		captured = append(captured, struct {
+			name string
+			args []string
+		}{name: name, args: args})
+		return &fakeCmd{fn: func() ([]byte, error) { return []byte("ok"), nil }}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	exePath := filepath.Join(t.TempDir(), "focusguard-daemon.exe")
+	if err := os.WriteFile(exePath, []byte("MZ"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	icoPath := filepath.Join(t.TempDir(), "focusguard.ico")
+
+	if err := ExtractIcon(exePath, icoPath); err != nil {
+		t.Fatalf("ExtractIcon returned error: %v", err)
+	}
+	if len(captured) != 1 {
+		t.Fatalf("expected 1 powershell command, got %d", len(captured))
+	}
+	if captured[0].name != "powershell" {
+		t.Errorf("expected powershell, got %q", captured[0].name)
+	}
+	script := strings.Join(captured[0].args, " ")
+	for _, want := range []string{"ExtractAssociatedIcon", exePath, icoPath, ".Save("} {
+		if !strings.Contains(script, want) {
+			t.Errorf("expected %q in powershell script, got: %s", want, script)
+		}
+	}
+}
+
+func TestExtractIcon_MissingExe(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	err := ExtractIcon(filepath.Join(t.TempDir(), "nope.exe"), filepath.Join(t.TempDir(), "focusguard.ico"))
+	if err == nil || !strings.Contains(err.Error(), "não encontrado") {
+		t.Fatalf("expected missing-exe error, got: %v", err)
+	}
+}
+
+func TestExtractIcon_UnsupportedPlatform(t *testing.T) {
+	origGoos := goos
+	goos = "linux"
+	defer func() { goos = origGoos }()
+
+	err := ExtractIcon("/usr/local/bin/focusguard-daemon", "/tmp/focusguard.ico")
+	if err == nil || !strings.Contains(err.Error(), "exclusiva do Windows") {
+		t.Fatalf("expected unsupported platform error on linux, got: %v", err)
+	}
+}
+
+func TestExtractIcon_Error(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{fn: func() ([]byte, error) {
+			return []byte("error extracting"), errors.New("exit status 1")
+		}}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	exePath := filepath.Join(t.TempDir(), "focusguard-daemon.exe")
+	if err := os.WriteFile(exePath, []byte("MZ"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	err := ExtractIcon(exePath, filepath.Join(t.TempDir(), "focusguard.ico"))
+	if err == nil || !strings.Contains(err.Error(), "falha ao extrair ícone") {
+		t.Fatalf("expected extract failure message, got: %v", err)
+	}
+}
+
+func TestCreateDesktopShortcut_UnsupportedPlatform(t *testing.T) {
+	origGoos := goos
+	goos = "linux"
+	defer func() { goos = origGoos }()
+
+	err := CreateDesktopShortcut("/usr/local/bin/focusguard")
+	if err == nil || !strings.Contains(err.Error(), "exclusivo do Windows") {
+		t.Fatalf("expected unsupported platform error on linux, got: %v", err)
+	}
+}
+
+func TestCreateDesktopShortcut_Error(t *testing.T) {
+	origCmd := execCommand
+	execCommand = func(name string, args ...string) cmdRunner {
+		return &fakeCmd{fn: func() ([]byte, error) {
+			return []byte("0x80004005"), errors.New("exit status 1")
+		}}
+	}
+	defer func() { execCommand = origCmd }()
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+	t.Setenv("PUBLIC", t.TempDir())
+
+	err := CreateDesktopShortcut(`C:\Program Files\FocusGuard\focusguard.exe`)
+	if err == nil {
+		t.Fatal("expected error when powershell fails")
+	}
+	if !strings.Contains(err.Error(), "falha ao criar atalho") {
+		t.Errorf("expected shortcut failure message, got: %v", err)
+	}
+}
+
+func TestRemoveDesktopShortcut_RemovesFile(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	public := t.TempDir()
+	t.Setenv("PUBLIC", public)
+
+	lnk := filepath.Join(public, "Desktop", "FocusGuard.lnk")
+	if err := os.MkdirAll(filepath.Dir(lnk), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lnk, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveDesktopShortcut(); err != nil {
+		t.Fatalf("RemoveDesktopShortcut returned error: %v", err)
+	}
+	if _, err := os.Stat(lnk); !os.IsNotExist(err) {
+		t.Error("shortcut should be removed")
+	}
+}
+
+func TestRemoveDesktopShortcut_MissingIsIdempotent(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+	t.Setenv("PUBLIC", t.TempDir())
+
+	if err := RemoveDesktopShortcut(); err != nil {
+		t.Fatalf("removing a missing shortcut should be idempotent, got: %v", err)
+	}
+}
+
+func TestRemoveInstall_RemovesDirAndShortcut(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	base := t.TempDir()
+	t.Setenv("ProgramFiles", base)
+	t.Setenv("PUBLIC", base)
+
+	installDir := filepath.Join(base, "FocusGuard")
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(installDir, "focusguard.exe"), []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	lnk := filepath.Join(base, "Desktop", "FocusGuard.lnk")
+	if err := os.MkdirAll(filepath.Dir(lnk), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(lnk, []byte("x"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := RemoveInstall(); err != nil {
+		t.Fatalf("RemoveInstall returned error: %v", err)
+	}
+	if _, err := os.Stat(installDir); !os.IsNotExist(err) {
+		t.Error("install dir should be removed")
+	}
+	if _, err := os.Stat(lnk); !os.IsNotExist(err) {
+		t.Error("shortcut should be removed")
+	}
+}
+
+func TestEnsureInInstallDir_CopiesWhenInstalled(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	base := t.TempDir()
+	t.Setenv("ProgramFiles", base)
+	installDir := filepath.Join(base, "FocusGuard")
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	src := filepath.Join(t.TempDir(), "focusguard-tray.exe")
+	if err := os.WriteFile(src, []byte("tray"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := EnsureInInstallDir(src)
+	if err != nil {
+		t.Fatalf("EnsureInInstallDir returned error: %v", err)
+	}
+	want := filepath.Join(installDir, "focusguard-tray.exe")
+	if got != want {
+		t.Errorf("expected %q, got %q", want, got)
+	}
+	data, err := os.ReadFile(want)
+	if err != nil {
+		t.Fatalf("expected copied binary: %v", err)
+	}
+	if string(data) != "tray" {
+		t.Errorf("expected content 'tray', got %q", string(data))
+	}
+}
+
+func TestEnsureInInstallDir_NotInstalledReturnsSrc(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	t.Setenv("ProgramFiles", t.TempDir()) // diretório de instalação não existe
+
+	src := filepath.Join(t.TempDir(), "focusguard-watchdog.exe")
+	if err := os.WriteFile(src, []byte("wd"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := EnsureInInstallDir(src)
+	if err != nil {
+		t.Fatalf("EnsureInInstallDir returned error: %v", err)
+	}
+	if got != src {
+		t.Errorf("expected original path %q, got %q", src, got)
+	}
+}
+
+func TestShortcutPath_UsesPublicDesktop(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	public := t.TempDir()
+	t.Setenv("PUBLIC", public)
+	want := filepath.Join(public, "Desktop", "FocusGuard.lnk")
+	if got := ShortcutPath(); got != want {
+		t.Errorf("expected %q, got %q", want, got)
 	}
 }

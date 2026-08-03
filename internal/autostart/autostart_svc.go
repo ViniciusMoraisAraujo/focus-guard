@@ -40,6 +40,10 @@ func installWindows(exePath string) error {
 		log.Printf("[FocusGuard Daemon] Aviso: não foi possível configurar recuperação automática: %v (%s)", err2, strings.TrimSpace(string(out2)))
 	}
 
+	if out3, err3 := execCommand("sc", "start", serviceName).CombinedOutput(); err3 != nil {
+		log.Printf("[FocusGuard Daemon] Aviso: serviço instalado, mas não iniciou: %v (%s)", err3, strings.TrimSpace(string(out3)))
+	}
+
 	return nil
 }
 

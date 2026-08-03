@@ -1,4 +1,4 @@
-param(
+﻿param(
     [Parameter(Mandatory=$false)]
     [ValidateSet("install","uninstall","status")]
     [string]$Action = "status",
@@ -54,6 +54,28 @@ function Get-ExePath {
         }
     }
     return ""
+}
+
+# Instala o watchdog externo (Windows) como serviço, como o comando
+# install-watchdog faria. Silencioso quando o binário não está presente.
+function Install-Watchdog {
+    $watchdogExe = "$InstallDir\focusguard-watchdog.exe"
+    if (-not (Test-Path $watchdogExe)) {
+        return
+    }
+    sc.exe create $WatchdogServiceName binPath=$watchdogExe start=auto displayname="FocusGuard Watchdog"
+    if ($LASTEXITCODE -eq 0) {
+        sc.exe description $WatchdogServiceName "Monitora o daemon FocusGuard e o reinicia se não responder." | Out-Null
+        sc.exe failure $WatchdogServiceName reset=86400 actions=restart/5000/restart/5000/restart/5000 | Out-Null
+        sc.exe start $WatchdogServiceName | Out-Null
+        if ($LASTEXITCODE -eq 0) {
+            Write-Host "[FocusGuard] ✔ Watchdog instalado como serviço e iniciado." -ForegroundColor Green
+        } else {
+            Write-Host "[FocusGuard] ⚠ Watchdog instalado, mas não iniciou. Inicie com: sc.exe start $WatchdogServiceName" -ForegroundColor Yellow
+        }
+    } else {
+        Write-Host "[FocusGuard] ⚠ Falha ao criar o serviço do watchdog." -ForegroundColor Yellow
+    }
 }
 
 function Install-Daemon {
@@ -114,6 +136,20 @@ function Install-Daemon {
         } else {
             Write-Host "[FocusGuard] ⚠ Serviço instalado. Inicie manualmente com: sc.exe start $ServiceName" -ForegroundColor Yellow
         }
+
+        # Registra o tray na inicialização automaticamente (HKCU Run), como o
+        # comando install-tray faria — o install do CLI faz o mesmo.
+        $trayExe = "$InstallDir\focusguard-tray.exe"
+        if (Test-Path $trayExe) {
+            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v FocusGuardTray /t REG_SZ /d $trayExe /f | Out-Null
+            if ($LASTEXITCODE -eq 0) {
+                Write-Host "[FocusGuard] ✔ Tray registrado para iniciar com o Windows (HKCU Run)." -ForegroundColor Green
+            } else {
+                Write-Host "[FocusGuard] ⚠ Falha ao registrar o tray na inicialização." -ForegroundColor Yellow
+            }
+        }
+
+        Install-Watchdog
     } else {
         Write-Host "[FocusGuard] ✘ Falha ao criar serviço Windows. Execute como Administrador." -ForegroundColor Red
         exit 1
@@ -140,6 +176,20 @@ function Uninstall-Daemon {
         exit 1
     }
 
+    # Watchdog e tray também são desinstalados (o install os registra).
+    $wd = sc.exe query $WatchdogServiceName 2>$null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[FocusGuard] Removendo watchdog..." -ForegroundColor Cyan
+        sc.exe stop $WatchdogServiceName 2>$null | Out-Null
+        sc.exe delete $WatchdogServiceName | Out-Null
+        Write-Host "[FocusGuard] ✔ Watchdog removido." -ForegroundColor Green
+    }
+
+    reg delete "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v FocusGuardTray /f 2>$null | Out-Null
+    if ($LASTEXITCODE -eq 0) {
+        Write-Host "[FocusGuard] ✔ Tray removido da inicialização (HKCU Run)." -ForegroundColor Green
+    }
+
     if (Test-Path $StateDir) {
         Write-Host "[FocusGuard] Diretório de estado preservado: $StateDir" -ForegroundColor Cyan
         Write-Host "[FocusGuard] Para remover completamente, exclua manualmente o diretório." -ForegroundColor Gray
@@ -153,9 +203,37 @@ function Uninstall-Daemon {
     }
 }
 
+# Extrai o ícone embutido do executável (via ExtractAssociatedIcon, wrapper
+# .NET de ExtractIconEx) para um focusguard.ico próprio no diretório de
+# instalação. Retorna $true em caso de sucesso; $false silenciosamente caso
+# contrário.
+function Export-Icon {
+    param([string]$ExePath, [string]$IcoPath)
+    if (-not (Test-Path $ExePath)) {
+        return $false
+    }
+    Add-Type -AssemblyName System.Drawing
+    try {
+        $icon = [System.Drawing.Icon]::ExtractAssociatedIcon($ExePath)
+        if ($null -eq $icon) {
+            return $false
+        }
+        try {
+            $fs = [System.IO.File]::Create($IcoPath)
+            try { $icon.Save($fs) } finally { $fs.Dispose() }
+        } finally {
+            $icon.Dispose()
+        }
+        return $true
+    } catch {
+        return $false
+    }
+}
+
 # Install-DesktopShortcut cria um atalho .lnk no Desktop apontando para o
-# focusguard.exe (CLI), com o ícone embedado no próprio executável via
-# go-winres (IconLocation=focusguard.exe,0). Best-effort: falha não aborta.
+# focusguard.exe (CLI). O ícone é o focusguard.ico extraído do executável
+# (Export-Icon); se a extração falhar, usa o ícone embedado no próprio exe
+# (go-winres, IconLocation=focusguard.exe,0). Best-effort: falha não aborta.
 function Install-DesktopShortcut {
     # Prefere o CLI da pasta protegida (Program Files); o do zip extraído é o
     # fallback para quem rodou o script sem copiar os binários.
@@ -180,7 +258,11 @@ function Install-DesktopShortcut {
         $sc = $ws.CreateShortcut($lnk)
         $sc.TargetPath = $cli
         $sc.WorkingDirectory = Split-Path -Parent $cli
-        $sc.IconLocation = "$cli,0"
+        $IconLocation = "$cli,0"
+        if (Export-Icon -ExePath $cli -IcoPath "$InstallDir\focusguard.ico") {
+            $IconLocation = "$InstallDir\focusguard.ico"
+        }
+        $sc.IconLocation = $IconLocation
         $sc.Description = "FocusGuard - bloqueio focado de distrações"
         $sc.Save()
         Write-Host "[FocusGuard] ✔ Atalho do FocusGuard criado no Desktop ($lnk)." -ForegroundColor Green

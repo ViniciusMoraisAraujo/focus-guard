@@ -99,41 +99,119 @@ func daemonExePath() string {
 }
 
 func handleInstallCommand() {
-	path := daemonExePath()
-	if path == "" {
-		fmt.Println("Erro: Não foi possível determinar o caminho do daemon.")
+	if runtime.GOOS == "linux" {
+		path := daemonExePath()
+		if path == "" {
+			fmt.Println("Erro: Não foi possível determinar o caminho do daemon.")
+			osExit(1)
+		}
+		if _, err := os.Stat(path); os.IsNotExist(err) {
+			fmt.Printf("Erro: Daemon não encontrado em %s\n", path)
+			fmt.Println("Compile o daemon primeiro: go build ./cmd/focusguard-daemon")
+			osExit(1)
+		}
+		if err := autostart.InstallSvc(path); err != nil {
+			fmt.Printf("Falha ao instalar: %v\n", err)
+			osExit(1)
+		}
+		fmt.Printf("✔ Daemon instalado como serviço de inicialização.\n")
+		fmt.Printf("  Binário: %s\n", path)
+		fmt.Printf("  Iniciará automaticamente no próximo login.\n")
+		return
+	}
+
+	// Windows: instala sempre em %ProgramFiles%\FocusGuard (Sistema / Todos os
+	// Usuários) e cria um atalho na área de trabalho pública.
+	exe, err := os.Executable()
+	if err != nil {
+		fmt.Printf("Erro: Não foi possível determinar o caminho do instalador: %v\n", err)
 		osExit(1)
 	}
-	if _, err := os.Stat(path); os.IsNotExist(err) {
-		fmt.Printf("Erro: Daemon não encontrado em %s\n", path)
+	srcDir := filepath.Dir(exe)
+
+	daemonSrc := filepath.Join(srcDir, "focusguard-daemon.exe")
+	if _, err := os.Stat(daemonSrc); os.IsNotExist(err) {
+		fmt.Printf("Erro: Daemon não encontrado em %s\n", daemonSrc)
 		fmt.Println("Compile o daemon primeiro: go build ./cmd/focusguard-daemon")
 		osExit(1)
 	}
-	var err error
-	if runtime.GOOS == "linux" {
-		err = autostart.InstallSvc(path)
-	} else {
-		err = autostart.Install(path)
-	}
+
+	installDir, err := autostart.InstallBinaries(srcDir)
 	if err != nil {
+		fmt.Printf("Falha ao copiar os binários para %s: %v\n", autostart.InstallDir(), err)
+		fmt.Println("Se o daemon estiver em execução, rode 'focusguard uninstall' antes de reinstalar.")
+		osExit(1)
+	}
+
+	daemonInstalled := filepath.Join(installDir, "focusguard-daemon.exe")
+	if err := autostart.Install(daemonInstalled); err != nil {
 		fmt.Printf("Falha ao instalar: %v\n", err)
 		osExit(1)
 	}
+
+	cliInstalled := filepath.Join(installDir, "focusguard.exe")
+	if err := autostart.CreateDesktopShortcut(cliInstalled); err != nil {
+		fmt.Printf("⚠ Aviso: serviço instalado, mas não foi possível criar o atalho: %v\n", err)
+	} else {
+		fmt.Printf("✔ Atalho 'FocusGuard' criado na área de trabalho (Todos os Usuários).\n")
+	}
+
+	// Registra o tray na inicialização automaticamente, como faria o comando
+	// install-tray (releases sempre incluem o tray; builds de dev podem não ter).
+	trayInstalled := filepath.Join(installDir, "focusguard-tray.exe")
+	if _, err := os.Stat(trayInstalled); err == nil {
+		if err := autostart.InstallTray(trayInstalled); err != nil {
+			fmt.Printf("⚠ Aviso: tray instalado, mas não foi possível registrar na inicialização: %v\n", err)
+		} else {
+			fmt.Printf("✔ Tray registrado para iniciar com o Windows (HKCU Run).\n")
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Printf("⚠ Aviso: não foi possível verificar o tray: %v\n", err)
+	}
+
+	// Instala o watchdog externo (Windows) automaticamente, como faria o
+	// comando install-watchdog (releases sempre incluem; builds de dev podem não).
+	watchdogInstalled := filepath.Join(installDir, "focusguard-watchdog.exe")
+	if _, err := os.Stat(watchdogInstalled); err == nil {
+		if err := autostart.InstallWatchdog(watchdogInstalled); err != nil {
+			fmt.Printf("⚠ Aviso: não foi possível instalar o watchdog: %v\n", err)
+		} else {
+			fmt.Printf("✔ Watchdog instalado como serviço e iniciado.\n")
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Printf("⚠ Aviso: não foi possível verificar o watchdog: %v\n", err)
+	}
+
 	fmt.Printf("✔ Daemon instalado como serviço de inicialização.\n")
-	fmt.Printf("  Binário: %s\n", path)
+	fmt.Printf("  Instalação: %s\n", installDir)
+	fmt.Printf("  Binário do daemon: %s\n", daemonInstalled)
 	fmt.Printf("  Iniciará automaticamente no próximo login.\n")
 }
 
 func handleUninstallCommand() {
-	var err error
 	if runtime.GOOS == "linux" {
-		err = autostart.UninstallSvc()
-	} else {
-		err = autostart.Uninstall()
+		if err := autostart.UninstallSvc(); err != nil {
+			fmt.Printf("Falha ao desinstalar: %v\n", err)
+			osExit(1)
+		}
+		fmt.Println("✔ Daemon removido da inicialização automática.")
+		return
 	}
-	if err != nil {
+
+	if err := autostart.Uninstall(); err != nil {
 		fmt.Printf("Falha ao desinstalar: %v\n", err)
 		osExit(1)
+	}
+	// Remove o watchdog e o tray (instalados automaticamente pelo install)
+	// antes de limpar o diretório, para não deixar serviços órfãos.
+	if err := autostart.UninstallWatchdog(); err != nil {
+		fmt.Printf("⚠ Aviso: não foi possível remover o watchdog: %v\n", err)
+	}
+	if err := autostart.RemoveInstall(); err != nil {
+		fmt.Printf("⚠ Aviso: serviço removido, mas não foi possível limpar a instalação: %v\n", err)
+	}
+	if err := autostart.UninstallTray(); err != nil {
+		fmt.Printf("⚠ Aviso: não foi possível remover o tray da inicialização: %v\n", err)
 	}
 	fmt.Println("✔ Daemon removido da inicialização automática.")
 }
@@ -169,7 +247,12 @@ func handleInstallWatchdogCommand() {
 		osExit(1)
 	}
 
-	if err := autostart.InstallWatchdog(path); err != nil {
+	installed, err := autostart.EnsureInInstallDir(path)
+	if err != nil {
+		fmt.Printf("Falha ao copiar o watchdog para a instalação: %v\n", err)
+		osExit(1)
+	}
+	if err := autostart.InstallWatchdog(installed); err != nil {
 		fmt.Printf("Falha ao instalar watchdog: %v\n", err)
 		osExit(1)
 	}
@@ -220,7 +303,12 @@ func handleInstallTrayCommand() {
 		osExit(1)
 	}
 
-	if err := autostart.InstallTray(path); err != nil {
+	installed, err := autostart.EnsureInInstallDir(path)
+	if err != nil {
+		fmt.Printf("Falha ao copiar o tray para a instalação: %v\n", err)
+		osExit(1)
+	}
+	if err := autostart.InstallTray(installed); err != nil {
 		fmt.Printf("Falha ao registrar tray: %v\n", err)
 		osExit(1)
 	}
@@ -1058,7 +1146,7 @@ func printUsage() {
 	fmt.Println("  focusguard goal set <duracao>         Definir a meta diária (ex: 4h)")
 	fmt.Println("  focusguard status")
 	fmt.Println("  focusguard update [--channel beta]  Verificar e aplicar atualizações do daemon")
-	fmt.Println("  focusguard install                 Instalar daemon na inicialização")
+	fmt.Println("  focusguard install                 Instalar daemon + tray + watchdog")
 	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")
 	fmt.Println("  focusguard interactive             Modo interativo (TUI)")
 	fmt.Println("  focusguard install-watchdog         Instalar watchdog externo (Windows)")
