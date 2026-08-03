@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-03
+
 ### 🎨 Ícone do sistema
 
 - **Artwork real no ícone** — o `focusguard.ico` (multi-tamanho, embutido nos
