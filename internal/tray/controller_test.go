@@ -55,7 +55,7 @@ func (m *mockMenuItem) click() { m.clicked <- struct{}{} }
 
 type mockSystray struct {
 	mu         sync.Mutex
-	icon       []byte
+	iconCalls  int
 	title      string
 	tooltip    string
 	items      []*mockMenuItem
@@ -81,7 +81,7 @@ func newMockSystray() *mockSystray { return &mockSystray{} }
 func (m *mockSystray) Run(onReady, _ func()) { onReady() }
 func (m *mockSystray) SetIcon(data []byte) {
 	m.mu.Lock()
-	m.icon = data
+	m.iconCalls++
 	m.mu.Unlock()
 }
 func (m *mockSystray) SetTitle(title string) {
@@ -119,11 +119,6 @@ func (m *mockSystray) getTitle() string {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.title
-}
-func (m *mockSystray) iconBytes() []byte {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	return m.icon
 }
 func (m *mockSystray) separatorCount() int {
 	m.mu.Lock()
@@ -209,8 +204,8 @@ func TestController_BuildsMenuAndShowsStatus(t *testing.T) {
 	c := NewController(s, d, nil)
 	c.Run()
 
-	if len(s.iconBytes()) == 0 {
-		t.Error("icone nao foi definido")
+	if s.iconCalls == 0 {
+		t.Error("SetIcon nao foi chamado (o icone deve ser definido)")
 	}
 	if s.getTitle() != "FocusGuard" {
 		t.Errorf("title = %q, want FocusGuard", s.getTitle())

@@ -22,6 +22,7 @@ icon:
 winres:
 	cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64
 	cd cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64
+	cd cmd/focusguard-tray && go-winres make --in versioninfo.json --arch amd64,arm64
 
 build-cli:
 	$(GO) build -o $(CLI_BIN) ./cmd/focusguard
