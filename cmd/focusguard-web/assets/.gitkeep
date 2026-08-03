@@ -1,0 +1,3 @@
+# A UI compilada (dist do focusguard-ui) é copiada para cá pelo "make ui".
+# O conteúdo é gitignored; este arquivo garante que o diretório existe para o
+# go:embed (all:assets) compilar mesmo antes de rodar "make ui".

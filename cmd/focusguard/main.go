@@ -3,7 +3,9 @@ package main
 import (
 	"flag"
 	"fmt"
+	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -12,6 +14,7 @@ import (
 
 	"focusguard/internal/analytics"
 	"focusguard/internal/autostart"
+	"focusguard/internal/httpapi"
 	"focusguard/internal/ipc"
 	"focusguard/internal/schedule"
 	"focusguard/internal/tamper"
@@ -61,6 +64,8 @@ func main() {
 		handleStatusCommand(client)
 	case "update":
 		handleUpdateCommand(client, os.Args[2:])
+	case "web":
+		handleWebCommand()
 	case "install":
 		handleInstallCommand()
 	case "uninstall":
@@ -82,6 +87,107 @@ func main() {
 		printUsage()
 		osExit(1)
 	}
+}
+
+// webURL é a URL da interface web servida pelo focusguard-web (sempre
+// localhost). O CLI a usa para abrir o navegador e sondar o servidor.
+var webURL = "http://" + httpapi.DefaultAddr
+
+// webExePath resolve o foco do servidor web junto ao executável do CLI.
+func webExePath() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return ""
+	}
+	dir := filepath.Dir(exe)
+	ext := filepath.Ext(exe)
+	base := "focusguard-web"
+	if ext != "" {
+		base += ext
+	}
+	return filepath.Join(dir, base)
+}
+
+// probeWebServerFn / spawnWebServerFn / waitWebServerFn / openBrowserFn /
+// webExePathFn são injetáveis nos testes para não tocar rede, processos,
+// navegador ou binários reais.
+var (
+	probeWebServerFn = webServerUp
+	spawnWebServerFn = spawnWebServer
+	waitWebServerFn  = waitForWebServer
+	openBrowserFn    = openBrowser
+	webExePathFn     = webExePath
+)
+
+// webServerUp sonda o health do focusguard-web: true quando o servidor já
+// está de pé (não depende do daemon — o health responde sempre que o
+// servidor roda).
+func webServerUp() bool {
+	client := &http.Client{Timeout: 500 * time.Millisecond}
+	resp, err := client.Get(webURL + "/api/health")
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	return resp.StatusCode == http.StatusOK
+}
+
+// waitForWebServer sonda o health em intervalos até o servidor responder ou
+// o timeout expirar.
+func waitForWebServer(timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if webServerUp() {
+			return true
+		}
+		time.Sleep(200 * time.Millisecond)
+	}
+	return false
+}
+
+// openBrowser abre a URL no navegador padrão do sistema.
+func openBrowser(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	case "darwin":
+		cmd = exec.Command("open", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
+}
+
+// handleWebCommand inicia o focusguard-web por demanda (se ainda não estiver
+// no ar) e abre a interface no navegador padrão. Se o servidor já roda, só
+// reabre o navegador — nunca sobe uma segunda instância.
+func handleWebCommand() {
+	if probeWebServerFn() {
+		openBrowserFn(webURL)
+		fmt.Printf("✔ Interface web já está no ar: %s\n", webURL)
+		return
+	}
+
+	path := webExePathFn()
+	if path == "" {
+		fmt.Println("Erro: Não foi possível determinar o caminho do focusguard-web.")
+		osExit(1)
+	}
+	if _, err := os.Stat(path); os.IsNotExist(err) {
+		fmt.Printf("Erro: focusguard-web não encontrado em %s\n", path)
+		fmt.Println("Compile o servidor web primeiro: go build ./cmd/focusguard-web")
+		osExit(1)
+	}
+	if err := spawnWebServerFn(path); err != nil {
+		fmt.Printf("Erro ao iniciar o focusguard-web: %v\n", err)
+		osExit(1)
+	}
+	if !waitWebServerFn(5 * time.Second) {
+		fmt.Println("⚠ Servidor web iniciado, mas ainda não respondeu. Abrindo o navegador mesmo assim...")
+	}
+	openBrowserFn(webURL)
+	fmt.Printf("✔ Interface web: %s\n", webURL)
 }
 
 func daemonExePath() string {
@@ -1145,6 +1251,7 @@ func printUsage() {
 	fmt.Println("  focusguard goal                        Mostrar a meta diária de foco")
 	fmt.Println("  focusguard goal set <duracao>         Definir a meta diária (ex: 4h)")
 	fmt.Println("  focusguard status")
+	fmt.Println("  focusguard web                     Abrir a interface web no navegador")
 	fmt.Println("  focusguard update [--channel beta]  Verificar e aplicar atualizações do daemon")
 	fmt.Println("  focusguard install                 Instalar daemon + tray + watchdog")
 	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")

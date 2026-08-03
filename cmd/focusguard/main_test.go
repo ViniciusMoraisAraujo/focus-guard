@@ -1788,3 +1788,144 @@ func TestRunInteractive_MockedTUISuccess(t *testing.T) {
 		t.Errorf("expected no output on success, got: %s", output)
 	}
 }
+
+// ---------------------------------------------------------------------------
+// Interface web (focusguard web)
+// ---------------------------------------------------------------------------
+
+// stubWebCommandVars troca os pontos de injeção do handleWebCommand pelos
+// stubs fornecidos e restaura os originais ao final do teste. webExePathFn
+// fica de fora: os testes que dependem dele o sobrescrevem à parte.
+func stubWebCommandVars(t *testing.T, probe func() bool, spawn func(string) error, wait func(time.Duration) bool, open func(string)) {
+	t.Helper()
+	origProbe, origSpawn, origWait, origOpen := probeWebServerFn, spawnWebServerFn, waitWebServerFn, openBrowserFn
+	probeWebServerFn = probe
+	spawnWebServerFn = spawn
+	waitWebServerFn = wait
+	openBrowserFn = open
+	t.Cleanup(func() {
+		probeWebServerFn, spawnWebServerFn, waitWebServerFn, openBrowserFn = origProbe, origSpawn, origWait, origOpen
+	})
+}
+
+func TestHandleWebCommand_OpensBrowserWhenAlreadyUp(t *testing.T) {
+	opened := ""
+	stubWebCommandVars(t,
+		func() bool { return true }, // servidor já de pé
+		func(string) error { t.Fatal("não deveria spawnar"); return nil },
+		func(time.Duration) bool { return true },
+		func(u string) { opened = u },
+	)
+
+	output := captureStdout(t, handleWebCommand)
+
+	if opened != webURL {
+		t.Errorf("navegador não aberto com a URL certa: %q", opened)
+	}
+	if !strings.Contains(output, "já está no ar") {
+		t.Errorf("output deveria dizer que já está no ar, got: %s", output)
+	}
+}
+
+func TestHandleWebCommand_SpawnsServerWhenDown(t *testing.T) {
+	// Cria um falso focusguard-web ao lado do binário de teste para o
+	// handleWebCommand aceitar o spawn.
+	temp := t.TempDir()
+	fakeWeb := filepath.Join(temp, "focusguard-web")
+	if runtime.GOOS == "windows" {
+		fakeWeb += ".exe"
+	}
+	if err := os.WriteFile(fakeWeb, []byte("#!/bin/sh\n"), 0700); err != nil {
+		t.Fatalf("criar falso focusguard-web: %v", err)
+	}
+
+	spawned := ""
+	opened := ""
+	stubWebCommandVars(t,
+		func() bool { return false }, // servidor fora do ar → spawna
+		func(p string) error { spawned = p; return nil },
+		func(time.Duration) bool { return true }, // sobe rápido
+		func(u string) { opened = u },
+	)
+	webExePathFn = func() string { return fakeWeb }
+	t.Cleanup(func() { webExePathFn = webExePath })
+
+	output := captureStdout(t, handleWebCommand)
+
+	if spawned != fakeWeb {
+		t.Errorf("spawned = %q, want %q", spawned, fakeWeb)
+	}
+	if opened != webURL {
+		t.Errorf("navegador não aberto: %q", opened)
+	}
+	if !strings.Contains(output, "Interface web") {
+		t.Errorf("output deveria anunciar a interface, got: %s", output)
+	}
+}
+
+func TestHandleWebCommand_ReportsMissingBinary(t *testing.T) {
+	stubWebCommandVars(t,
+		func() bool { return false },
+		func(string) error { t.Fatal("não deveria spawnar"); return nil },
+		func(time.Duration) bool { return true },
+		func(string) {},
+	)
+	webExePathFn = func() string { return filepath.Join(t.TempDir(), "nao-existe") }
+	t.Cleanup(func() { webExePathFn = webExePath })
+
+	caught, code := runWithExitMock(handleWebCommand)
+	if !caught {
+		t.Fatal("esperado osExit quando o binário web não existe")
+	}
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestHandleWebCommand_ReportsSpawnError(t *testing.T) {
+	fakeWeb := filepath.Join(t.TempDir(), "focusguard-web")
+	if runtime.GOOS == "windows" {
+		fakeWeb += ".exe"
+	}
+	if err := os.WriteFile(fakeWeb, []byte("x"), 0700); err != nil {
+		t.Fatalf("criar falso focusguard-web: %v", err)
+	}
+
+	stubWebCommandVars(t,
+		func() bool { return false },
+		func(string) error { return fmt.Errorf("spawn falhou") },
+		func(time.Duration) bool { return true },
+		func(string) {},
+	)
+	webExePathFn = func() string { return fakeWeb }
+	t.Cleanup(func() { webExePathFn = webExePath })
+
+	caught, code := runWithExitMock(handleWebCommand)
+	if !caught {
+		t.Fatal("esperado osExit quando o spawn falha")
+	}
+	if code != 1 {
+		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+func TestWebExePath(t *testing.T) {
+	p := webExePath()
+	if p == "" {
+		t.Fatal("webExePath não deveria ser vazio")
+	}
+	want := "focusguard-web"
+	if runtime.GOOS == "windows" {
+		want += ".exe"
+	}
+	if !strings.HasSuffix(p, want) {
+		t.Errorf("webExePath = %q, deveria terminar com %q", p, want)
+	}
+}
+
+func TestPrintUsage_IncludesWeb(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	if !strings.Contains(output, "web") {
+		t.Errorf("usage deveria mencionar o comando web, got: %s", output)
+	}
+}
