@@ -7,6 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🔄 Update reinicia na hora
+
+- **Update de versão reinicia imediatamente** — ao aplicar um update, o daemon
+  encerra a sessão pomodoro e reinicia na hora com a versão nova (antes, o
+  restart ficava pendente até os bloqueios expirarem). Os bloqueios não são
+  tocados: ficam no state.json e o boot da nova versão os restaura — proteção
+  contínua.
+
 ## [0.8.0] - 2026-08-03
 
 ### 🌐 Interface web — todas as funcionalidades
