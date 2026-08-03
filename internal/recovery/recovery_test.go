@@ -185,6 +185,48 @@ func TestRestoreFromBackup_MissingBackup(t *testing.T) {
 	}
 }
 
+// TestRestoreFromBackup_WindowsRenamesBeforeCopy exercises the Windows branch
+// on any platform: the running binary must be renamed aside (liberating the
+// file lock) before os.WriteFile creates a fresh copy, and the .trash file is
+// cleaned up afterwards.
+func TestRestoreFromBackup_WindowsRenamesBeforeCopy(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "focusguard-daemon")
+	backup := filepath.Join(dir, "focusguard-daemon.bak.20260802100000")
+	writeFile(t, binary, "broken-new-version")
+	writeFile(t, backup, "good-old-version")
+
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	var renamed []string
+	origRename := osRename
+	osRename = func(old, new string) error {
+		renamed = append(renamed, old)
+		return os.Rename(old, new)
+	}
+	defer func() { osRename = origRename }()
+
+	if err := RestoreFromBackup(backup, binary); err != nil {
+		t.Fatalf("RestoreFromBackup erro: %v", err)
+	}
+
+	data, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatalf("read binary: %v", err)
+	}
+	if string(data) != "good-old-version" {
+		t.Errorf("binary = %q, want good-old-version", string(data))
+	}
+	if len(renamed) != 1 || renamed[0] != binary {
+		t.Errorf("esperava rename de %q antes do write, got %v", binary, renamed)
+	}
+	if _, err := os.Stat(binary + ".trash"); !os.IsNotExist(err) {
+		t.Error(".trash deveria ter sido removido após o restore")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // RecoverIfNeeded (entry point usado pelo watchdog)
 // ---------------------------------------------------------------------------

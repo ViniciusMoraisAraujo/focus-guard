@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"time"
 )
@@ -76,14 +77,31 @@ func ShouldRollBack(backupTime, lastHealthy, now time.Time, minDowntime, crashWi
 	return now.Sub(lastHealthy) < crashWindow && lastHealthy.Sub(backupTime) < crashWindow
 }
 
+// osRename é stubbable nos testes (o real usa os.Rename).
+var osRename = os.Rename
+
+// goos é stubbable nos testes para exercitar o caminho do Windows em qualquer
+// plataforma (espelha o var goos do daemon).
+var goos = runtime.GOOS
+
 // RestoreFromBackup copies the backup over the broken binary, preserving the
-// executable permissions from the backup.
+// executable permissions from the backup. On Windows a running executable
+// cannot be overwritten or deleted, but it CAN be renamed: the broken binary
+// is moved aside first so the fresh write below can succeed.
 func RestoreFromBackup(backupPath, binaryPath string) error {
 	if backupPath == "" || binaryPath == "" {
 		return fmt.Errorf("recovery: backup e binário não podem ser vazios")
 	}
 	if _, err := os.Stat(backupPath); err != nil {
 		return fmt.Errorf("recovery: backup não encontrado em %s: %w", backupPath, err)
+	}
+
+	if goos == "windows" {
+		if _, err := os.Stat(binaryPath); err == nil {
+			if err := osRename(binaryPath, binaryPath+".trash"); err == nil {
+				defer func() { _ = os.Remove(binaryPath + ".trash") }()
+			}
+		}
 	}
 
 	data, err := os.ReadFile(backupPath)

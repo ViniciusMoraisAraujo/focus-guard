@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -337,12 +338,23 @@ func setupUpdateIntegration(server *ipc.Server) func() {
 // osExit é stubbable nos testes (o main real usa os.Exit).
 var osExit = os.Exit
 
+// pendingRestart records that an update was applied while blocks/session were
+// active, so the restart has to wait until they expire. It is atomic because
+// the update callback runs in the IPC server's goroutine while the periodic
+// watcher reads it from its own goroutine.
+var pendingRestart atomic.Bool
+
+// pendingRestartCheckInterval is how often the daemon re-evaluates a deferred
+// restart: fine enough to pick up a block expiry, cheap enough to never matter.
+var pendingRestartCheckInterval = 10 * time.Minute
+
 // restartAfterUpdate é o callback registrado no server (SetOnUpdateApplied):
 // depois que o update é aplicado com sucesso, o daemon encerra o processo para
 // que o supervisor (systemd Restart=always no Linux, SCM recovery no Windows)
 // o suba já com o binário novo — corrige o "daemon zumbi" que ficava rodando a
-// versão antiga em RAM. Só sai se não houver bloqueios/sessão ativos: reiniciar
-// no meio de um bloqueio derrubaria a proteção.
+// versão antiga em RAM. Se houver bloqueios/sessão ativos, o restart fica
+// pendente (pendingRestart) e é aplicado pelo watcher assim que expirarem —
+// reiniciar no meio de um bloqueio derrubaria a proteção.
 //
 // O exit code é 1 (e não 0) de propósito: o SCM do Windows só aplica as ações
 // de recovery (sc failure ... actions= restart) quando o serviço termina com
@@ -351,11 +363,51 @@ var osExit = os.Exit
 func restartAfterUpdate(server *ipc.Server, sched interface{ HasActiveBlocks() bool }) {
 	time.Sleep(500 * time.Millisecond) // deixa a resposta IPC chegar ao CLI
 	if sched.HasActiveBlocks() || server.HasActiveSession() {
-		log.Println("[FocusGuard Daemon] Update aplicado, mas há bloqueios/sessão ativos. O restart fica para quando expirarem.")
+		pendingRestart.Store(true)
+		log.Println("[FocusGuard Daemon] Update aplicado, mas há bloqueios/sessão ativos. Restart pendente (será aplicado quando expirarem).")
 		return
 	}
 	log.Println("[FocusGuard Daemon] Update aplicado. Reiniciando daemon com a nova versão...")
 	osExit(1)
+}
+
+// maybeApplyPendingRestart checks once whether a deferred post-update restart
+// is now safe: the update was applied, the flag is set, and no block/session is
+// active anymore. When it fires, the daemon exits so the supervisor respawns it
+// with the new binary.
+func maybeApplyPendingRestart(server *ipc.Server, sched interface{ HasActiveBlocks() bool }) {
+	if !pendingRestart.Load() {
+		return
+	}
+	if sched.HasActiveBlocks() || server.HasActiveSession() {
+		return
+	}
+	log.Println("[FocusGuard Daemon] Bloqueios encerrados. Reiniciando para aplicar update pendente...")
+	osExit(1)
+}
+
+// startPendingRestartWatcher re-checks the deferred-restart flag periodically
+// so a daemon that applied an update mid-block still restarts shortly after
+// the last block expires. Returns a stop func.
+func startPendingRestartWatcher(server *ipc.Server, sched interface{ HasActiveBlocks() bool }, interval time.Duration) func() {
+	stop := make(chan struct{})
+	go func() {
+		if interval <= 0 {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				maybeApplyPendingRestart(server, sched)
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
 }
 
 func startPeriodicUpdateCheck(server *ipc.Server, interval time.Duration) func() {
@@ -538,11 +590,14 @@ func runDaemon() bool {
 
 	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
 		defer stopUpdate()
-		// Bug 2 corrigido: após aplicar um update, o daemon se reinicia sozinho
-		// (os.Exit(0)) para o systemd/watchdog subirem a nova versão — em vez
-		// de ficar rodando o binário antigo em RAM até o usuário reiniciar a
-		// máquina.
+		// Após aplicar um update, o daemon se reinicia sozinho (osExit(1)) para
+		// o systemd/SCM subirem a nova versão — em vez de ficar rodando o
+		// binário antigo em RAM até o usuário reiniciar a máquina. Se houver
+		// bloqueios/sessão ativos, o restart vira pendente e o watcher abaixo o
+		// aplica assim que eles expirarem.
 		server.SetOnUpdateApplied(func() { restartAfterUpdate(server, sched) })
+		stopPendingRestart := startPendingRestartWatcher(server, sched, pendingRestartCheckInterval)
+		defer stopPendingRestart()
 	}
 
 	sigChan := make(chan os.Signal, 1)

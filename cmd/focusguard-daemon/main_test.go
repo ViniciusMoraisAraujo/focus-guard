@@ -1088,6 +1088,8 @@ func TestRestartAfterUpdate_ExitsWhenIdle(t *testing.T) {
 func TestRestartAfterUpdate_NoExitWithActiveBlocks(t *testing.T) {
 	origExit := osExit
 	defer func() { osExit = origExit }()
+	pendingRestart.Store(false)
+	defer pendingRestart.Store(false)
 	var exitCalled atomic.Int32
 	osExit = func(code int) { exitCalled.Add(1) }
 
@@ -1099,6 +1101,121 @@ func TestRestartAfterUpdate_NoExitWithActiveBlocks(t *testing.T) {
 	if exitCalled.Load() != 0 {
 		t.Error("os.Exit não deveria ser chamado com bloqueios ativos")
 	}
+	if !pendingRestart.Load() {
+		t.Error("esperava pendingRestart=true quando o update acontece com bloqueios ativos")
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Restart pendente (flag + watcher) — corrige o restart esquecido
+// ---------------------------------------------------------------------------
+
+// TestMaybeApplyPendingRestart_ExitsWhenIdle: a deferred restart is applied as
+// soon as the last block/session expires.
+func TestMaybeApplyPendingRestart_ExitsWhenIdle(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	pendingRestart.Store(true)
+	defer pendingRestart.Store(false)
+	exited := make(chan int, 1)
+	osExit = func(code int) { exited <- code }
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: false}
+
+	maybeApplyPendingRestart(server, sched)
+
+	select {
+	case code := <-exited:
+		if code != 1 {
+			t.Errorf("expected exit code 1, got %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("os.Exit não foi chamado com restart pendente e sem bloqueios")
+	}
+}
+
+// TestMaybeApplyPendingRestart_NoExitWhileStillActive: blocks still running
+// keep the restart deferred — the flag survives for the next check.
+func TestMaybeApplyPendingRestart_NoExitWhileStillActive(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	pendingRestart.Store(true)
+	defer pendingRestart.Store(false)
+	var exitCalled atomic.Int32
+	osExit = func(code int) { exitCalled.Add(1) }
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: true}
+
+	maybeApplyPendingRestart(server, sched)
+	time.Sleep(100 * time.Millisecond)
+	if exitCalled.Load() != 0 {
+		t.Error("os.Exit não deveria ser chamado enquanto houver bloqueios ativos")
+	}
+	if !pendingRestart.Load() {
+		t.Error("flag deveria permanecer setada enquanto o bloqueio estiver ativo")
+	}
+}
+
+// TestMaybeApplyPendingRestart_NoFlagNoExit: with nothing pending the checker
+// must be a no-op.
+func TestMaybeApplyPendingRestart_NoFlagNoExit(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	pendingRestart.Store(false)
+	defer pendingRestart.Store(false)
+	var exitCalled atomic.Int32
+	osExit = func(code int) { exitCalled.Add(1) }
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: false}
+
+	maybeApplyPendingRestart(server, sched)
+	time.Sleep(100 * time.Millisecond)
+	if exitCalled.Load() != 0 {
+		t.Error("os.Exit não deveria ser chamado sem restart pendente")
+	}
+}
+
+// TestStartPendingRestartWatcher_AppliesPending verifies the periodic watcher
+// fires the deferred restart once the flag is set and blocks expire.
+func TestStartPendingRestartWatcher_AppliesPending(t *testing.T) {
+	origExit := osExit
+	defer func() { osExit = origExit }()
+	pendingRestart.Store(true)
+	defer pendingRestart.Store(false)
+	exited := make(chan int, 1)
+	osExit = func(code int) { exited <- code }
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: false}
+
+	stop := startPendingRestartWatcher(server, sched, 10*time.Millisecond)
+	defer stop()
+
+	select {
+	case code := <-exited:
+		if code != 1 {
+			t.Errorf("expected exit code 1, got %d", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("watcher não aplicou o restart pendente")
+	}
+}
+
+// TestStartPendingRestartWatcher_Stops verifies the stop func terminates the
+// goroutine (and that calling it twice is safe).
+func TestStartPendingRestartWatcher_Stops(t *testing.T) {
+	pendingRestart.Store(true)
+	defer pendingRestart.Store(false)
+
+	server := ipc.NewServer(nil)
+	sched := &fakeRestartScheduler{active: true}
+
+	stop := startPendingRestartWatcher(server, sched, time.Millisecond)
+	stop()
+	stop()
 }
 
 func TestStartPeriodicUpdateCheck_Stops(t *testing.T) {
