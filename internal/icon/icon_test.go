@@ -3,17 +3,67 @@ package icon
 import (
 	"bytes"
 	"encoding/binary"
+	"image"
+	"image/color"
 	"image/png"
+	"os"
+	"path/filepath"
 	"strconv"
 	"testing"
 )
 
-// TestGeneratePNG_ValidAtVariousSizes verifies the shield renders as a valid
+// testSource writes a synthetic 64x64 source PNG (opaque square with a
+// transparent 16px margin) into a temp dir and returns its path.
+func testSource(t *testing.T) string {
+	t.Helper()
+
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for y := 16; y < 48; y++ {
+		for x := 16; x < 48; x++ {
+			img.SetRGBA(x, y, color.RGBA{0x16, 0x2A, 0x4A, 0xFF})
+		}
+	}
+
+	var buf bytes.Buffer
+	if err := png.Encode(&buf, img); err != nil {
+		t.Fatalf("encodar fonte: %v", err)
+	}
+
+	path := filepath.Join(t.TempDir(), "source.png")
+	if err := os.WriteFile(path, buf.Bytes(), 0644); err != nil {
+		t.Fatalf("escrever fonte: %v", err)
+	}
+	return path
+}
+
+// TestLoadSource_DecodesPNG verifies the artwork loads and keeps its size.
+func TestLoadSource_DecodesPNG(t *testing.T) {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
+	if b := src.Bounds(); b.Dx() != 64 || b.Dy() != 64 {
+		t.Errorf("fonte %dx%d, want 64x64", b.Dx(), b.Dy())
+	}
+}
+
+// TestLoadSource_MissingFile verifies a nonexistent source is reported.
+func TestLoadSource_MissingFile(t *testing.T) {
+	if _, err := LoadSource(filepath.Join(t.TempDir(), "nope.png")); err == nil {
+		t.Error("LoadSource de arquivo inexistente deveria errar")
+	}
+}
+
+// TestGeneratePNG_ValidAtVariousSizes verifies the artwork resizes to a valid
 // PNG at every supported size, with the expected dimensions.
 func TestGeneratePNG_ValidAtVariousSizes(t *testing.T) {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
 	for _, size := range []int{16, 32, 48, 64, 128, 256} {
 		t.Run(strconv.Itoa(size), func(t *testing.T) {
-			data, err := GeneratePNG(size)
+			data, err := GeneratePNG(src, size)
 			if err != nil {
 				t.Fatalf("GeneratePNG(%d) erro: %v", size, err)
 			}
@@ -28,31 +78,14 @@ func TestGeneratePNG_ValidAtVariousSizes(t *testing.T) {
 	}
 }
 
-// TestGeneratePNG_NotBlankAtCenter verifies the shield body is drawn (center
-// opaque) while the corner stays transparent.
-func TestGeneratePNG_NotBlankAtCenter(t *testing.T) {
-	data, err := GeneratePNG(32)
-	if err != nil {
-		t.Fatalf("GeneratePNG erro: %v", err)
-	}
-	img, err := png.Decode(bytes.NewReader(data))
-	if err != nil {
-		t.Fatalf("png inválido: %v", err)
-	}
-	_, _, _, aCenter := img.At(16, 16).RGBA()
-	_, _, _, aCorner := img.At(0, 0).RGBA()
-	if aCenter == 0 {
-		t.Error("centro deveria ser opaco (escudo desenhado)")
-	}
-	if aCorner != 0 {
-		t.Error("canto deveria ser transparente")
-	}
-}
-
 // TestGeneratePNG_InvalidSize verifies non-positive sizes are rejected.
 func TestGeneratePNG_InvalidSize(t *testing.T) {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
 	for _, size := range []int{0, -1, -32} {
-		if _, err := GeneratePNG(size); err == nil {
+		if _, err := GeneratePNG(src, size); err == nil {
 			t.Errorf("GeneratePNG(%d) deveria errar", size)
 		}
 	}
@@ -61,8 +94,12 @@ func TestGeneratePNG_InvalidSize(t *testing.T) {
 // TestGenerateICO_MultiSizeHeader verifies the ICONDIR header: reserved=0,
 // type=1 (icon) and count=len(sizes).
 func TestGenerateICO_MultiSizeHeader(t *testing.T) {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
 	sizes := []int{16, 32, 48, 64}
-	ico, err := GenerateICO(sizes)
+	ico, err := GenerateICO(src, sizes)
 	if err != nil {
 		t.Fatalf("GenerateICO erro: %v", err)
 	}
@@ -75,7 +112,7 @@ func TestGenerateICO_MultiSizeHeader(t *testing.T) {
 	if got := int(binary.LittleEndian.Uint16(ico[4:6])); got != len(sizes) {
 		t.Errorf("count = %d, want %d", got, len(sizes))
 	}
-	if got := len(ico); got != 6+16*len(sizes)+sumPNGLengths(t, sizes) {
+	if got := len(ico); got != 6+16*len(sizes)+sumPNGLengths(t, src, sizes) {
 		t.Errorf("len(ico) = %d, want header+entries+payloads", got)
 	}
 }
@@ -84,8 +121,12 @@ func TestGenerateICO_MultiSizeHeader(t *testing.T) {
 // (0 = 256), planes=1, bitCount=32, bytesInRes = payload size and ascending
 // offsets starting after header+entries.
 func TestGenerateICO_Entries(t *testing.T) {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
 	sizes := []int{16, 32, 48, 64}
-	ico, err := GenerateICO(sizes)
+	ico, err := GenerateICO(src, sizes)
 	if err != nil {
 		t.Fatalf("GenerateICO erro: %v", err)
 	}
@@ -124,8 +165,12 @@ func TestGenerateICO_Entries(t *testing.T) {
 // TestGenerateICO_PayloadsArePNG verifies each payload decodes as a PNG with
 // the advertised size (256 is encoded as 0 in the directory entry).
 func TestGenerateICO_PayloadsArePNG(t *testing.T) {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
 	sizes := []int{16, 32, 64, 256}
-	ico, err := GenerateICO(sizes)
+	ico, err := GenerateICO(src, sizes)
 	if err != nil {
 		t.Fatalf("GenerateICO erro: %v", err)
 	}
@@ -147,7 +192,11 @@ func TestGenerateICO_PayloadsArePNG(t *testing.T) {
 // TestGenerateICO_SortedAndDeduped verifies unsorted/duplicated sizes are
 // normalized to ascending unique order.
 func TestGenerateICO_SortedAndDeduped(t *testing.T) {
-	ico, err := GenerateICO([]int{64, 16, 32, 16, 256})
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
+	ico, err := GenerateICO(src, []int{64, 16, 32, 16, 256})
 	if err != nil {
 		t.Fatalf("GenerateICO erro: %v", err)
 	}
@@ -171,17 +220,21 @@ func TestGenerateICO_SortedAndDeduped(t *testing.T) {
 
 // TestGenerateICO_EmptySizes verifies an empty size list is rejected.
 func TestGenerateICO_EmptySizes(t *testing.T) {
-	if _, err := GenerateICO(nil); err == nil {
+	src, err := LoadSource(testSource(t))
+	if err != nil {
+		t.Fatalf("LoadSource erro: %v", err)
+	}
+	if _, err := GenerateICO(src, nil); err == nil {
 		t.Error("GenerateICO(nil) deveria errar")
 	}
 }
 
 // sumPNGLengths helper: total payload bytes so the test can assert total size.
-func sumPNGLengths(t *testing.T, sizes []int) int {
+func sumPNGLengths(t *testing.T, src image.Image, sizes []int) int {
 	t.Helper()
 	total := 0
 	for _, s := range sizes {
-		data, err := GeneratePNG(s)
+		data, err := GeneratePNG(src, s)
 		if err != nil {
 			t.Fatalf("GeneratePNG(%d): %v", s, err)
 		}

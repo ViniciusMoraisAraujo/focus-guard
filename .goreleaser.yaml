@@ -6,8 +6,9 @@ project_name: focusguard
 before:
   hooks:
     - go mod tidy
-    # Regenera o ícone multi-tamanho (focusguard.ico/.png) consumido pelo
-    # go-winres (metadados do .exe) e pelo atalho do Desktop nos installers.
+    # Regenera o ícone multi-tamanho a partir de img/focusguard.png
+    # (focusguard.ico/.png + ícone do tray) consumido pelo go-winres
+    # (metadados do .exe) e pelo atalho do Desktop nos installers.
     - go run ./cmd/focusguard-icon
     # go-winres make lê versioninfo.json (--in) e emite rsrc_windows_*.syso
     # na pasta do package, embedados automaticamente pelo go build no Windows.

@@ -23,8 +23,9 @@ all: build test vet
 
 build: icon build-cli build-daemon build-web
 
-# icon regenera o ícone multi-tamanho (.ico Windows + .png Linux) usado pelo
-# go-winres (metadados .exe) e pelo atalho do Desktop nos installers.
+# icon regenera o ícone multi-tamanho a partir do artwork img/focusguard.png:
+# o .ico Windows usado pelo go-winres (metadados .exe), o .png Linux do atalho
+# do Desktop e o .png 32px do tray (internal/tray/icon_source.png).
 icon:
 	$(GO) run ./cmd/focusguard-icon
 

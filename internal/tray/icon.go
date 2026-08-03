@@ -1,34 +1,27 @@
 package tray
 
 import (
-	"bytes"
-	"encoding/binary"
+	"errors"
 
-	"focusguard/internal/icon"
+	_ "embed"
 )
 
+// iconSize is the tray icon edge, in pixels.
 const iconSize = 32
 
-// GenerateIcon renders the FocusGuard tray icon (a shield with a checkmark)
-// as PNG bytes. The drawing lives in internal/icon so the Windows .ico and
-// the Linux desktop PNG share the exact same artwork.
-func GenerateIcon() ([]byte, error) {
-	return icon.GeneratePNG(iconSize)
-}
+// icon_source.png é o ícone do tray (32px), gerado por cmd/focusguard-icon a
+// partir de img/focusguard.png e embutido no binário. É o mesmo artwork do
+// focusguard.ico/.png do sistema, então o tray acompanha qualquer redesign.
+//
+//go:embed icon_source.png
+var iconSourcePNG []byte
 
-// icoFromPNG wraps PNG data in an ICO container (Vista+ supports PNG payloads).
-func icoFromPNG(pngData []byte) []byte {
-	buf := &bytes.Buffer{}
-	buf.Write([]byte{0, 0, 1, 0})
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))
-	buf.WriteByte(iconSize)
-	buf.WriteByte(iconSize)
-	buf.WriteByte(0)
-	buf.WriteByte(0)
-	_ = binary.Write(buf, binary.LittleEndian, uint16(1))
-	_ = binary.Write(buf, binary.LittleEndian, uint16(32))
-	_ = binary.Write(buf, binary.LittleEndian, uint32(len(pngData)))
-	_ = binary.Write(buf, binary.LittleEndian, uint32(22))
-	buf.Write(pngData)
-	return buf.Bytes()
+// GenerateIcon returns the tray icon (a shield with a checkmark) as PNG
+// bytes. The drawing lives in the embedded 32px asset so the Windows .ico,
+// the Linux desktop PNG and the tray share the exact same artwork.
+func GenerateIcon() ([]byte, error) {
+	if len(iconSourcePNG) == 0 {
+		return nil, errors.New("tray: icon_source.png ausente (rode make icon)")
+	}
+	return iconSourcePNG, nil
 }
