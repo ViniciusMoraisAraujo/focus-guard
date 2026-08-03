@@ -2,11 +2,22 @@
 
 GO       := go
 BIN_DIR  := bin
-CLI_BIN  := $(BIN_DIR)/focusguard
-DAEMON   := focusguard-daemon
 DESTDIR  ?= /usr/local/bin
 
 UNAME_S  := $(shell uname -s 2>/dev/null || echo Windows)
+
+# No Windows, `go build -o` explícito NÃO acrescenta .exe — mas o CLI localiza
+# os binários irmãos pelo nome com extensão (ex.: focusguard-web.exe). Deriva a
+# extensão do alvo do Go (GOOS) para os builds ficarem corretos em ambos os SOs.
+GOOS := $(shell $(GO) env GOOS)
+ifeq ($(GOOS),windows)
+EXE := .exe
+else
+EXE :=
+endif
+
+CLI_BIN  := $(BIN_DIR)/focusguard$(EXE)
+DAEMON   := focusguard-daemon$(EXE)
 
 all: build test vet
 
@@ -31,7 +42,7 @@ build-daemon:
 	$(GO) build -o $(BIN_DIR)/$(DAEMON) ./cmd/focusguard-daemon
 
 build-web:
-	$(GO) build -o $(BIN_DIR)/focusguard-web ./cmd/focusguard-web
+	$(GO) build -o $(BIN_DIR)/focusguard-web$(EXE) ./cmd/focusguard-web
 
 # ui compila o frontend (React + Vite) e copia o dist para dentro de
 # cmd/focusguard-web/assets, onde o go:embed o embute no binário. Rode antes
