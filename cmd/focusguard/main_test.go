@@ -144,10 +144,13 @@ func startTestIPCServer(t *testing.T, handler func(ipc.Request) ipc.Response) {
 
 func TestPrintUsage(t *testing.T) {
 	output := captureStdout(t, printUsage)
-	for _, c := range []string{"FocusGuard", "block <dominio>", "status", "interactive", "TUI"} {
+	for _, c := range []string{"FocusGuard", "block <dominio>", "status", "web", "interface web"} {
 		if !strings.Contains(output, c) {
 			t.Errorf("output should contain %q", c)
 		}
+	}
+	if strings.Contains(output, "interactive") {
+		t.Errorf("usage should not mention the removed interactive TUI, got: %s", output)
 	}
 }
 
@@ -504,30 +507,34 @@ func TestPrintUsage_IncludesUpdate(t *testing.T) {
 	}
 }
 
-func TestRunInteractive_MockedTUI(t *testing.T) {
-	origRunTUI := runTUI
-	runTUI = func(client *ipc.Client) error {
-		return fmt.Errorf("simulated terminal error")
+// TestMain_NoArgsOpensWeb verifica que `focusguard` sem argumentos abre a
+// interface web no navegador (a TUI interativa foi removida).
+func TestMain_NoArgsOpensWeb(t *testing.T) {
+	opened := ""
+	stubWebCommandVars(t,
+		func() bool { return false }, // servidor não está no ar → spawna
+		func(string) error { return nil },
+		func(time.Duration) bool { return true },
+		func(u string) { opened = u },
+	)
+	fake := filepath.Join(t.TempDir(), "focusguard-web.exe")
+	if err := os.WriteFile(fake, []byte("x"), 0o700); err != nil {
+		t.Fatalf("write fake web exe: %v", err)
 	}
-	defer func() { runTUI = origRunTUI }()
+	webExePathFn = func() string { return fake }
+	t.Cleanup(func() { webExePathFn = webExePath })
 
-	_, stderr := captureStdoutAndStderr(t, func() {
-		caught, code := runWithExitMock(func() {
-			runInteractive()
-		})
-		if !caught {
-			t.Fatal("expected osExit when TUI errors")
-		}
-		if code != 1 {
-			t.Errorf("expected exit code 1, got %d", code)
-		}
-	})
+	origArgs := os.Args
+	os.Args = []string{"focusguard"}
+	defer func() { os.Args = origArgs }()
 
-	if !strings.Contains(stderr, "Erro no modo interativo") {
-		t.Errorf("stderr should mention interactive error, got: %s", stderr)
+	output := captureStdout(t, main)
+
+	if opened != webURL {
+		t.Errorf("navegador não aberto com a URL certa: %q", opened)
 	}
-	if !strings.Contains(stderr, "simulated terminal error") {
-		t.Errorf("stderr should contain simulated error, got: %s", stderr)
+	if !strings.Contains(output, "Interface web") {
+		t.Errorf("output deveria mencionar a interface web, got: %s", output)
 	}
 }
 
@@ -1770,22 +1777,6 @@ func TestPrintUsage_IncludesStats(t *testing.T) {
 		if !strings.Contains(output, c) {
 			t.Errorf("usage should mention %q", c)
 		}
-	}
-}
-
-func TestRunInteractive_MockedTUISuccess(t *testing.T) {
-	origRunTUI := runTUI
-	runTUI = func(client *ipc.Client) error {
-		return nil
-	}
-	defer func() { runTUI = origRunTUI }()
-
-	output := captureStdout(t, func() {
-		runInteractive()
-	})
-
-	if output != "" {
-		t.Errorf("expected no output on success, got: %s", output)
 	}
 }
 

@@ -18,15 +18,15 @@ import (
 	"focusguard/internal/ipc"
 	"focusguard/internal/schedule"
 	"focusguard/internal/tamper"
-	"focusguard/internal/tui"
 )
 
 var osExit = os.Exit
-var runTUI = tui.Run
 
 func main() {
 	if len(os.Args) < 2 {
-		runInteractive()
+		// Sem argumentos, o FocusGuard abre a interface web no navegador (a
+		// antiga TUI interativa foi removida em favor da UI).
+		handleWebCommand()
 		return
 	}
 
@@ -78,8 +78,6 @@ func main() {
 		handleInstallTrayCommand()
 	case "uninstall-tray":
 		handleUninstallTrayCommand()
-	case "interactive", "i":
-		runInteractive()
 	case "help", "-h", "--help":
 		printUsage()
 	default:
@@ -432,14 +430,6 @@ func handleUninstallTrayCommand() {
 		osExit(1)
 	}
 	fmt.Println("✔ Tray removido da inicialização do Windows.")
-}
-
-func runInteractive() {
-	client := ipc.NewClient()
-	if err := runTUI(client); err != nil {
-		fmt.Fprintf(os.Stderr, "Erro no modo interativo: %v\n", err)
-		osExit(1)
-	}
 }
 
 func handleBlockCommand(client *ipc.Client, args []string) {
@@ -1227,7 +1217,7 @@ func printProtectionStatus(resp *ipc.Response) {
 func printUsage() {
 	fmt.Println("FocusGuard - CLI para bloqueio focado")
 	fmt.Println("\nUso:")
-	fmt.Println("  focusguard                        Modo interativo (TUI)")
+	fmt.Println("  focusguard                        Abre a interface web no navegador")
 	fmt.Println("  focusguard block <dominio> --duration <tempo>")
 	fmt.Println("  focusguard block --preset <categoria> --duration <tempo>")
 	fmt.Println("  focusguard block --internet [--allow <dominios>] --duration <tempo>   Modo pânico / allowlist")
@@ -1255,7 +1245,6 @@ func printUsage() {
 	fmt.Println("  focusguard update [--channel beta]  Verificar e aplicar atualizações do daemon")
 	fmt.Println("  focusguard install                 Instalar daemon + tray + watchdog")
 	fmt.Println("  focusguard uninstall               Remover daemon da inicialização")
-	fmt.Println("  focusguard interactive             Modo interativo (TUI)")
 	fmt.Println("  focusguard install-watchdog         Instalar watchdog externo (Windows)")
 	fmt.Println("  focusguard uninstall-watchdog       Remover watchdog externo")
 	fmt.Println("  focusguard install-tray             Iniciar o tray com o Windows (HKCU Run)")
