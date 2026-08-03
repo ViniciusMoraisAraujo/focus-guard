@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon icon winres test vet clean install uninstall help fmt tidy
+.PHONY: all build build-cli build-daemon build-web ui icon winres test vet clean install uninstall help fmt tidy
 
 GO       := go
 BIN_DIR  := bin
@@ -10,7 +10,7 @@ UNAME_S  := $(shell uname -s 2>/dev/null || echo Windows)
 
 all: build test vet
 
-build: icon build-cli build-daemon
+build: icon build-cli build-daemon build-web
 
 # icon regenera o ícone multi-tamanho (.ico Windows + .png Linux) usado pelo
 # go-winres (metadados .exe) e pelo atalho do Desktop nos installers.
@@ -29,6 +29,17 @@ build-cli:
 
 build-daemon:
 	$(GO) build -o $(BIN_DIR)/$(DAEMON) ./cmd/focusguard-daemon
+
+build-web:
+	$(GO) build -o $(BIN_DIR)/focusguard-web ./cmd/focusguard-web
+
+# ui compila o frontend (React + Vite) e copia o dist para dentro de
+# cmd/focusguard-web/assets, onde o go:embed o embute no binário. Rode antes
+# de compilar o focusguard-web para incluir a última versão da interface.
+ui:
+	cd focusguard-ui && npm ci && npm run build
+	find cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
+	cp -r focusguard-ui/dist/. cmd/focusguard-web/assets/
 
 install:
 	@echo "=== Instalando FocusGuard ==="
@@ -74,7 +85,8 @@ tidy:
 help:
 	@echo "FocusGuard - Comandos disponiveis:"
 	@echo ""
-	@echo "  make build       Compila CLI e daemon"
+	@echo "  make build       Compila CLI, daemon e focusguard-web"
+	@echo "  make ui          Compila a interface web e embute no focusguard-web"
 	@echo "  make install     Compila e instala (Windows: schtasks, Linux: systemd)"
 	@echo "  make uninstall   Remove da inicializacao"
 	@echo "  make test        Executa todos os testes"

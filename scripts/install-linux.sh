@@ -49,6 +49,11 @@ install_binaries() {
     install_tray_deps
     install_tray_autostart
   fi
+  # focusguard-web (interface web) é opcional: o "focusguard web" o inicia
+  # por demanda a partir da pasta protegida.
+  if [[ -f "${dir}/focusguard-web" ]]; then
+    install -m 0755 "${dir}/focusguard-web" "${INSTALL_DIR}/focusguard-web"
+  fi
 
   # Só a CLI ganha symlink no PATH; daemon/tray/watchdog são referenciados por
   # caminhos absolutos (unit systemd, autostart e atalho) na pasta protegida.
@@ -61,7 +66,7 @@ install_binaries() {
 # daemon, então todos precisam viver juntos na pasta protegida.
 cleanup_old_layout() {
   local bin removed=0
-  for bin in focusguard focusguard-daemon focusguard-watchdog focusguard-tray; do
+  for bin in focusguard focusguard-daemon focusguard-watchdog focusguard-tray focusguard-web; do
     if [[ -f "${SYMLINK_DIR}/${bin}" && ! -L "${SYMLINK_DIR}/${bin}" ]]; then
       echo "[FocusGuard] Removendo instalação antiga ${SYMLINK_DIR}/${bin}..."
       rm -f "${SYMLINK_DIR}/${bin}"
@@ -272,7 +277,7 @@ do_uninstall() {
   rm -rf "${INSTALL_DIR}"
   echo "[FocusGuard] Removendo symlink/restos em ${SYMLINK_DIR}..."
   rm -f "${SYMLINK_DIR}/focusguard" \
-        "${SYMLINK_DIR}/focusguard-daemon" "${SYMLINK_DIR}/focusguard-watchdog" "${SYMLINK_DIR}/focusguard-tray"
+        "${SYMLINK_DIR}/focusguard-daemon" "${SYMLINK_DIR}/focusguard-watchdog" "${SYMLINK_DIR}/focusguard-tray" "${SYMLINK_DIR}/focusguard-web"
   remove_tray_autostart
   remove_desktop_shortcut
   echo "[FocusGuard] ✔ FocusGuard removido. Estado preservado em ${STATE_DIR}"

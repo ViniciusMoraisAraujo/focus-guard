@@ -100,7 +100,7 @@ function Install-Daemon {
     }
     $srcDir = Split-Path -Parent $exe
     $copied = $false
-    foreach ($name in @("focusguard.exe", "focusguard-daemon.exe", "focusguard-watchdog.exe", "focusguard-tray.exe")) {
+    foreach ($name in @("focusguard.exe", "focusguard-daemon.exe", "focusguard-watchdog.exe", "focusguard-tray.exe", "focusguard-web.exe")) {
         $src = Join-Path $srcDir $name
         if (Test-Path $src) {
             Copy-Item $src -Destination $InstallDir -Force

@@ -13,6 +13,9 @@ before:
     # na pasta do package, embedados automaticamente pelo go build no Windows.
     # O GoReleaser executa hooks sem shell, então o condicional vai via sh -c.
     - sh -c "if command -v go-winres >/dev/null 2>&1; then cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard-tray && go-winres make --in versioninfo.json --arch amd64,arm64; fi"
+    # Compila a interface web (React) e copia o dist para cmd/focusguard-web/assets
+    # (embutido via go:embed). Requer Node.js no runner da release.
+    - sh -c "cd focusguard-ui && npm ci && npm run build && find ../cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} + && cp -r dist/. ../cmd/focusguard-web/assets/"
 
 env:
   - CGO_ENABLED=0
@@ -125,6 +128,32 @@ builds:
     ldflags:
       - -s -w -H windowsgui
 
+  - id: web-linux
+    main: ./cmd/focusguard-web
+    binary: focusguard-web
+    goos:
+      - linux
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
+  - id: web-windows
+    main: ./cmd/focusguard-web
+    binary: focusguard-web
+    goos:
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+
 archives:
   - id: windows
     ids:
@@ -132,6 +161,7 @@ archives:
       - daemon-windows
       - watchdog-windows
       - tray-windows
+      - web-windows
     formats:
       - zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_windows_{{ .Arch }}'
@@ -147,6 +177,7 @@ archives:
       - daemon-linux
       - watchdog-linux
       - tray-linux
+      - web-linux
     formats:
       - tar.gz
     allow_different_binary_count: true

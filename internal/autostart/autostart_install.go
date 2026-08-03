@@ -18,6 +18,7 @@ var binaryNames = []string{
 	"focusguard-daemon.exe",
 	"focusguard-tray.exe",
 	"focusguard-watchdog.exe",
+	"focusguard-web.exe",
 }
 
 // InstallDir retorna o diretório de instalação do sistema

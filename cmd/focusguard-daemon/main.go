@@ -292,7 +292,7 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool, channel string) (
 func siblingBinaries(daemonPath string) []string {
 	dir := filepath.Dir(daemonPath)
 	ext := filepath.Ext(daemonPath) // ".exe" no Windows, "" no Linux
-	names := []string{"focusguard", "focusguard-daemon", "focusguard-tray", "focusguard-watchdog"}
+	names := []string{"focusguard", "focusguard-daemon", "focusguard-tray", "focusguard-watchdog", "focusguard-web"}
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		out = append(out, filepath.Join(dir, n+ext))

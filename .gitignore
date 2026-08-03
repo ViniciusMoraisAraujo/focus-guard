@@ -109,3 +109,14 @@ go.work.sum
 # GoReleaser release artifacts
 dist/
 
+# Binários locais (make build / go build -o bin)
+bin/
+
+### focusguard-ui (interface web)
+# Dependências e build do frontend — o dist compilado é copiado para
+# cmd/focusguard-web/assets pelo "make ui" (não versionar o conteúdo).
+focusguard-ui/node_modules/
+focusguard-ui/dist/
+cmd/focusguard-web/assets/*
+!cmd/focusguard-web/assets/.gitkeep
+
