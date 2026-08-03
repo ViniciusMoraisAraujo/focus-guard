@@ -7,6 +7,16 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🎨 Ícone do sistema
+
+- **Artwork real no ícone** — o `focusguard.ico` (multi-tamanho, embutido nos
+  `.exe` via go-winres) e o `focusguard.png` (atalho do Desktop Linux) agora
+  são gerados a partir do artwork **`img/focusguard.png`** (1024px) em vez do
+  shield desenhado proceduralmente. O `cmd/focusguard-icon` redimensiona com
+  alta qualidade (CatmullRom via `golang.org/x/image`) e o ícone do tray
+  (Linux) passou a ser embutido no binário a partir do mesmo artwork — um único
+  design em todos os pontos.
+
 ### 🔄 Sincronização e status do firewall
 
 - **Sweep de regras órfãs no `sync`** — se o daemon for morto (crash/sigkill)
