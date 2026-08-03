@@ -285,7 +285,7 @@ Regras:
 
 ## 8. Padrões de release
 
-Versionamento **SemVer** (atual: **v0.6.0**). O changelog segue **Keep a
+Versionamento **SemVer** (atual: **v0.8.0**). O changelog segue **Keep a
 Changelog** em PT-BR, com seções datadas e categorias por emoji
 (por exemplo `### 🛡 ...`).
 
