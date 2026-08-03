@@ -8,7 +8,17 @@ import {
 import { api, pingDaemon } from "./api/client";
 import type { ApiResponse, Preset } from "./api/types";
 
-export type Screen = "dashboard" | "bloquear" | "panico" | "config";
+export type Screen =
+  | "dashboard"
+  | "bloquear"
+  | "panico"
+  | "pomodoro"
+  | "agenda"
+  | "apps"
+  | "presets"
+  | "stats"
+  | "seguranca"
+  | "config";
 
 export interface Toast {
   id: number;

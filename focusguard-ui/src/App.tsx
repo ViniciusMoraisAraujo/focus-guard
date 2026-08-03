@@ -1,14 +1,26 @@
 import { useState } from "react";
+import { Agenda } from "./screens/Agenda";
+import { Apps } from "./screens/Apps";
 import { Bloquear } from "./screens/Bloquear";
 import { Configuracoes } from "./screens/Configuracoes";
 import { Dashboard } from "./screens/Dashboard";
+import { Estatisticas } from "./screens/Estatisticas";
 import { Panico } from "./screens/Panico";
+import { Pomodoro } from "./screens/Pomodoro";
+import { Presets } from "./screens/Presets";
+import { Seguranca } from "./screens/Seguranca";
 import { AppProvider, useApp, type Screen } from "./context";
 
 const NAV: { id: Screen; label: string; icon: string }[] = [
   { id: "dashboard", label: "Painel", icon: "🛡️" },
   { id: "bloquear", label: "Bloquear", icon: "🔒" },
   { id: "panico", label: "Modo pânico", icon: "🚨" },
+  { id: "pomodoro", label: "Pomodoro", icon: "🍅" },
+  { id: "agenda", label: "Agenda", icon: "📅" },
+  { id: "apps", label: "Apps", icon: "🛑" },
+  { id: "presets", label: "Presets", icon: "🗂️" },
+  { id: "stats", label: "Estatísticas", icon: "📊" },
+  { id: "seguranca", label: "Segurança", icon: "🛠️" },
   { id: "config", label: "Configurações", icon: "⚙️" },
 ];
 
@@ -84,6 +96,12 @@ function Shell() {
         {screen === "dashboard" && <Dashboard onNavigate={setScreen} />}
         {screen === "bloquear" && <Bloquear />}
         {screen === "panico" && <Panico />}
+        {screen === "pomodoro" && <Pomodoro />}
+        {screen === "agenda" && <Agenda />}
+        {screen === "apps" && <Apps />}
+        {screen === "presets" && <Presets />}
+        {screen === "stats" && <Estatisticas />}
+        {screen === "seguranca" && <Seguranca />}
         {screen === "config" && <Configuracoes />}
       </main>
 

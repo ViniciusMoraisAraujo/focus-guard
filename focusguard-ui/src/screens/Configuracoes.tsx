@@ -1,6 +1,6 @@
 import { useState } from "react";
-import { api, DaemonError } from "../api/client";
-import { Button, Card, Chip } from "../components/ui";
+import { api, DaemonError, execAction } from "../api/client";
+import { Button, Card, Chip, Field, Modal } from "../components/ui";
 import { useApp } from "../context";
 import { formatMinutes } from "../hooks/useCountdown";
 
@@ -15,6 +15,9 @@ export function Configuracoes() {
   const { status, toast, daemonUp, refresh } = useApp();
   const [customGoal, setCustomGoal] = useState("");
   const [busy, setBusy] = useState(false);
+  const [channel, setChannel] = useState("stable");
+  const [confirmUpdate, setConfirmUpdate] = useState(false);
+  const [updating, setUpdating] = useState(false);
 
   const goalNs = status?.goal ?? 0;
   const goalMin = Math.round(goalNs / 6e10);
@@ -43,6 +46,26 @@ export function Configuracoes() {
       return;
     }
     void setGoal(Math.round(n));
+  };
+
+  const applyUpdate = async () => {
+    setUpdating(true);
+    try {
+      const res = await execAction({ action: "update", channel });
+      toast(
+        res.message ||
+          (res.ok
+            ? "Atualização aplicada — o daemon reinicia ao final."
+            : "Falha ao atualizar."),
+        res.ok ? "ok" : "err",
+      );
+      await refresh();
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Erro ao atualizar.", "err");
+    } finally {
+      setUpdating(false);
+      setConfirmUpdate(false);
+    }
   };
 
   return (
@@ -89,8 +112,7 @@ export function Configuracoes() {
         {status?.update_available ? (
           <p className="update-available">
             Nova versão <strong>{status.update_version}</strong> disponível (atual:{" "}
-            {status.current_version}). Aplique no terminal com{" "}
-            <code>focusguard update</code>.
+            {status.current_version}).
           </p>
         ) : (
           <p className="muted">
@@ -98,7 +120,48 @@ export function Configuracoes() {
             {status?.current_version ? ` (${status.current_version})` : ""}.
           </p>
         )}
+        <div className="form-grid">
+          <Field label="Canal">
+            <select
+              className="input"
+              value={channel}
+              onChange={(e) => setChannel(e.target.value)}
+            >
+              <option value="stable">stable (recomendado)</option>
+              <option value="beta">beta (prereleases)</option>
+            </select>
+          </Field>
+        </div>
+        <div className="card-actions">
+          <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
+            ↻ Verificar
+          </Button>
+          <Button
+            variant="primary"
+            disabled={!status?.update_available}
+            onClick={() => setConfirmUpdate(true)}
+          >
+            ⬆ Aplicar atualização
+          </Button>
+        </div>
       </Card>
+
+      {confirmUpdate && (
+        <Modal
+          title="Aplicar atualização?"
+          onCancel={() => setConfirmUpdate(false)}
+          onConfirm={() => void applyUpdate()}
+          confirmLabel="Atualizar"
+          danger
+          busy={updating}
+        >
+          <p>
+            Baixar e aplicar <strong>{status?.update_version}</strong> no canal{" "}
+            <code>{channel}</code>? O daemon atualiza os binários e reinicia ao final — a
+            interface pode ficar indisponível por alguns instantes.
+          </p>
+        </Modal>
+      )}
 
       <Card>
         <h3>🛡️ Proteção do sistema</h3>

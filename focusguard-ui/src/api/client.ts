@@ -1,4 +1,8 @@
-import type { ApiRequest, ApiResponse } from "./types";
+import type {
+  ApiRequest,
+  ApiResponse,
+  ScheduleRule,
+} from "./types";
 
 // DaemonError distingue falha de conectividade (daemon/servidor fora do ar)
 // de uma resposta de erro do daemon (que chega como success:false normal).
@@ -39,6 +43,17 @@ export async function pingDaemon(): Promise<boolean> {
   }
 }
 
+/** execAction roda uma ação e devolve um erro amigável quando o daemon rejeita. */
+export async function execAction(
+  req: ApiRequest,
+): Promise<{ ok: boolean; message: string }> {
+  const resp = await action(req);
+  if (!resp.success) {
+    return { ok: false, message: resp.message ?? "Falha ao executar a ação." };
+  }
+  return { ok: true, message: resp.message ?? "" };
+}
+
 export const api = {
   status: () => action({ action: "status" }),
   presets: () => action({ action: "presets" }),
@@ -48,4 +63,43 @@ export const api = {
   blockAll: (duration: string, allowlist: string[]) =>
     action({ action: "block-all", duration, allowlist }),
   goalSet: (goalMinutes: number) => action({ action: "goal-set", goal_minutes: goalMinutes }),
+
+  // Pomodoro
+  pomodoro: (p: {
+    preset: string;
+    work?: number;
+    rest?: number;
+    cycles?: number;
+    strict?: boolean;
+    save?: boolean;
+    label?: string;
+  }) => action({ action: "pomodoro", ...p }),
+  pomodoroStop: () => action({ action: "pomodoro-stop" }),
+  pomodoroDefaults: () => action({ action: "pomodoro-defaults" }),
+
+  // Agenda (agendamentos recorrentes)
+  scheduleList: () => action({ action: "schedule-list" }),
+  scheduleAdd: (rule: ScheduleRule) => action({ action: "schedule-add", schedule_rule: rule }),
+  scheduleRemove: (id: string) => action({ action: "schedule-remove", schedule_id: id }),
+  scheduleImport: (icsContent: string, preset: string) =>
+    action({ action: "schedule-import", ics_content: icsContent, ics_preset: preset }),
+
+  // Apps (denylist de processos)
+  appsList: () => action({ action: "apps-list" }),
+  appsAdd: (name: string) => action({ action: "apps-add", app_name: name }),
+  appsRemove: (name: string) => action({ action: "apps-remove", app_name: name }),
+
+  // Presets personalizados
+  presetAdd: (name: string, label: string, domains: string[]) =>
+    action({ action: "preset-add", preset_name: name, preset_label: label, preset_domains: domains }),
+  presetRemove: (name: string) => action({ action: "preset-remove", preset_name: name }),
+
+  // Estatísticas e missões
+  missions: () => action({ action: "missions" }),
+
+  // Histórico de burla
+  tamperLog: () => action({ action: "tamper-log" }),
+
+  // Atualização
+  update: (channel?: string) => action({ action: "update", channel }),
 };

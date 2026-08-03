@@ -1,6 +1,6 @@
 // Tipos que espelham o contrato IPC do daemon (internal/ipc). Mantenha em
 // sincronia com os structs Go: Request/Response, policy.Block, preset.Preset,
-// pomodoro.State e analytics.Stats.
+// pomodoro.State, analytics.Stats, schedule.Rule e tamper.Event.
 
 export interface Block {
   domain: string;
@@ -44,6 +44,30 @@ export interface Stats {
   streak: number;
 }
 
+export interface LabelStat {
+  label: string;
+  duration: number; // nanosegundos
+  sessions: number;
+}
+
+export interface ScheduleRule {
+  id: string;
+  label?: string;
+  preset: string;
+  days: number[]; // 0 = domingo
+  start: string; // "HH:MM"
+  end: string; // "HH:MM"
+  windows?: string[]; // ["HH:MM-HH:MM", ...]
+  enabled: boolean;
+}
+
+export interface TamperEvent {
+  at: string; // RFC3339
+  source: "hosts" | "state";
+  action: "restore" | "reconcile";
+  detail?: string;
+}
+
 export interface ApiRequest {
   action: string;
   domain?: string;
@@ -54,6 +78,19 @@ export interface ApiRequest {
   app_name?: string;
   mission?: string;
   label?: string;
+  work_min?: number;
+  rest_min?: number;
+  cycles?: number;
+  strict?: boolean;
+  save?: boolean;
+  channel?: string;
+  preset_name?: string;
+  preset_label?: string;
+  preset_domains?: string[];
+  schedule_rule?: ScheduleRule;
+  schedule_id?: string;
+  ics_content?: string;
+  ics_preset?: string;
 }
 
 export interface ApiResponse {
@@ -72,4 +109,10 @@ export interface ApiResponse {
   expected_doh?: boolean;
   firewall_rules?: number;
   protection_error?: string;
+  schedules?: ScheduleRule[];
+  tamper_log?: TamperEvent[];
+  label_stats?: LabelStat[];
+  pomodoro_work?: number;
+  pomodoro_rest?: number;
+  pomodoro_cycles?: number;
 }
