@@ -31,6 +31,7 @@ type Server struct {
 	apps            AppsManager
 	tamperLog       TamperProvider
 	onUpdateApplied func()
+	currentVersion  string
 
 	mu           sync.RWMutex
 	updateStatus UpdateStatus
@@ -208,6 +209,15 @@ func (s *Server) SetOnUpdateApplied(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onUpdateApplied = fn
+}
+
+// SetCurrentVersion registra a versão do sistema, permitindo que o status a
+// reporte mesmo quando a verificação de atualizações ainda não rodou (ou está
+// desativada em builds de desenvolvimento).
+func (s *Server) SetCurrentVersion(v string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.currentVersion = v
 }
 
 // RefreshUpdateStatus runs a check-only update check (no apply) and caches the
@@ -607,6 +617,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		us := s.updateStatus
 		pg := s.pomodoro
 		gs := s.goalStore
+		cur := s.currentVersion
 		s.mu.RUnlock()
 		resp.UpdateAvailable = us.Available
 		resp.UpdateVersion = us.NewVersion
@@ -617,6 +628,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		if gs != nil {
 			resp.Goal = gs.Get()
+		}
+		if resp.CurrentVersion == "" {
+			resp.CurrentVersion = cur
 		}
 
 	case "ping":

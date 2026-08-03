@@ -564,6 +564,45 @@ func TestServer_RefreshUpdateStatus_DefaultChannel(t *testing.T) {
 	}
 }
 
+// TestServer_SetCurrentVersion_StatusFallback verifies that SetCurrentVersion
+// feeds the status response before any update check has run.
+func TestServer_SetCurrentVersion_StatusFallback(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetCurrentVersion("9.9.9")
+
+	resp := executeRequest(t, server, Request{Action: "status"})
+
+	if !resp.Success {
+		t.Fatalf("status failed: %s", resp.Message)
+	}
+	if resp.CurrentVersion != "9.9.9" {
+		t.Errorf("expected CurrentVersion 9.9.9 from fallback, got %q", resp.CurrentVersion)
+	}
+}
+
+// TestServer_Status_UpdateCacheTakesPrecedence verifies that once an update
+// check has run, its cached version wins over the fallback.
+func TestServer_Status_UpdateCacheTakesPrecedence(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetCurrentVersion("9.9.9")
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	})
+
+	if _, err := server.RefreshUpdateStatus(context.Background()); err != nil {
+		t.Fatalf("RefreshUpdateStatus: %v", err)
+	}
+
+	resp := executeRequest(t, server, Request{Action: "status"})
+
+	if !resp.Success {
+		t.Fatalf("status failed: %s", resp.Message)
+	}
+	if resp.CurrentVersion != "1.0.0" {
+		t.Errorf("expected cached CurrentVersion 1.0.0, got %q", resp.CurrentVersion)
+	}
+}
+
 func TestServer_RefreshUpdateStatus_CachesResult(t *testing.T) {
 	server := setupTestServer(t)
 	server.SetUpdateChecker(&fakeUpdateChecker{

@@ -484,6 +484,7 @@ func runDaemon() bool {
 	}
 
 	server := ipc.NewServer(sched)
+	server.SetCurrentVersion(daemonVersion)
 	if pg != nil {
 		server.SetApps(&guardApps{store: appsStore, guard: pg})
 	}

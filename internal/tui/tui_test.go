@@ -235,6 +235,7 @@ func TestMessage_StatusFetched(t *testing.T) {
 	m.loading = true
 	now := time.Now()
 	msg := statusFetchedMsg{
+		currentVersion: "1.0.0",
 		blocks: []BlockInfo{
 			{
 				Domain:    "test.com",
@@ -260,6 +261,42 @@ func TestMessage_StatusFetched(t *testing.T) {
 	}
 	if len(m.blocks) != 1 {
 		t.Errorf("expected 1 block, got %d", len(m.blocks))
+	}
+	if m.version != "1.0.0" {
+		t.Errorf("expected version 1.0.0, got %q", m.version)
+	}
+}
+
+func TestView_ShowsVersion(t *testing.T) {
+	m := newTestModel(nil)
+	m.version = "1.2.3"
+	view := m.View()
+	if !strings.Contains(view, "FocusGuard v1.2.3 - Modo Interativo") {
+		t.Errorf("list view should show version in title, got: %s", view)
+	}
+}
+
+func TestView_NoVersionWhenUnknown(t *testing.T) {
+	m := newTestModel(nil)
+	m.version = ""
+	view := m.View()
+	if !strings.Contains(view, "FocusGuard - Modo Interativo") {
+		t.Errorf("list view should show plain title when version is unknown, got: %s", view)
+	}
+	if strings.Contains(view, " v-") || strings.Contains(view, " v ") {
+		t.Errorf("list view should not render an empty version suffix, got: %s", view)
+	}
+}
+
+func TestFormView_ShowsVersion(t *testing.T) {
+	m := New(nil)
+	m.loading = false
+	m.state = viewForm
+	m.domainInput.Focus()
+	m.version = "2.0.0"
+	view := m.View()
+	if !strings.Contains(view, "FocusGuard v2.0.0 - Novo Bloqueio") {
+		t.Errorf("form view should show version in title, got: %s", view)
 	}
 }
 

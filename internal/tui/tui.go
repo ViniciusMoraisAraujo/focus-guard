@@ -39,6 +39,7 @@ type model struct {
 	statusMessage string
 	err           error
 	loading       bool
+	version       string
 
 	expectedDoH     bool
 	dohActive       bool
@@ -73,6 +74,7 @@ type statusFetchedMsg struct {
 	updateAvailable bool
 	updateVersion   string
 	goal            time.Duration
+	currentVersion  string
 }
 
 type fetchErrMsg struct {
@@ -262,6 +264,7 @@ func (m *model) fetchStatusCmd() tea.Cmd {
 			updateAvailable: resp.UpdateAvailable,
 			updateVersion:   resp.UpdateVersion,
 			goal:            resp.Goal,
+			currentVersion:  resp.CurrentVersion,
 		}
 	}
 }
@@ -320,6 +323,7 @@ func (m *model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.updateAvailable = msg.updateAvailable
 		m.updateVersion = msg.updateVersion
 		m.goal = msg.goal
+		m.version = msg.currentVersion
 		m.lastStatusFetch = time.Now()
 		m.updateTableRows()
 		return m, nil
@@ -504,10 +508,20 @@ func (m *model) View() string {
 	return ""
 }
 
+// title monta o cabeçalho das telas, incluindo a versão atual do sistema
+// quando ela é conhecida (ex: "FocusGuard v0.3.0 - Modo Interativo").
+func (m *model) title(suffix string) string {
+	t := "\U0001f512 FocusGuard"
+	if m.version != "" {
+		t += " v" + m.version
+	}
+	return t + " - " + suffix
+}
+
 func (m *model) listView() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("\U0001f512 FocusGuard - Modo Interativo"))
+	b.WriteString(titleStyle.Render(m.title("Modo Interativo")))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Gerencie seus bloqueios de forma f\u00e1cil"))
 	b.WriteString("\n")
@@ -613,7 +627,7 @@ func (m *model) protectionLine() string {
 func (m *model) formView() string {
 	var b strings.Builder
 
-	b.WriteString(titleStyle.Render("\U0001f512 FocusGuard - Novo Bloqueio"))
+	b.WriteString(titleStyle.Render(m.title("Novo Bloqueio")))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render("Preencha os campos abaixo para bloquear um dom\u00ednio."))
 	b.WriteString("\n")
