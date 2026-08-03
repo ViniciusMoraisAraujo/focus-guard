@@ -7,6 +7,27 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🔄 Sincronização e status do firewall
+
+- **Sweep de regras órfãs no `sync`** — se o daemon for morto (crash/sigkill)
+  antes de um `unblock`, as regras de firewall do domínio ficavam para trás e o
+  `sync` apenas adicionava as novas. Agora o `sync` remove regras de domínio que
+  não pertencem a nenhum bloco ativo, nos dois sistemas — no Windows preservando
+  regras DoH/DoT, allow e o catch-all do modo pânico.
+- **`status` fora do lock de mutação** — a consulta de status (lenta, via
+  `netsh show`/`iptables -S`) não trava mais as operações de bloqueio. O
+  resultado é cacheado por 15s e invalidado a cada mutação, mantendo o
+  `status` rápido e o lock curto.
+- **Nome de regra IPv6 normalizado no Windows** — regras de domínio IPv6 agora
+  usam `FocusGuard_2606_4700_4700__1111` (dois-pontos substituídos, como já
+  acontecia nas regras DoH/allow). No primeiro `block` o nome legado com
+  dois-pontos é removido antes de criar o novo, e o `unblock` apaga os dois
+  formatos.
+- **`unblock --internet` enumerando antes de remover** — as allow rules são
+  listadas antes do delete do catch-all: se um crash ocorrer no meio, o
+  bloqueio de internet já foi removido (nada fica inacessível); sobra apenas
+  lixo inerte, varrido no próximo `block --internet`.
+
 ### 🛡️ Correção de fuga do bloqueio (Firefox/QUIC)
 
 - **DoH bloqueado em TCP e UDP** — as regras de bloqueio de
