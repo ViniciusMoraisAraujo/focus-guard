@@ -7,6 +7,38 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🛡️ Correção de fuga do bloqueio (Firefox/QUIC)
+
+- **DoH bloqueado em TCP e UDP** — as regras de bloqueio de
+  DNS-over-HTTPS (porta 443) agora cobrem também o protocolo UDP, fechando o
+  vazamento via QUIC/HTTP/3 que o Firefox usa por padrão. Sem isso, o Firefox
+  resolvia os domínios pelo próprio DoH, ignorava o arquivo `hosts` e alcançava
+  o site por um IP diferente do bloqueado.
+- **REJECT válido no iptables** — as regras de domínio (e o catch-all do
+  `block --internet`) agora emitem `-p tcp -j REJECT --reject-with tcp-reset`
+  seguido de `-j REJECT --reject-with icmp-port-unreachable`. O `tcp-reset`
+  sem `-p tcp` era recusado pelo iptables — o bloqueio de firewall de domínios
+  e o modo pânico nunca eram aplicados no Linux, e tráfego UDP/QUIC escapava.
+- **Migração no Windows** — o `BlockDoH` substitui as regras antigas (tcp-only)
+  por um par `tcp`/`udp` por resolver (`FocusGuard_DoH_<ip>_tcp/_udp`).
+
+### 🌐 Interface web (focusguard-web)
+
+- **`focusguard web`** — abre a interface web no navegador: inicia o
+  `focusguard-web` por demanda (singleton via probe de porta) e abre
+  `http://127.0.0.1:48902`. Servidor em user-space, sem privilégios, que faz
+  proxy das ações IPC para o daemon — **nenhuma mudança no daemon**.
+- **Painel web (React + TypeScript + Vite)** — `focusguard-ui/` com 4 telas:
+  Dashboard (status, countdown ao vivo, meta do dia, bloqueios ativos), Bloquear
+  (presets + duração), Modo pânico (allowlist + confirmação) e Configurações
+  (meta diária, atualizações, proteção). Tema dark com a identidade do escudo.
+- **Servidor HTTP seguro** — `internal/httpapi`: bind loopback apenas,
+  validação de Host (anti-DNS-rebinding), `Content-Type` obrigatório
+  (anti-CSRF), headers CSP/nosniff/X-Frame e limite de corpo. UI embutida no
+  binário via `go:embed` (`make ui`).
+- **Release e instalação** — `focusguard-web` entra nos arquivos das duas
+  plataformas (amd64+arm64), nos installers (ps1/sh) e no update multi-binário.
+
 ## [0.6.0] - 2026-08-03
 
 ### 🧭 TUI, ícones e instalação (integração local)
