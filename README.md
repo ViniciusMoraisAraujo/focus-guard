@@ -6,8 +6,7 @@
 
 ## Funcionalidades
 
-- 🌐 **Interface Web** — painel amigável no navegador (`focusguard web`), React + TypeScript, servido localmente pelo `focusguard-web` em `http://127.0.0.1:48902`
-- 🖥️ **Interface TUI interativa** — Modo gráfico no terminal com Bubble Tea
+- 🌐 **Interface Web completa** — painel no navegador (`focusguard` ou `focusguard web`), React + TypeScript, com todas as funcionalidades: bloqueios, pomodoro, agenda, apps, presets, estatísticas e segurança; servido localmente pelo `focusguard-web` em `http://127.0.0.1:48902`
 - ⌨️ **CLI completa** — Bloqueio rápido via linha de comando
 - 🚫 **Bloqueio de domínios** — Impede o acesso a sites distractivos por tempo determinado
 - ⏱️ **Bloqueios temporários** — Expiração automática sem possibilidade de desbloqueio manual
@@ -196,33 +195,19 @@ sudo ./install-linux.sh uninstall
 
 ## Uso
 
-### Modo Interativo (TUI)
+### Interface Web (navegador)
 
 ```
 focusguard
 ```
 
-Navegue pelos bloqueios ativos, adicione novos bloqueios e acompanhe o tempo restante — tudo em uma interface visual no terminal.
-
-### Interface Web (navegador)
-
-```
-focusguard web
-```
-
-Abre o painel web no navegador padrão. Se o `focusguard-web` não estiver
-rodando, o CLI o inicia em segundo plano (a interface fica em
-`http://127.0.0.1:48902`, acessível só via localhost). O painel mostra status,
-countdown dos bloqueios, meta do dia, ações de bloqueio, modo pânico e
-configurações — tudo conversando com o daemon via proxy local (sem privilégios).
-
-**Atalhos:**
-- `b` — Bloquear novo domínio
-- `r` — Atualizar lista
-- `q` — Sair
-- `Tab` — Navegar entre campos no formulário
-- `Enter` — Confirmar bloqueio
-- `Esc` — Cancelar / Voltar
+Sem argumentos, o CLI inicia o `focusguard-web` por demanda (se não estiver
+rodando) e abre o painel no navegador padrão em `http://127.0.0.1:48902`
+(acessível só via localhost). O painel cobre **todas** as funcionalidades:
+status, countdown, meta do dia, bloqueios, modo pânico, pomodoro, agenda,
+apps, presets, estatísticas, segurança e atualizações — tudo conversando com
+o daemon via proxy local (sem privilégios). A antiga TUI interativa foi
+removida.
 
 ### Linha de Comando
 
@@ -238,9 +223,8 @@ focusguard status
 focusguard install
 focusguard uninstall
 
-# Modo interativo
-focusguard interactive
-focusguard              # (sem argumentos também abre a TUI)
+# Abre a interface web no navegador
+focusguard
 ```
 
 #### Bloqueio por categoria e modo pânico (v0.4.0+)
@@ -351,7 +335,7 @@ focusguard/
 │   └── focusguard.service         # Unit file systemd para Linux
 ├── cmd/
 │   ├── focusguard/                # CLI do usuário
-│   │   └── main.go                # Entrada: TUI + comandos (block, status, install, uninstall)
+│   │   └── main.go                # Entrada: comandos (block, status, install, uninstall, web)
 │   └── focusguard-daemon/         # Serviço em background
 │       ├── main.go                # Inicialização do daemon (store, enforcer, scheduler, IPC)
 │       ├── service_windows.go     # Wrapper de serviço Windows (golang.org/x/sys/windows/svc)
@@ -405,9 +389,6 @@ focusguard/
 │   │   ├── ipc_linux.go           # Unix socket (/run/focusguard.sock)
 │   │   ├── ipc_windows.go         # Unix socket (%PROGRAMDATA%/FocusGuard/)
 │   │   └── *test.go
-│   ├── tui/                       # Interface interativa (Bubble Tea)
-│   │   ├── tui.go                 # Modelo TUI com tabela + formulário + meta diária
-│   │   └── tui_test.go
 │   └── watchdog/                  # Systemd watchdog
 │       ├── watchdog.go            # Notificações via NOTIFY_SOCKET
 │       └── watchdog_test.go
@@ -461,19 +442,11 @@ svc.Run("FocusGuard", handler)
 
 ## Módulos
 
-### TUI (`internal/tui/`)
-
-Interface interativa construída com [Bubble Tea](https://github.com/charmbracelet/bubbletea):
-- **Tela principal**: Tabela com bloqueios ativos (domínio, início, expiração, tempo restante)
-- **Formulário**: Campos para domínio e duração com navegação por `Tab`
-- **Feedback visual**: Indicador de carregamento, mensagens de erro/sucesso com cores
-- **Estilo profissional**: Tema adaptativo (claro/escuro), bordas arredondadas
-
 ### CLI (`cmd/focusguard/`)
 
 | Comando | Descrição |
 |---------|-----------|
-| `focusguard` | Abre modo interativo (TUI) |
+| `focusguard` | Abre a interface web no navegador |
 | `focusguard block <domínio> --duration <tempo>` | Bloqueia um domínio |
 | `focusguard block --preset <categoria> --duration <tempo>` | Bloqueia uma categoria inteira |
 | `focusguard block --internet [--allow <d1,d2>] --duration <tempo>` | Modo pânico: bloqueia toda a internet (com allowlist opcional) |
@@ -499,7 +472,6 @@ Interface interativa construída com [Bubble Tea](https://github.com/charmbracel
 | `focusguard web` | Abre a interface web no navegador |
 | `focusguard install` | Instala daemon como serviço de inicialização |
 | `focusguard uninstall` | Remove daemon da inicialização |
-| `focusguard interactive` | Abre modo interativo (TUI) |
 
 ### Daemon (`cmd/focusguard-daemon/`)
 
@@ -523,17 +495,18 @@ Painel no navegador (React + TypeScript + Vite) servido por um binário
   CSP/nosniff/X-Frame e limite de corpo.
 - **Build** — `make ui` compila o frontend e o embute no binário
   (`go:embed`); em dev, `cd focusguard-ui && npm run dev` (Vite com proxy `/api`).
-- **Telas (MVP)** — Dashboard (status + countdown + meta do dia), Bloquear
-  (presets/domínio + duração), Modo pânico (allowlist + confirmação) e
-  Configurações (meta, atualizações, proteção).
+- **Telas** — Dashboard, Bloquear, Modo pânico, Pomodoro, Agenda (+
+  importação .ics), Apps (denylist), Presets personalizados, Estatísticas
+  (gráficos, missões, export CSV/JSON), Segurança (histórico de burla) e
+  Configurações (meta, atualizações com canal, proteção).
 
-> O plano completo e o roadmap (real-time via WebSocket, telas de Pomodoro/
-> Agenda/Stats) estão em [`docs/ui-plan.md`](docs/ui-plan.md).
+> O plano completo e o roadmap (real-time via WebSocket) estão em
+> [`docs/ui-plan.md`](docs/ui-plan.md).
 
 ### System Tray (`cmd/focusguard-tray/`)
 
 Ícone na bandeja do sistema com ações rápidas (`Status`, `Bloco rápido`,
-`Verificar atualização`, `Abrir TUI` e `Sair` — o daemon continua rodando).
+`Verificar atualização` e `Sair` — o daemon continua rodando).
 
 > 🪟 **Comportamento do tray**
 >
@@ -636,7 +609,7 @@ Regras recorrentes de bloqueio por dia da semana e horário:
 ### Metas e Analytics (`internal/goal/` + `internal/analytics/`)
 
 - **Meta diária** — `goal.json` define a meta (ex: 4h/dia); exibida no `status`
-  e na TUI
+  e na interface web
 - **Streak** — dias consecutivos com foco, calculado por `ComputeStreak`
 - **Exportação** — `ExportCSV`/`ExportJSON` alimentam o `stats --export`
   (`focusguard-stats.csv`/`.json`)
@@ -669,7 +642,6 @@ make test
 go test -cover ./...
 
 # Rodar testes de um pacote específico
-go test ./internal/tui/... -v
 go test ./internal/scheduler/... -v
 ```
 
@@ -691,8 +663,7 @@ go test ./internal/scheduler/... -v
 | `analytics` | Recorder JSONL, Summarize, streak, RenderStats, ExportCSV/JSON, linhas corrompidas puladas |
 | `recovery` | FindRecentBackup, ShouldRollBack, RestoreFromBackup, RecoverIfNeeded |
 | `watchdog` | New() config, sendNotification, Start() com health check |
-| `tui` | Model Init/Update/View, key handling, state transitions, messages, meta diária |
-| `cmd/focusguard` | printUsage, handleBlockCommand (domínio/preset/internet), schedule add/list/remove, preset add/remove, goal set/get, stats --export, main com flags, runInteractive |
+| `cmd/focusguard` | printUsage, handleBlockCommand (domínio/preset/internet), schedule add/list/remove, preset add/remove, goal set/get, stats --export, main com flags (sem args abre a web) |
 
 ---
 

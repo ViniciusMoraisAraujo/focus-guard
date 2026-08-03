@@ -7,6 +7,20 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🌐 Interface web — todas as funcionalidades
+
+- **Todas as features no navegador** — novas telas: Pomodoro (ciclos, strict,
+  missões, encerramento), Agenda (agendamentos recorrentes + importação .ics),
+  Apps (denylist de processos), Presets personalizados, Estatísticas (gráficos
+  por dia/domínio, streak, missões, export CSV/JSON) e Segurança (histórico de
+  burla). A Configuração ganhou aplicar atualização com canal stable/beta.
+
+### 🗑️ TUI removida
+
+- **TUI interativa removida** — a interface web cobre tudo. `focusguard` sem
+  argumentos agora abre a interface web no navegador; o pacote `internal/tui`
+  e as dependências Bubble Tea saíram do projeto.
+
 ## [0.7.0] - 2026-08-03
 
 ### 🎨 Ícone do sistema

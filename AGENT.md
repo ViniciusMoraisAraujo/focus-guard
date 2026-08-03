@@ -12,8 +12,8 @@
 manter o foco, operando em nível de sistema (arquivo `hosts` + regras de
 firewall). É uma aplicação cliente-servidor:
 
-- **CLI/TUI** (`focusguard`) — interface de linha de comando + TUI interativa
-  (Bubble Tea).
+- **CLI** (`focusguard`) — interface de linha de comando; sem argumentos abre
+  a interface web no navegador.
 - **Daemon** (`focusguard-daemon`) — serviço em background que aplica e mantém
   os bloqueios; comunica-se com a CLI via IPC (Unix socket).
 - **Tray** (`focusguard-tray`) — ícone na bandeja do sistema com ações rápidas.
@@ -55,7 +55,6 @@ auto-update multi-binário com rollback.
   Linux exceto o tray (`tray-linux` requer CGO: appindicator/GTK).
 - Dependências principais (todas já em `go.mod` — **evite adicionar novas sem
   necessidade; stdlib primeiro**):
-  - `charmbracelet/bubbletea` + `bubbles` + `lipgloss` — TUI.
   - `fsnotify` — watchers de arquivo (hosts, state).
   - `getlantern/systray` — bandeja do sistema.
   - `creativeprojects/go-selfupdate` — auto-update (canais beta/stable).
@@ -97,7 +96,7 @@ Tray (focusguard-tray) ──┘                                        │
 
 | Binário | Papel | Recursos Windows |
 |---|---|---|
-| `focusguard` | CLI (comandos + TUI) | `cmd/focusguard/versioninfo.json` (ícone, sem manifest) |
+| `focusguard` | CLI (comandos; sem args abre a web) | `cmd/focusguard/versioninfo.json` (ícone, sem manifest) |
 | `focusguard-daemon` | Serviço em background | `versioninfo.json` raiz + `focusguard-daemon.exe.manifest` (**`requireAdministrator`**) |
 | `focusguard-tray` | Bandeja do sistema | `cmd/focusguard-tray/versioninfo.json` (**só ícone — NUNCA manifest/admin**) |
 | `focusguard-watchdog` | Health-check / Smart Recovery | Sem recursos (console app) |
@@ -133,7 +132,6 @@ Tray (focusguard-tray) ──┘                                        │
 | `store` | Persistência JSON atômica (temp file + rename) + réplicas AES-256-GCM atreladas ao hardware |
 | `tamper` | Log JSONL append-only de tentativas de burla detectadas/revertidas (`tamper-log`) |
 | `tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
-| `tui` | Interface interativa Bubble Tea (tabela de bloqueios, formulário, versão no cabeçalho) |
 | `update` | Auto-update via go-selfupdate: canais beta/stable, atualização **multi-binário atômica** (`UpdateToAll`) |
 | `watchdog` | Health check systemd (`NOTIFY_SOCKET` → `READY=1`/`WATCHDOG=1`) |
 
@@ -227,7 +225,7 @@ go test ./... -count=1 -timeout=60s   # make test
 ├── focusguard.ico / .png       # ícone do sistema (gerados por cmd/focusguard-icon)
 ├── versioninfo.json            # recursos Windows do daemon (ícone + manifest + versão)
 ├── cmd/
-│   ├── focusguard/             # CLI + TUI (+ versioninfo.json próprio)
+│   ├── focusguard/             # CLI (+ versioninfo.json próprio)
 │   ├── focusguard-daemon/      # serviço (+ rsrc_windows_*.syso)
 │   ├── focusguard-icon/        # gerador de ícones (build-time)
 │   ├── focusguard-tray/        # systray (+ versioninfo.json só-ícone)
