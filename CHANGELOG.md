@@ -7,6 +7,17 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-04
+
+### 🐛 Instalador .msi: versão do daemon injetada
+
+- **Daemon instalado via `.msi` agora reporta a versão correta** — o
+  `build-msi.sh` compilava o `focusguard-daemon.exe` sem injetar a versão via
+  ldflags (o GoReleaser faz isso com `-X main.daemonVersion`), então a UI/status
+  exibiam `0.0.0-dev` e o auto-update ficava desabilitado. O script agora
+  injeta `-X main.daemonVersion=${VERSION}` no build do daemon, igual ao
+  pipeline de release.
+
 ## [0.11.0] - 2026-08-04
 
 ### ✨ Tray abre o painel web e tema claro/escuro na UI
