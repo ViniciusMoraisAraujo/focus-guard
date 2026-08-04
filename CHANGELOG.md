@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-08-04
+
 ### 🪟 Tray: correções de instalação e robustez
 
 - **Run key com aspas no caminho** — o valor gravado em
