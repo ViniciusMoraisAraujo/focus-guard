@@ -23,6 +23,10 @@ func (s *systrayImpl) SetTooltip(tooltip string)  { systray.SetTooltip(tooltip) 
 // NotifyIcon.ShowBalloonTip — the tray library used by FocusGuard does not
 // expose Shell_NotifyIcon (NIF_INFO) publicly. Best-effort: a missing
 // PowerShell or a failure is ignored (the tooltip still carries the info).
+//
+// A execução é ASSÍNCRONA (Start em vez de Run): o script dorme ~9s para
+// manter o balão vivo, então aguardar bloquearia o caller — no caso, o
+// goroutine de polling do pomodoro (que não pode ficar 9s travado).
 func (s *systrayImpl) Notify(title, message string) {
 	script := fmt.Sprintf(`
 Add-Type -AssemblyName System.Windows.Forms
@@ -33,7 +37,7 @@ $n.ShowBalloonTip(8000, %q, %q, [System.Windows.Forms.ToolTipIcon]::Info)
 Start-Sleep -Seconds 9
 $n.Dispose()
 `, title, message)
-	_ = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script).Run()
+	_ = exec.Command("powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script).Start()
 }
 func (s *systrayImpl) AddMenuItem(title, tooltip string) MenuItem {
 	return &menuItemImpl{systray.AddMenuItem(title, tooltip)}

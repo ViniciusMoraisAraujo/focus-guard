@@ -7,6 +7,28 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🪟 Tray: correções de instalação e robustez
+
+- **Run key com aspas no caminho** — o valor gravado em
+  `HKCU\...\CurrentVersion\Run` agora é `"C:\Program Files\FocusGuard\focusguard-tray.exe"`
+  (com aspas), corrigindo a falha silenciosa no boot: o Windows tentava executar
+  `C:\Program` por causa do espaço no caminho e o tray nunca iniciava. Corrigido
+  nos 3 pontos que gravam a chave: `wix.json` (MSI), `install-daemon.ps1` e
+  `autostart_run.go` (auto-registro do tray).
+- **MSI inicia o tray após instalar** — o instalador agora executa o tray na
+  sessão do usuário logo após a instalação (CustomAction `WixQuietExec` com
+  `Impersonate="yes"`, que roda oculto por natureza), quebrando o ciclo em que
+  o tray nunca iniciava e, por isso, nunca se auto-registrava. O auto-registro do
+  tray (`ensureTrayAutostart`) continua como rede de segurança para logins
+  seguintes.
+- **Tray do .msi sem janela de console** — o `build-msi.sh` agora compila o
+  `focusguard-tray.exe` com `-H windowsgui` (o GoReleaser já usava), eliminando a
+  janela preta que aparecia ao iniciar o tray instalado pelo instalador.
+- **Notificação nativa assíncrona (Windows)** — o balão de notificação
+  (PowerShell/WinForms com `Start-Sleep 9`) não trava mais o polling do pomodoro:
+  o processo é iniciado de forma assíncrona (`Start()` em vez de `Run()`), então
+  a checagem de fase continua fluida.
+
 ## [0.11.1] - 2026-08-04
 
 ### 🐛 Instalador .msi: versão do daemon injetada

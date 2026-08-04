@@ -929,12 +929,17 @@ func TestInstallTray_CreatesRunKey(t *testing.T) {
 		`HKCU\Software\Microsoft\Windows\CurrentVersion\Run`,
 		"/v", "FocusGuardTray",
 		"/t", "REG_SZ",
-		"/d", exePath,
+		"/d", `"` + exePath + `"`,
 		"/f",
 	} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("expected %q in args, got %v", want, cmd.args)
 		}
+	}
+	// O valor do Run key precisa de aspas por causa do espaço em "Program Files"
+	// — sem elas o Windows tenta executar "C:\Program" e o tray não inicia.
+	if !strings.Contains(joined, `"`+exePath+`"`) {
+		t.Errorf("Run key value must be quoted (path has spaces), got args %v", cmd.args)
 	}
 }
 

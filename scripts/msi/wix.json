@@ -55,6 +55,13 @@
       "execute": "deferred",
       "impersonate": "no",
       "return": "ignore"
+    },
+    {
+      "command": "cmd.exe /c start \"\" \"[INSTALLDIR]focusguard-tray.exe\"",
+      "when": "install",
+      "execute": "immediate",
+      "impersonate": "yes",
+      "return": "ignore"
     }
   ],
   "shortcuts": [
@@ -74,7 +81,7 @@
         {
           "name": "FocusGuardTray",
           "type": "string",
-          "value": "[INSTALLDIR]focusguard-tray.exe"
+          "value": "&quot;[INSTALLDIR]focusguard-tray.exe&quot;"
         }
       ]
     }

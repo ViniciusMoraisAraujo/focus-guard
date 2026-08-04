@@ -11,11 +11,15 @@ const (
 )
 
 func installTrayWindows(exePath string) error {
+	// O caminho vive em %ProgramFiles%\FocusGuard (com espaços): a chave Run
+	// precisa de aspas no valor, senão o Windows tenta executar "C:\Program" e
+	// o tray nunca inicia no login.
+	quoted := `"` + exePath + `"`
 	args := []string{
 		"add", trayRunKey,
 		"/v", trayRunValue,
 		"/t", "REG_SZ",
-		"/d", exePath,
+		"/d", quoted,
 		"/f",
 	}
 	out, err := execCommand("reg", args...).CombinedOutput()

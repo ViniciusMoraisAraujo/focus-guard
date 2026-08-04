@@ -141,7 +141,11 @@ function Install-Daemon {
         # comando install-tray faria — o install do CLI faz o mesmo.
         $trayExe = "$InstallDir\focusguard-tray.exe"
         if (Test-Path $trayExe) {
-            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v FocusGuardTray /t REG_SZ /d $trayExe /f | Out-Null
+            # O caminho tem espaços (C:\Program Files\FocusGuard) — o valor do
+            # Run key precisa de aspas, senão o Windows tenta executar "C:\Program".
+            # (escape com backtick: \" não escapa aspas no PowerShell — só o backtick.)
+            $trayQuoted = '"' + $trayExe + '"'
+            reg add "HKCU\Software\Microsoft\Windows\CurrentVersion\Run" /v FocusGuardTray /t REG_SZ /d $trayQuoted /f | Out-Null
             if ($LASTEXITCODE -eq 0) {
                 Write-Host "[FocusGuard] ✔ Tray registrado para iniciar com o Windows (HKCU Run)." -ForegroundColor Green
             } else {
