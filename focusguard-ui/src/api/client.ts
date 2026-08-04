@@ -67,8 +67,8 @@ export const api = {
   // Pomodoro
   pomodoro: (p: {
     preset: string;
-    work?: number;
-    rest?: number;
+    work_min?: number;
+    rest_min?: number;
     cycles?: number;
     strict?: boolean;
     save?: boolean;
