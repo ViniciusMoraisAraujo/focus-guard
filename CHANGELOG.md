@@ -7,6 +7,21 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-04
+
+### ✨ Tray abre o painel web e tema claro/escuro na UI
+
+- **Tray: "Abrir painel" em vez de TUI** — o item do menu agora abre a
+  interface web no navegador (via `focusguard web`), em vez de tentar abrir
+  uma TUI de terminal. No Windows o CLI é iniciado sem janela de console
+  (`HideWindow`); no Linux, em nova sessão (`setsid`), sem deixar terminal
+  visível preso ao tray.
+- **Tema claro/escuro na UI** — novo `ThemeToggle` (sol/lua) no cabeçalho
+  (desktop e mobile). A escolha é persistida (`localStorage "theme"`), com
+  script anti-flash no `index.html` e `color-scheme: dark light`.
+- **Pomodoro: parâmetros corrigidos** — a UI envia `work_min`/`rest_min`
+  (alinhado ao contrato Go), não mais `work`/`rest`.
+
 ## [0.10.3] - 2026-08-04
 
 ### 🐛 Instalador .msi: interface web agora é embutida
