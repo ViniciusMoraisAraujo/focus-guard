@@ -54,6 +54,11 @@ for cmd in focusguard focusguard-daemon focusguard-watchdog focusguard-tray focu
   CGO_ENABLED=0 GOOS=windows GOARCH="$ARCH" go build -trimpath -ldflags "-s -w" -o "bin/${cmd}.exe" "./cmd/${cmd}"
 done
 
+if [ ! -f "$ROOT/focusguard.ico" ]; then
+  echo "ERRO: Ícone do MSI ausente em $ROOT/focusguard.ico" >&2
+  exit 1
+fi
+
 echo "==> Gerando o .msi com go-msi..."
 MSI_NAME="focusguard-${VERSION}-${ARCH}.msi"
 # O go-msi resolve os caminhos do wix.json (ex.: bin/focusguard.exe) para
