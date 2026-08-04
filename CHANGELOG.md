@@ -7,6 +7,19 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.10.2] - 2026-08-04
+
+### 🐛 Instalador .msi: correção do caminho do ícone
+
+- **Ícone do instalador resolvido a partir da raiz do repositório** — o
+  `go-msi` resolve os caminhos relativos do `wix.json` em relação ao diretório
+  de trabalho do processo (a raiz do checkout), não em relação à pasta do
+  `wix.json`. O `../../focusguard.ico` anterior apontava dois níveis acima do
+  checkout (ex.: `D:\a\focusguard.ico`), o que fazia o `light` do WiX abortar
+  com `LGHT0103` nas linhas 30 e 143 do `product.wxs`. Agora o `icon` e o ícone
+  do atalho usam `focusguard.ico` (relativo à raiz), e o `build-msi.sh` falha
+  cedo com mensagem clara se o ícone não existir.
+
 ## [0.10.1] - 2026-08-04
 
 ### 🐛 Instalador .msi: correção do job `windows-msi` no CI
