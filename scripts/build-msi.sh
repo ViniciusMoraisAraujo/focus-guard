@@ -27,6 +27,7 @@ fi
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+ROOT_WIN="$(pwd -W 2>/dev/null || echo "$ROOT")"
 
 # ---------------------------------------------------------------- validações
 command -v go >/dev/null 2>&1 || { echo "ERRO: go não encontrado." >&2; exit 1; }
@@ -56,8 +57,8 @@ done
 echo "==> Gerando o .msi com go-msi..."
 MSI_NAME="focusguard-${VERSION}-${ARCH}.msi"
 go-msi make \
-  --path scripts/msi/wix.json \
-  --src scripts/msi \
+  --path "${ROOT_WIN}/scripts/msi/wix.json" \
+  --src "${ROOT_WIN}/scripts/msi" \
   --arch "$ARCH" \
   --msi "$MSI_NAME" \
   --version "$VERSION"
