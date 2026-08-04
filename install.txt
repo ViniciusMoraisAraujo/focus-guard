@@ -84,6 +84,23 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
       - cria o atalho do FocusGuard no Desktop apontando para o CLI da
         pasta protegida.
 
+    >>> INSTALADOR ÚNICO (.msi) — opção recomendada <<<
+    Cada release também publica um instalador único para facilitar a
+    implantação:
+      - focusguard-X.Y.Z-amd64.msi   (Windows amd64)
+
+    Basta executar o .msi (duplo clique ou: msiexec /i focusguard_...msi):
+      - instala os binários em C:\Program Files\FocusGuard (Todos os
+        Usuários);
+      - registra os serviços "FocusGuard" (daemon) e
+        "FocusGuardWatchdog" com início automático e recovery
+        (reinício automático em caso de falha);
+      - registra o tray na inicialização (HKCU Run) e cria o atalho
+        do FocusGuard no Desktop;
+      - a desinstalação (Painel de Controle > Programas, ou
+        msiexec /x) para/remove os serviços, o atalho e a pasta de
+        instalação.
+
  4) Confirme que o serviço está ONLINE:
       .\install-daemon.ps1 status
       sc query FocusGuard
@@ -144,6 +161,8 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
             (remove /opt/focusguard, o symlink e a unit systemd)
    Windows: .\install-daemon.ps1 uninstall   (como Administrador)
             (remove o serviço, o atalho e C:\Program Files\FocusGuard)
+            msiexec /x focusguard-...msi    (instalação via .msi —
+            remove serviços, atalho e pasta de instalação)
 
    O estado (bloqueios e configuração) é preservado em
    /var/lib/focusguard (Linux) ou C:\ProgramData\FocusGuard
