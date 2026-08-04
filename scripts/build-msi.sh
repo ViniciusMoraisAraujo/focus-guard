@@ -50,9 +50,12 @@ export PATH="$WIX_BIN:$PATH"
 
 echo "==> Compilando binários Windows (${ARCH})..."
 mkdir -p bin
-for cmd in focusguard focusguard-daemon focusguard-watchdog focusguard-tray focusguard-web; do
+for cmd in focusguard focusguard-watchdog focusguard-tray focusguard-web; do
   CGO_ENABLED=0 GOOS=windows GOARCH="$ARCH" go build -trimpath -ldflags "-s -w" -o "bin/${cmd}.exe" "./cmd/${cmd}"
 done
+# O daemon injeta a versão via ldflags (espelhando o GoReleaser); sem isso a
+# UI/status reportam "0.0.0-dev" e o auto-update é desabilitado.
+CGO_ENABLED=0 GOOS=windows GOARCH="$ARCH" go build -trimpath -ldflags "-s -w -X main.daemonVersion=${VERSION}" -o "bin/focusguard-daemon.exe" "./cmd/focusguard-daemon"
 
 if [ ! -f "$ROOT/focusguard.ico" ]; then
   echo "ERRO: Ícone do MSI ausente em $ROOT/focusguard.ico" >&2
