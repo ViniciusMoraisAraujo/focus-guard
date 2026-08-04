@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon build-web ui icon winres test vet clean install uninstall help fmt tidy
+.PHONY: all build build-cli build-daemon build-web ui icon winres test vet clean install uninstall msi help fmt tidy
 
 GO       := go
 BIN_DIR  := bin
@@ -53,6 +53,13 @@ ui:
 	find cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
 	cp -r focusguard-ui/dist/. cmd/focusguard-web/assets/
 
+# msi gera o instalador único do Windows (focusguard-<versão>-amd64.msi) via
+# go-msi + WiX Toolset. Requer um ambiente Windows (o go-msi chama o WiX via
+# cmd.exe) com go-msi e WiX 3.10+ instalados — ver scripts/build-msi.sh.
+# Uso: make msi VERSION=0.9.0 [ARCH=amd64|arm64]
+msi:
+	bash scripts/build-msi.sh $(VERSION) $(ARCH)
+
 install:
 	@echo "=== Instalando FocusGuard ==="
 	$(GO) build -o $(CLI_BIN) ./cmd/focusguard
@@ -99,6 +106,7 @@ help:
 	@echo ""
 	@echo "  make build       Compila CLI, daemon e focusguard-web"
 	@echo "  make ui          Compila a interface web e embute no focusguard-web"
+	@echo "  make msi         Gera o instalador .msi do Windows (go-msi + WiX)"
 	@echo "  make install     Compila e instala (Windows: schtasks, Linux: systemd)"
 	@echo "  make uninstall   Remove da inicializacao"
 	@echo "  make test        Executa todos os testes"
