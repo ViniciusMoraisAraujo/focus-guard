@@ -42,3 +42,48 @@ jobs:
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  # Instalador único do Windows (.msi) via go-msi + WiX Toolset.
+  # Roda no windows-latest porque o go-msi invoca o WiX (candle/light) via cmd.exe.
+  # Depende do job goreleaser para garantir que a release já exista no upload.
+  windows-msi:
+    runs-on: windows-latest
+    needs: goreleaser
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install WiX Toolset (go-msi dependency)
+        run: choco install wixtoolset --no-progress -y
+
+      # Pinned: o template customizado (scripts/msi/product.wxs) segue o schema
+      # deste commit do go-msi (v0.0.0-20200224144923). Não usar @latest — um
+      # schema novo quebraria a geração silenciosamente.
+      - name: Install go-msi (pinned)
+        run: go install github.com/mat007/go-msi@4783d3eea8eb18a7819d1d1ffac877c3edd50527
+
+      - name: Build MSI installer
+        shell: bash
+        env:
+          FG_VERSION: ${{ github.ref_name }}
+        run: |
+          # 'v0.9.0' -> '0.9.0' (o go-msi exige semver sem prefixo 'v')
+          VERSION="${FG_VERSION#v}"
+          bash scripts/build-msi.sh "$VERSION" amd64
+
+      - name: Upload MSI to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release upload "$GITHUB_REF_NAME" "focusguard-${VERSION}-amd64.msi" --clobber
+          echo "::notice::MSI anexado à release: focusguard-${VERSION}-amd64.msi"
