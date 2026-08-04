@@ -1,0 +1,71 @@
+# AGENT.md — focusguard-ui/
+
+> Guia para agentes de IA que trabalham neste diretório. Consulte também o
+> **[AGENT.md](../AGENT.md)** na raiz (specs, convenções, armadilhas) e o
+> **[docs/ui-plan.md](../docs/ui-plan.md)** (plano + contrato da API) — leia-os
+> antes de editar qualquer código.
+
+## Propósito
+
+Frontend **React 18 + Vite + TypeScript** da interface web do FocusGuard.
+Roda no navegador contra `http://127.0.0.1:48902` (`focusguard-web` faz proxy
+das ações IPC para o daemon). O `dist` compilado é copiado para
+`cmd/focusguard-web/assets` pelo `make ui` e embutido via `go:embed`.
+
+## Estrutura
+
+| Caminho | Papel |
+|---|---|
+| `src/api/types.ts` | **Espelha o contrato IPC Go** (`ipc.Request/Response`, `policy.Block`, `preset.Preset`, `pomodoro.State`, `analytics.Stats`, `schedule.Rule`, `tamper.Event`) — manter em sincronia com `internal/ipc` |
+| `src/api/client.ts` | `action()` (fetch POST `/api/action`), `pingDaemon()`, `execAction()` + `api.*` helpers |
+| `src/context.tsx` | `AppProvider`: polling de status (10s) e stats (60s), `daemonUp`, toasts (sonner) |
+| `src/App.tsx` | Shell: sidebar desktop + Sheet mobile, navegação entre as 10 telas |
+| `src/screens/` | 10 telas: Dashboard, Bloquear, Panico, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca, Configuracoes |
+| `src/components/` | `circular-timer.tsx`, `weekly-grid.tsx`, `screen.tsx`, `theme-provider.tsx` |
+| `src/components/ui/` | Componentes shadcn-style (button, card, dialog, sheet, tabs, tooltip, sonner, etc.) |
+| `src/hooks/useCountdown.ts` | Countdown client-side |
+| `src/lib/utils.ts` | `cn()` (clsx + tailwind-merge) |
+
+## Regras específicas
+
+1. **A UI nunca adivinha estado** — toda mutação (block, goal, pomodoro) confia
+   na resposta do daemon (`success`/`message`); sempre trate `success:false` e
+   exiba `message`.
+2. **Serialização Go → JS**: `goal` e durações vêm em **nanossegundos**
+   (converter `ns/1e9/60`); `ExpiresAt`/`StartedAt`/`at` são **RFC3339**
+   (`new Date(rfc3339)`); `duration` (input) é string Go (`"30m"`, `"4h"`).
+3. **Modo pânico** = domínio sentinela `*all-internet*` no status.
+4. **Daemon offline** = HTTP 503 → a UI mostra o banner "daemon desligado".
+5. **Sem `dangerouslySetInnerHTML`** — React escapa por padrão; CSP restritiva
+   servida pelo backend.
+6. Build: `npm ci && npm run build` (hooks do goreleaser/`make ui`); `tsc`
+   deve passar (TS estrito).
+7. Dev: `cd focusguard-ui && npm run dev` (Vite :5173 com proxy `/api`).
+
+## Bugs e correções potenciais
+
+- **`src/api/client.ts` — `api.update()` existe mas a UI não expõe aplicar
+  update** (as telas só exibem `update_available`/`update_version`); a seção
+  7.4 do ui-plan diz que a UI "nunca aplica". Coerente, mas o helper
+  `api.update` pode confundir agentes — documentar ou remover.
+
+- **`src/context.tsx` — `refresh()` só limpa `status` quando o daemon cai;
+  `presets` e `stats` ficam com dados velhos** até o próximo ciclo bem-sucedido
+  (presets são refetchados a cada 10s, stats a cada 60s). A UI pode exibir
+  presets obsoletos por até ~10s após uma queda — considerar limpar `presets`
+  junto com `status` quando `daemonUp` for `false`.
+
+- **`src/api/types.ts` — `ApiResponse` não espelha todos os campos do
+  `ipc.Response` Go** (ex.: `protection_error` existe, mas a UI trata via
+  `status.doh_active`); ao adicionar ação nova, verifique **os dois lados**
+  (Go `internal/ipc` e `types.ts`) e o `ui-plan.md` seção 4.
+
+- **`src/App.tsx`/screens — `AppProvider` faz 2 fetchs simultâneos no load**
+  (status + stats) e mais 2 por ciclo (10s/60s); ok para o volume, mas evite
+  adicionar mais polling por tela (o `useCountdown` já é client-side).
+
+## Validação
+
+- `cd focusguard-ui && npm run build` (ou `npx tsc --noEmit`) — deve passar.
+- Após mudanças na UI: rodar `make ui` para copiar o dist para
+  `cmd/focusguard-web/assets` antes de compilar o binário.
