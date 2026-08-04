@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
@@ -228,6 +229,7 @@ func TestStartStatewatch_StopIsIdempotent(t *testing.T) {
 
 func TestRunDaemon_StatewatchIntegration(t *testing.T) {
 	requireRoot(t)
+	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
 	goos = "linux"
@@ -284,6 +286,7 @@ func TestRunDaemon_StatewatchIntegration(t *testing.T) {
 
 func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
 	requireRoot(t)
+	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
 	goos = "linux"
@@ -482,6 +485,7 @@ func TestGetStateFilePath_Windows_ForwardSlash(t *testing.T) {
 
 func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 	requireRoot(t)
+	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
 	goos = "linux"
@@ -532,6 +536,7 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 
 func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 	requireRoot(t)
+	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
 
@@ -604,6 +609,7 @@ func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 
 func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
 	origGoos := goos
+	stubProbeDaemonAlive(t, false)
 	goos = "linux"
 	defer func() { goos = origGoos }()
 
@@ -660,6 +666,7 @@ func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
 
 func TestDaemonDoneCh_NotClosedInRunDaemon(t *testing.T) {
 	origGoos := goos
+	stubProbeDaemonAlive(t, false)
 	goos = "linux"
 	defer func() { goos = origGoos }()
 
@@ -1541,6 +1548,128 @@ func requireRoot(t *testing.T) {
 	t.Helper()
 	if os.Geteuid() != 0 {
 		t.Skip("requires root: runDaemon writes state to /var/lib/focusguard")
+	}
+}
+
+// stubProbeDaemonAlive desativa o ping de singleton (probeDaemonAlive) durante
+// um teste, devolvendo o resultado dado. Sem isso, um teste que roda com o
+// daemon real de pé (porta IPC respondendo) veria o runDaemon encerrar cedo.
+func stubProbeDaemonAlive(t *testing.T, result bool) {
+	t.Helper()
+	orig := probeDaemonAlive
+	probeDaemonAlive = func() bool { return result }
+	t.Cleanup(func() { probeDaemonAlive = orig })
+}
+
+// TestRunDaemon_Singleton_ExitsEarly verifies a second daemon instance (another
+// one already answering the IPC port) exits cleanly instead of crash-looping on
+// the bind — the fix for "bind: address already in use → Reiniciando..." para
+// sempre. runDaemon must return true (clean exit) WITHOUT starting statewatch.
+func TestRunDaemon_Singleton_ExitsEarly(t *testing.T) {
+	stubProbeDaemonAlive(t, true)
+
+	origNewHostswatch := newHostswatch
+	newHostswatch = func(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hostswatch.HostsWatcher {
+		t.Error("hostswatch não deveria iniciar quando outra instância já está ativa")
+		return nil
+	}
+	defer func() { newHostswatch = origNewHostswatch }()
+
+	var statewatchStarted bool
+	origNewStatewatch := newStatewatch
+	newStatewatch = func(rec statewatch.Reconciler, statePath string) *statewatch.StateWatcher {
+		statewatchStarted = true
+		return statewatch.New(rec, statePath)
+	}
+	defer func() { newStatewatch = origNewStatewatch }()
+
+	if result := runDaemon(); !result {
+		t.Error("runDaemon deveria retornar true (exit limpo) quando outra instância está ativa")
+	}
+	if statewatchStarted {
+		t.Error("statewatch não deveria iniciar em uma instância duplicada")
+	}
+}
+
+// TestIsAddrInUse_DetectsBindError verifies isAddrInUse reconhece um erro de
+// bind real (EADDRINUSE/WSAEADDRINUSE) — o gatilho do crash-loop.
+func TestIsAddrInUse_DetectsBindError(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("primeiro listen: %v", err)
+	}
+	defer ln.Close()
+
+	if _, err := net.Listen("tcp", ln.Addr().String()); err == nil {
+		t.Skip("SO_REUSEADDR permitiu bind duplo — não dá para simular EADDRINUSE")
+	} else if !isAddrInUse(err) {
+		t.Errorf("isAddrInUse = false para %v", err)
+	}
+}
+
+// TestIsAddrInUse_OtherErrors verifies isAddrInUse não engole erros que não
+// são de porta em uso.
+func TestIsAddrInUse_OtherErrors(t *testing.T) {
+	if isAddrInUse(errors.New("permission denied")) {
+		t.Error("permission denied não é address in use")
+	}
+	if isAddrInUse(nil) {
+		t.Error("nil não é address in use")
+	}
+}
+
+// TestProbeDaemonAlive_NoDaemon verifies o ping de singleton responde false
+// quando não há ninguém escutando na porta IPC (dial falha).
+func TestProbeDaemonAlive_NoDaemon(t *testing.T) {
+	// Porta livre: reserva um listener, pega o endereço e fecha, para termos um
+	// endereço com quase certeza sem serviço escutando.
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	addr := ln.Addr().String()
+	ln.Close()
+
+	orig := ipc.TestDialAddr
+	ipc.TestDialAddr = addr
+	defer func() { ipc.TestDialAddr = orig }()
+
+	if probeDaemonAlive() {
+		t.Error("probeDaemonAlive deveria ser false sem daemon escutando")
+	}
+}
+
+// TestProbeDaemonAlive_DaemonResponds verifies o ping de singleton responde
+// true quando um servidor IPC real responde na porta.
+func TestProbeDaemonAlive_DaemonResponds(t *testing.T) {
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	defer ln.Close()
+
+	// Servidor IPC mínimo: aceita conexões e responde um ping de verdade.
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer c.Close()
+				var req ipc.Request
+				_ = json.NewDecoder(c).Decode(&req)
+				_ = json.NewEncoder(c).Encode(&ipc.Response{Success: true, Message: "pong"})
+			}(conn)
+		}
+	}()
+
+	orig := ipc.TestDialAddr
+	ipc.TestDialAddr = ln.Addr().String()
+	defer func() { ipc.TestDialAddr = orig }()
+
+	if !probeDaemonAlive() {
+		t.Error("probeDaemonAlive deveria ser true com um daemon respondendo")
 	}
 }
 

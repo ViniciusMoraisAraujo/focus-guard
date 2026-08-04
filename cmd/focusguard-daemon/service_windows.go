@@ -4,6 +4,7 @@ package main
 
 import (
 	"log"
+	"sync"
 	"time"
 
 	"golang.org/x/sys/windows/svc"
@@ -29,11 +30,15 @@ func (h *focusGuardService) Execute(args []string, r <-chan svc.ChangeRequest, c
 
 	changes <- svc.Status{State: svc.Running, Accepts: svc.AcceptStop | svc.AcceptShutdown}
 
+	// O SCM pode pedir Stop mais de uma vez (ex.: parada ignorada por bloqueios
+	// ativos e um novo stop depois). close() num canal já fechado dá panic —
+	// o once garante que só o primeiro pedido fecha o canal de parada.
+	var stopOnce sync.Once
 	for c := range r {
 		switch c.Cmd {
 		case svc.Stop, svc.Shutdown:
 			changes <- svc.Status{State: svc.StopPending}
-			close(serviceStopCh)
+			stopOnce.Do(func() { close(serviceStopCh) })
 
 			select {
 			case <-daemonDoneCh:
