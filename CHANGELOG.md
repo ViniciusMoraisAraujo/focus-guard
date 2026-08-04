@@ -5,6 +5,35 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+## [0.10.0] - 2026-08-04
+
+### 📦 Instalador único .msi (Windows)
+
+- **Instalador `.msi` em um clique** — cada release agora também publica o
+  `focusguard-<versão>-amd64.msi`, gerado no CI (job `windows-msi` com
+  go-msi + WiX Toolset). Basta executar o arquivo (ou
+  `msiexec /i focusguard_<versão>-amd64.msi`): instala os 5 executáveis em
+  `C:\Program Files\FocusGuard` (Todos os Usuários), registra os serviços
+  `FocusGuard` e `FocusGuardWatchdog` com início automático e recovery
+  (`sc failure ... restart`), registra o tray na inicialização e cria o
+  atalho do FocusGuard no Desktop.
+- **Desinstalação limpa** — a remoção (Programas e Recursos ou
+  `msiexec /x`) para/remove os serviços, o atalho e a pasta de instalação;
+  o estado em `C:\ProgramData\FocusGuard` é preservado.
+- **Pipeline e build local** — novo job `windows-msi` no release.yml e alvo
+  `make msi VERSION=x.y.z [ARCH=amd64|arm64]` (script `scripts/build-msi.sh`
+  com go-msi pinado + template WiX próprio em `scripts/msi/`).
+
+### 🪟 Tray: autostart auto-registrado
+
+- **Tray se registra no HKCU Run no primeiro launch** — como o .msi roda como
+  SYSTEM (instalação per-machine), ele não consegue gravar a chave Run do
+  usuário real; agora o próprio tray registra seu autostart ao iniciar
+  (best-effort, sem elevação), garantindo que volte a abrir com o Windows
+  para aquele usuário.
+
 ## [0.9.0] - 2026-08-04
 
 ### 🐛 Daemon: crash-loop na porta IPC (correção crítica)
