@@ -7,6 +7,17 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.10.3] - 2026-08-04
+
+### 🐛 Instalador .msi: interface web agora é embutida
+
+- **UI incluída no `.msi`** — o job `windows-msi` não compilava a interface
+  web (React) antes do `go-msi`, então o `focusguard-web.exe` instalado
+  embutia uma pasta de assets vazia e a UI não abria (página 404). O pipeline
+  agora roda `npm ci && npm run build` e copia o `dist` para
+  `cmd/focusguard-web/assets` (embutido via `go:embed`) antes de gerar o
+  instalador, espelhando o hook do GoReleaser.
+
 ## [0.10.2] - 2026-08-04
 
 ### 🐛 Instalador .msi: correção do caminho do ícone
