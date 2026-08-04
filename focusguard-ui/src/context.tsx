@@ -5,6 +5,7 @@ import {
   useState,
   type ReactNode,
 } from "react";
+import { toast as sonnerToast } from "sonner";
 import { api, pingDaemon } from "./api/client";
 import type { ApiResponse, Preset } from "./api/types";
 
@@ -20,12 +21,6 @@ export type Screen =
   | "seguranca"
   | "config";
 
-export interface Toast {
-  id: number;
-  msg: string;
-  kind: "ok" | "err";
-}
-
 interface AppState {
   /** null = ainda verificando; true/false = daemon acessível. */
   daemonUp: boolean | null;
@@ -33,8 +28,8 @@ interface AppState {
   presets: Preset[];
   stats: ApiResponse | null;
   refresh: () => Promise<void>;
-  toast: (msg: string, kind?: Toast["kind"]) => void;
-  toasts: Toast[];
+  /** toast renderiza via sonner (sucesso/erro), mesma assinatura de antes. */
+  toast: (msg: string, kind?: "ok" | "err") => void;
 }
 
 const Ctx = createContext<AppState | null>(null);
@@ -50,12 +45,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [status, setStatus] = useState<ApiResponse | null>(null);
   const [presets, setPresets] = useState<Preset[]>([]);
   const [stats, setStats] = useState<ApiResponse | null>(null);
-  const [toasts, setToasts] = useState<Toast[]>([]);
 
-  const toast = (msg: string, kind: Toast["kind"] = "ok") => {
-    const id = Date.now() + Math.random();
-    setToasts((t) => [...t, { id, msg, kind }]);
-    setTimeout(() => setToasts((t) => t.filter((x) => x.id !== id)), 4500);
+  const toast = (msg: string, kind: "ok" | "err" = "ok") => {
+    if (kind === "err") {
+      sonnerToast.error(msg);
+    } else {
+      sonnerToast.success(msg);
+    }
   };
 
   const refresh = async () => {
@@ -104,7 +100,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, []);
 
   return (
-    <Ctx.Provider value={{ daemonUp, status, presets, stats, refresh, toast, toasts }}>
+    <Ctx.Provider value={{ daemonUp, status, presets, stats, refresh, toast }}>
       {children}
     </Ctx.Provider>
   );

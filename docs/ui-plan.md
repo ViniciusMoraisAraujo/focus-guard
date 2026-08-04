@@ -1,7 +1,9 @@
 # Plano — FocusGuard UI (Web Amigável)
 
 > **Status:** documento vivo. **F1 e F2 implementadas em 2026-08-03** — a
-> interface web já roda (ver seção 10).
+> interface web já roda (ver seção 10). **F4 em andamento (2026-08-04):**
+> todas as 10 telas navegáveis; grade semanal da Agenda e anel visual do
+> Pomodoro adicionados.
 >
 > **Decisões registradas:**
 >
@@ -249,7 +251,7 @@ focusguard-ui/                 # frontend React + Vite + TS
 | **F1 — Fundação** | ✅ 2026-08-03 | `internal/httpapi` + `cmd/focusguard-web` + `focusguard web` + `make ui` + goreleaser/installers |
 | **F2 — UI MVP** | ✅ 2026-08-03 | Scaffold React + 4 telas + cliente API tipado + build validado |
 | **F3 — Real-time** | ⬜ | `/ws` com eventos (block expirou, pomodoro, schedule) — precisa de event hub no daemon |
-| **F4 — Telas restantes** | ⬜ | Pomodoro visual, Agenda (grade semanal), Stats (gráficos), Presets, Apps, Tamper-log |
+| **F4 — Telas restantes** | 🚧 (telas ✔, visuais em andamento) | Pomodoro visual (anel), Agenda (grade semanal), Stats (gráficos), Presets, Apps, Tamper-log — todos os dados já expostos |
 | **F5 — Linux + polimento** | ⬜ | Acesso ao socket no Linux, docs finais, release conjunta |
 
 ---

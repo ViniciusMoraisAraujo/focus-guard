@@ -5,7 +5,27 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Unreleased]
+## [0.9.0] - 2026-08-04
+
+### 🐛 Daemon: crash-loop na porta IPC (correção crítica)
+
+- **Singleton no daemon** — se outra instância do FocusGuard já estiver
+  atendendo a porta IPC (48901), a nova instância encerra limpo com uma mensagem
+  clara, em vez de crash-loopar com `bind: address already in use` +
+  `Reiniciando...` para sempre. Antes, duas instâncias (ex.: serviço SCM + uma
+  segunda iniciada à mão, ou uma sobreposição de restart) brigavam pela porta e
+  o log virava um ciclo sem fim de falhas de bind a cada ~6–10s.
+- **Fim do flood `Sinal <nil> ignorado`** — quando o servidor IPC falhava ao
+  iniciar, o `close(sigChan)` deixava o goroutine de sinais lendo `nil` de um
+  canal fechado em hot-loop, inundando o log com centenas de linhas idênticas
+  por segundo. O goroutine agora reconhece o canal fechado e encerra.
+- **Parada de serviço sem hot-loop nem panic** — o canal de parada do serviço é
+  tratado apenas na primeira notificação (um canal fechado fica "pronto" para
+  sempre no select); o SCM pode pedir Stop mais de uma vez e o `close()` é
+  guardado por `sync.Once`, eliminando um `panic: close of closed channel`
+  latente no Windows.
+- **Log honesto do servidor IPC** — a mensagem de "ativo e aguardando
+  requisições" deixa de ser impressa antes do bind realmente acontecer.
 
 ### 📝 Logs do daemon
 
@@ -22,6 +42,24 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   restart ficava pendente até os bloqueios expirarem). Os bloqueios não são
   tocados: ficam no state.json e o boot da nova versão os restaura — proteção
   contínua.
+
+### ⏳ Expiração de bloqueios confiável
+
+- **Bloqueio expirado só sai do estado após o SO confirmar** — a remoção de
+  bloqueios expirados (RAM + state.json) agora só acontece depois que o enforcer
+  confirma a remoção das regras de hosts/firewall; em falha transitória (ex.:
+  netsh ainda subindo após o boot), o bloqueio permanece com timer de retry em
+  vez de o estado declarar "limpo" com regras órfãs.
+
+### 🌐 Interface web
+
+- **Grade semanal na Agenda** — visualização das regras recorrentes em um grid
+  7×24h com blocos coloridos por categoria, lane stacking para janelas
+  sobrepostas, marcador "agora" no dia atual e legenda. Comporta rolagem
+  horizontal no mobile.
+- **Anel visual no Pomodoro** — o contador da sessão ativa virou um anel de
+  progresso SVG (verde no foco, azul no descanso) com o tempo restante no
+  centro.
 
 ## [0.8.0] - 2026-08-03
 

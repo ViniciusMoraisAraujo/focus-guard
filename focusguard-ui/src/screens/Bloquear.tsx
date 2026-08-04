@@ -1,7 +1,14 @@
 import { useState } from "react";
-import { api, DaemonError } from "../api/client";
-import { Button, Card, Chip, Field } from "../components/ui";
-import { useApp } from "../context";
+import { Lock, ShieldCheck } from "lucide-react";
+import { api, DaemonError } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
+import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
+import { useApp } from "@/context";
+import { cn } from "@/lib/utils";
 
 const DURATIONS = [
   { label: "30 min", value: "30m" },
@@ -20,8 +27,7 @@ export function Bloquear() {
   const [customMin, setCustomMin] = useState<string>("");
   const [busy, setBusy] = useState(false);
 
-  const effectiveDuration =
-    duration === "custom" && customMin ? `${customMin}m` : duration;
+  const effectiveDuration = duration === "custom" && customMin ? `${customMin}m` : duration;
 
   const submit = async () => {
     if (!effectiveDuration) {
@@ -58,92 +64,106 @@ export function Bloquear() {
   };
 
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Bloquear</h2>
-        <p className="muted">Escolha uma categoria ou um domínio e a duração do bloqueio.</p>
-      </header>
+    <Screen>
+      <ScreenHeader
+        title="Bloquear"
+        subtitle="Escolha uma categoria ou um domínio e a duração do bloqueio."
+      />
 
-      <Card className="form-card">
-        <div className="segmented">
-          <button
-            type="button"
-            className={`segment${mode === "preset" ? " active" : ""}`}
-            onClick={() => setMode("preset")}
-          >
-            Categoria (preset)
-          </button>
-          <button
-            type="button"
-            className={`segment${mode === "domain" ? " active" : ""}`}
-            onClick={() => setMode("domain")}
-          >
-            Domínio específico
-          </button>
-        </div>
+      {daemonUp === false ? (
+        <EmptyCard>
+          <p>O daemon está desligado — bloqueio indisponível.</p>
+        </EmptyCard>
+      ) : (
+        <Card className="max-w-2xl">
+          <CardContent className="flex flex-col gap-5 px-5 py-5">
+            <Tabs value={mode} onValueChange={(v) => setMode(v as "preset" | "domain")}>
+              <TabsList className="w-full">
+                <TabsTrigger value="preset" className="flex-1">
+                  <ShieldCheck /> Categoria (preset)
+                </TabsTrigger>
+                <TabsTrigger value="domain" className="flex-1">
+                  <Lock /> Domínio específico
+                </TabsTrigger>
+              </TabsList>
+            </Tabs>
 
-        {mode === "preset" ? (
-          <div className="chips">
-            {presets.map((p) => (
-              <Chip
-                key={p.name}
-                selected={preset === p.name}
-                onClick={() => setPreset(p.name)}
-                title={p.domains.join(", ")}
-              >
-                <span className="chip-name">{p.label}</span>
-                <span className="chip-count">{p.domains.length}</span>
-              </Chip>
-            ))}
-          </div>
-        ) : (
-          <Field label="Domínio">
-            <input
-              type="text"
-              className="input"
-              placeholder="ex: youtube.com"
-              value={domain}
-              onChange={(e) => setDomain(e.target.value)}
-              onKeyDown={(e) => e.key === "Enter" && void submit()}
-            />
-          </Field>
-        )}
+            {mode === "preset" ? (
+              <div className="flex flex-wrap gap-2">
+                {presets.map((p) => (
+                  <Button
+                    key={p.name}
+                    type="button"
+                    variant={preset === p.name ? "default" : "outline"}
+                    title={p.domains.join(", ")}
+                    onClick={() => setPreset(p.name)}
+                    className="h-7"
+                  >
+                    {p.label}
+                    <span className="rounded-full bg-muted px-1.5 text-xs tabular-nums">
+                      {p.domains.length}
+                    </span>
+                  </Button>
+                ))}
+              </div>
+            ) : (
+              <div className="flex flex-col gap-2">
+                <Label htmlFor="domain">Domínio</Label>
+                <Input
+                  id="domain"
+                  type="text"
+                  placeholder="ex: youtube.com"
+                  value={domain}
+                  onChange={(e) => setDomain(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void submit()}
+                />
+              </div>
+            )}
 
-        <Field label="Duração">
-          <div className="chips">
-            {DURATIONS.map((d) => (
-              <Chip
-                key={d.value}
-                selected={duration === d.value}
-                onClick={() => setDuration(d.value)}
-              >
-                {d.label}
-              </Chip>
-            ))}
-            <Chip selected={duration === "custom"} onClick={() => setDuration("custom")}>
-              personalizado
-            </Chip>
-          </div>
-          {duration === "custom" && (
-            <div className="inline-field">
-              <input
-                type="number"
-                className="input"
-                min={1}
-                placeholder="minutos"
-                value={customMin}
-                onChange={(e) => setCustomMin(e.target.value)}
-              />
-              <span className="muted">minutos</span>
+            <div className="flex flex-col gap-2">
+              <Label>Duração</Label>
+              <div className="flex flex-wrap gap-2">
+                {DURATIONS.map((d) => (
+                  <Button
+                    key={d.value}
+                    type="button"
+                    variant={duration === d.value ? "default" : "outline"}
+                    onClick={() => setDuration(d.value)}
+                    className="h-7"
+                  >
+                    {d.label}
+                  </Button>
+                ))}
+                <Button
+                  type="button"
+                  variant={duration === "custom" ? "default" : "outline"}
+                  onClick={() => setDuration("custom")}
+                  className="h-7"
+                >
+                  personalizado
+                </Button>
+              </div>
+              {duration === "custom" && (
+                <div className={cn("flex items-center gap-2")}>
+                  <Input
+                    type="number"
+                    min={1}
+                    placeholder="minutos"
+                    className="max-w-28"
+                    value={customMin}
+                    onChange={(e) => setCustomMin(e.target.value)}
+                  />
+                  <span className="text-sm text-muted-foreground">minutos</span>
+                </div>
+              )}
             </div>
-          )}
-        </Field>
 
-        <Button className="submit" onClick={submit} disabled={busy || daemonUp === false}>
-          {busy ? "Bloqueando…" : "🔒 Bloquear"}
-        </Button>
-        {daemonUp === false && <p className="muted">Daemon desligado — bloqueio indisponível.</p>}
-      </Card>
-    </section>
+            <Button onClick={() => void submit()} disabled={busy} className="w-full" size="lg">
+              <Lock /> {busy ? "Bloqueando…" : "Bloquear"}
+            </Button>
+          </CardContent>
+        </Card>
+      )}
+    </Screen>
   );
 }

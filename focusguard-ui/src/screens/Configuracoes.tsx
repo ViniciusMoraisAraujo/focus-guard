@@ -1,8 +1,30 @@
 import { useState } from "react";
-import { api, DaemonError, execAction } from "../api/client";
-import { Button, Card, Chip, Field, Modal } from "../components/ui";
-import { useApp } from "../context";
-import { formatMinutes } from "../hooks/useCountdown";
+import { Download, RefreshCw, Settings, ShieldCheck, Target } from "lucide-react";
+import { api, DaemonError, execAction } from "@/api/client";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import { Screen, ScreenHeader } from "@/components/screen";
+import { useApp } from "@/context";
+import { formatMinutes } from "@/hooks/useCountdown";
+import { cn } from "@/lib/utils";
 
 const GOALS = [
   { label: "2 h", minutes: 120 },
@@ -69,143 +91,173 @@ export function Configuracoes() {
   };
 
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Configurações</h2>
-        <p className="muted">Meta diária, atualizações e estado do sistema.</p>
-      </header>
+    <Screen>
+      <ScreenHeader title="Configurações" subtitle="Meta diária, atualizações e estado do sistema." />
 
-      <Card>
-        <h3>🎯 Meta diária de foco</h3>
-        <p className="muted">
-          {goalNs > 0 ? `Atual: ${formatMinutes(goalNs)} por dia` : "Nenhuma meta definida ainda."}
-        </p>
-        <div className="chips">
-          {GOALS.map((g) => (
-            <Chip
-              key={g.minutes}
-              selected={g.minutes === goalMin}
-              onClick={() => void setGoal(g.minutes)}
-            >
-              {g.label}
-            </Chip>
-          ))}
-        </div>
-        <div className="inline-field">
-          <input
-            type="number"
-            className="input"
-            min={1}
-            max={1440}
-            placeholder="minutos personalizados"
-            value={customGoal}
-            onChange={(e) => setCustomGoal(e.target.value)}
-          />
-          <Button variant="secondary" onClick={saveCustom} disabled={busy}>
-            Definir
-          </Button>
-        </div>
-      </Card>
-
-      <Card>
-        <h3>🔄 Atualizações</h3>
-        {status?.update_available ? (
-          <p className="update-available">
-            Nova versão <strong>{status.update_version}</strong> disponível (atual:{" "}
-            {status.current_version}).
+      <Card className="max-w-2xl">
+        <CardContent className="flex flex-col gap-5 px-5 py-5">
+          <div className="flex items-center gap-2">
+            <Target className="size-4 text-muted-foreground" />
+            <h3 className="font-heading text-base font-semibold">Meta diária de foco</h3>
+          </div>
+          <p className="-mt-3 text-sm text-muted-foreground">
+            {goalNs > 0 ? `Atual: ${formatMinutes(goalNs)} por dia` : "Nenhuma meta definida ainda."}
           </p>
-        ) : (
-          <p className="muted">
-            Você está na versão mais recente
-            {status?.current_version ? ` (${status.current_version})` : ""}.
+          <div className="flex flex-wrap gap-2">
+            {GOALS.map((g) => (
+              <Button
+                key={g.minutes}
+                type="button"
+                variant={g.minutes === goalMin ? "default" : "outline"}
+                onClick={() => void setGoal(g.minutes)}
+                disabled={busy}
+                className="h-7"
+              >
+                {g.label}
+              </Button>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            <Input
+              type="number"
+              min={1}
+              max={1440}
+              placeholder="minutos personalizados"
+              className="max-w-40"
+              value={customGoal}
+              onChange={(e) => setCustomGoal(e.target.value)}
+            />
+            <Button variant="secondary" onClick={saveCustom} disabled={busy}>
+              Definir
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="max-w-2xl">
+        <CardContent className="flex flex-col gap-5 px-5 py-5">
+          <div className="flex items-center gap-2">
+            <Download className="size-4 text-muted-foreground" />
+            <h3 className="font-heading text-base font-semibold">Atualizações</h3>
+          </div>
+          {status?.update_available ? (
+            <p className="-mt-3 text-sm">
+              Nova versão <strong>{status.update_version}</strong> disponível (atual:{" "}
+              {status.current_version}).
+            </p>
+          ) : (
+            <p className="-mt-3 text-sm text-muted-foreground">
+              Você está na versão mais recente
+              {status?.current_version ? ` (${status.current_version})` : ""}.
+            </p>
+          )}
+          <div className="flex max-w-60 flex-col gap-2">
+            <Label htmlFor="channel">Canal</Label>
+            <Select value={channel} onValueChange={setChannel}>
+              <SelectTrigger id="channel" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="stable">stable (recomendado)</SelectItem>
+                <SelectItem value="beta">beta (prereleases)</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Button variant="outline" onClick={() => void refresh()} disabled={busy}>
+              <RefreshCw /> Verificar
+            </Button>
+            <Button disabled={!status?.update_available} onClick={() => setConfirmUpdate(true)}>
+              <Download /> Aplicar atualização
+            </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card className="max-w-2xl">
+        <CardContent className="flex flex-col gap-3 px-5 py-5">
+          <div className="flex items-center gap-2">
+            <ShieldCheck className="size-4 text-muted-foreground" />
+            <h3 className="font-heading text-base font-semibold">Proteção do sistema</h3>
+          </div>
+          {status?.protection_error ? (
+            <p className="text-sm text-muted-foreground">
+              Não foi possível consultar o firewall: {status.protection_error}
+            </p>
+          ) : (
+            <dl className="divide-y">
+              <Row label="Regras de firewall (FocusGuard)">
+                <Badge variant="secondary">{status?.firewall_rules ?? 0}</Badge>
+              </Row>
+              <Row label="Proteção DoH/DoT">
+                <Badge variant={status?.doh_active ? "default" : "outline"}>
+                  {status?.doh_active ? "ATIVA" : "inativa"}
+                </Badge>
+              </Row>
+            </dl>
+          )}
+        </CardContent>
+      </Card>
+
+      <Card className="max-w-2xl">
+        <CardContent className="flex flex-col gap-3 px-5 py-5">
+          <div className="flex items-center gap-2">
+            <Settings className="size-4 text-muted-foreground" />
+            <h3 className="font-heading text-base font-semibold">Sobre</h3>
+          </div>
+          <dl className="divide-y">
+            <Row label="Interface web">FocusGuard UI</Row>
+            <Row label="Versão do sistema">{status?.current_version ?? "—"}</Row>
+            <Row label="Daemon">
+              <span
+                className={cn(
+                  "font-medium",
+                  daemonUp ? "text-emerald-500" : "text-muted-foreground",
+                )}
+              >
+                {daemonUp ? "ativo" : "offline"}
+              </span>
+            </Row>
+          </dl>
+          <p className="text-xs text-muted-foreground">
+            A interface web fica em <code className="rounded bg-muted px-1">http://127.0.0.1:48902</code>{" "}
+            e conversa com o daemon apenas via localhost.
           </p>
-        )}
-        <div className="form-grid">
-          <Field label="Canal">
-            <select
-              className="input"
-              value={channel}
-              onChange={(e) => setChannel(e.target.value)}
-            >
-              <option value="stable">stable (recomendado)</option>
-              <option value="beta">beta (prereleases)</option>
-            </select>
-          </Field>
-        </div>
-        <div className="card-actions">
-          <Button variant="secondary" onClick={() => void refresh()} disabled={busy}>
-            ↻ Verificar
-          </Button>
-          <Button
-            variant="primary"
-            disabled={!status?.update_available}
-            onClick={() => setConfirmUpdate(true)}
-          >
-            ⬆ Aplicar atualização
-          </Button>
-        </div>
+        </CardContent>
       </Card>
 
-      {confirmUpdate && (
-        <Modal
-          title="Aplicar atualização?"
-          onCancel={() => setConfirmUpdate(false)}
-          onConfirm={() => void applyUpdate()}
-          confirmLabel="Atualizar"
-          danger
-          busy={updating}
-        >
-          <p>
-            Baixar e aplicar <strong>{status?.update_version}</strong> no canal{" "}
-            <code>{channel}</code>? O daemon atualiza os binários e reinicia ao final — a
-            interface pode ficar indisponível por alguns instantes.
-          </p>
-        </Modal>
-      )}
+      <Dialog open={confirmUpdate} onOpenChange={setConfirmUpdate}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Aplicar atualização?</DialogTitle>
+            <DialogDescription asChild>
+              <p>
+                Baixar e aplicar <strong>{status?.update_version}</strong> no canal{" "}
+                <code className="rounded bg-muted px-1">{channel}</code>? O daemon atualiza os
+                binários e reinicia ao final — a interface pode ficar indisponível por alguns
+                instantes.
+              </p>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmUpdate(false)} disabled={updating}>
+              Cancelar
+            </Button>
+            <Button onClick={() => void applyUpdate()} disabled={updating}>
+              {updating ? "Atualizando…" : "Atualizar"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Screen>
+  );
+}
 
-      <Card>
-        <h3>🛡️ Proteção do sistema</h3>
-        {status?.protection_error ? (
-          <p className="muted">Não foi possível consultar o firewall: {status.protection_error}</p>
-        ) : (
-          <ul className="info-list">
-            <li>
-              <span>Regras de firewall (FocusGuard)</span>
-              <strong>{status?.firewall_rules ?? 0}</strong>
-            </li>
-            <li>
-              <span>Proteção DoH/DoT</span>
-              <strong className={status?.doh_active ? "ok-text" : "warn-text"}>
-                {status?.doh_active ? "ATIVA" : "inativa"}
-              </strong>
-            </li>
-          </ul>
-        )}
-      </Card>
-
-      <Card>
-        <h3>ℹ️ Sobre</h3>
-        <ul className="info-list">
-          <li>
-            <span>Interface web</span>
-            <strong>FocusGuard UI</strong>
-          </li>
-          <li>
-            <span>Versão do sistema</span>
-            <strong>{status?.current_version ?? "—"}</strong>
-          </li>
-          <li>
-            <span>Daemon</span>
-            <strong className={daemonUp ? "ok-text" : "warn-text"}>
-              {daemonUp ? "ativo" : "offline"}
-            </strong>
-          </li>
-        </ul>
-        <p className="muted hint">
-          A interface web fica em <code>http://127.0.0.1:48902</code> e conversa com o
-          daemon apenas via localhost.
-        </p>
-      </Card>
-    </section>
+function Row({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="flex items-center justify-between gap-3 py-2.5 text-sm">
+      <dt className="text-muted-foreground">{label}</dt>
+      <dd className="font-medium">{children}</dd>
+    </div>
   );
 }

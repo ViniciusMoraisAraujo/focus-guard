@@ -1,12 +1,37 @@
 import { useMemo } from "react";
-import { Button, Card } from "../components/ui";
-import { useApp, type Screen } from "../context";
-import { formatClock, formatMinutes, formatMs, useCountdown } from "../hooks/useCountdown";
-import type { Block } from "../api/types";
+import {
+  BarChart3,
+  CalendarDays,
+  Leaf,
+  Lock,
+  MoreHorizontal,
+  Settings,
+  ShieldCheck,
+  Siren,
+  Timer,
+} from "lucide-react";
+import type { Block } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Progress } from "@/components/ui/progress";
+import { Skeleton } from "@/components/ui/skeleton";
+import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
+import { useApp, type Screen as ScreenId } from "@/context";
+import { formatClock, formatMinutes, formatMs, useCountdown } from "@/hooks/useCountdown";
+import { cn } from "@/lib/utils";
 
 const ALL_INTERNET = "*all-internet*";
 
-export function Dashboard({ onNavigate }: { onNavigate: (s: Screen) => void }) {
+export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
   const { daemonUp, status, stats } = useApp();
 
   const blocks = useMemo(() => {
@@ -36,17 +61,6 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: Screen) => void }) {
   const todayFocusMs = todayFocusNs / 1e6;
   const progress = goalMin > 0 ? Math.min(1, todayFocusMs / (goalMin * 60_000)) : 0;
 
-  if (daemonUp === null) {
-    return (
-      <section className="screen">
-        <h2>Painel</h2>
-        <Card className="hero-card">
-          <p className="muted">Verificando o daemon…</p>
-        </Card>
-      </section>
-    );
-  }
-
   const statusKind = panic ? "panic" : blocks.length > 0 || pomo ? "focus" : "idle";
   const statusTitle = panic
     ? "Modo pânico ativo"
@@ -63,87 +77,147 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: Screen) => void }) {
         ? "A distração está fora do alcance. Bons estudos! 🎯"
         : "Ótimo momento para iniciar um foco.";
 
+  const HeroIcon = panic ? Siren : pomo ? Timer : blocks.length > 0 ? ShieldCheck : Leaf;
+
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Painel</h2>
-        <div className="quick-actions">
-          <Button variant="primary" onClick={() => onNavigate("bloquear")}>
-            🔒 Bloquear site
-          </Button>
-          <Button variant="danger" onClick={() => onNavigate("panico")}>
-            🚨 Modo pânico
-          </Button>
-        </div>
-      </header>
+    <Screen>
+      <ScreenHeader
+        title="Painel"
+        actions={
+          <>
+            <Button onClick={() => onNavigate("bloquear")}>
+              <Lock /> Bloquear site
+            </Button>
+            <Button variant="destructive" onClick={() => onNavigate("panico")}>
+              <Siren /> Modo pânico
+            </Button>
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button variant="outline" size="icon" aria-label="Navegação rápida">
+                  <MoreHorizontal />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-48">
+                <DropdownMenuLabel>Navegação rápida</DropdownMenuLabel>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => onNavigate("pomodoro")}>
+                  <Timer /> Pomodoro
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onNavigate("agenda")}>
+                  <CalendarDays /> Agenda
+                </DropdownMenuItem>
+                <DropdownMenuItem onSelect={() => onNavigate("stats")}>
+                  <BarChart3 /> Estatísticas
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onSelect={() => onNavigate("config")}>
+                  <Settings /> Configurações
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </>
+        }
+      />
 
-      <Card className={`hero-card status-${statusKind}`}>
-        <div className="hero-main">
-          <span className="hero-pill" aria-hidden="true">
-            {panic ? "🚨" : pomo ? "🍅" : blocks.length > 0 ? "🛡️" : "🌿"}
-          </span>
-          <div>
-            <h3>{statusTitle}</h3>
-            <p className="muted">{statusSub}</p>
+      {daemonUp === null && (
+        <div className="flex flex-col gap-5" aria-label="Carregando painel">
+          <Skeleton className="h-24 w-full rounded-xl" />
+          <Skeleton className="h-4 w-44" />
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+            {[0, 1, 2].map((i) => (
+              <Skeleton key={i} className="h-24 w-full rounded-xl" />
+            ))}
           </div>
-        </div>
-        {nearest && blocks.length > 0 && (
-          <div className="hero-countdown">
-            <span className="countdown-label">Próximo fim em</span>
-            <span className="countdown">{formatMs(nearestMs)}</span>
-            <span className="muted">{blocks[0].domain}</span>
-          </div>
-        )}
-      </Card>
-
-      {goalMin > 0 && (
-        <Card className="goal-card">
-          <div className="goal-head">
-            <span>🎯 Meta do dia: {formatMinutes(goalNs)}</span>
-            <span className="muted">
-              {formatMinutes(todayFocusMs * 1e6)} acumulado
-              {pomo ? " (sessão ativa)" : ""}
-            </span>
-          </div>
-          <div className="goal-track">
-            <div className="goal-fill" style={{ width: `${Math.max(3, progress * 100)}%` }} />
-          </div>
-        </Card>
-      )}
-
-      <div className="section-title">
-        <h3>Bloqueios ativos</h3>
-        <span className="muted">{blocks.length}</span>
-      </div>
-      {blocks.length === 0 ? (
-        <Card className="empty-card">
-          <p>Nenhum bloqueio ativo no momento.</p>
-          <p className="muted">Bloqueie um site ou um preset para começar a focar.</p>
-        </Card>
-      ) : (
-        <div className="blocks-grid">
-          {blocks.map((b) => (
-            <BlockCard key={b.domain} block={b} />
-          ))}
         </div>
       )}
-    </section>
+
+      {daemonUp !== null && (
+        <>
+          <Card
+            className={cn(
+              "flex-row items-center justify-between gap-4",
+              statusKind === "focus" && "ring-emerald-500/30",
+              statusKind === "panic" && "ring-destructive/40",
+            )}
+          >
+            <CardContent className="flex flex-1 flex-wrap items-center gap-4 px-5 py-4">
+              <div
+                className={cn(
+                  "grid size-12 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
+                  statusKind === "panic" && "bg-destructive/10 text-destructive ring-destructive/30",
+                  statusKind === "focus" && "text-emerald-500 ring-emerald-500/30",
+                )}
+              >
+                <HeroIcon className="size-6" />
+              </div>
+              <div className="min-w-0 flex-1">
+                <h3 className="font-heading text-lg font-semibold">{statusTitle}</h3>
+                <p className="text-sm text-muted-foreground">{statusSub}</p>
+              </div>
+              {nearest && blocks.length > 0 && (
+                <div className="text-right">
+                  <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                    Próximo fim em
+                  </span>
+                  <div className="font-mono text-3xl font-bold tabular-nums text-primary">
+                    {formatMs(nearestMs)}
+                  </div>
+                  <div className="text-xs text-muted-foreground">{blocks[0].domain}</div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {goalMin > 0 && (
+            <Card>
+              <CardContent className="px-5 py-4">
+                <div className="flex flex-wrap justify-between gap-2 text-sm">
+                  <span className="font-medium">🎯 Meta do dia: {formatMinutes(goalNs)}</span>
+                  <span className="text-muted-foreground">
+                    {formatMinutes(todayFocusMs * 1e6)} acumulado{pomo ? " (sessão ativa)" : ""}
+                  </span>
+                </div>
+                <Progress value={Math.max(3, progress * 100)} className="mt-3 h-2" />
+              </CardContent>
+            </Card>
+          )}
+
+          <SectionTitle count={blocks.length}>Bloqueios ativos</SectionTitle>
+          {blocks.length === 0 ? (
+            <EmptyCard>
+              <p>Nenhum bloqueio ativo no momento.</p>
+              <p className="mt-1">Bloqueie um site ou um preset para começar a focar.</p>
+            </EmptyCard>
+          ) : (
+            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 xl:grid-cols-3">
+              {blocks.map((b) => (
+                <BlockCard key={b.domain} block={b} />
+              ))}
+            </div>
+          )}
+        </>
+      )}
+    </Screen>
   );
 }
 
 function BlockCard({ block }: { block: Block }) {
   const ms = useCountdown(block.expires_at);
   return (
-    <Card className="block-card">
-      <div className="block-head">
-        <span className="block-domain">{block.domain}</span>
-        <span className="badge badge-green">ativo</span>
-      </div>
-      <div className="block-countdown">{formatMs(ms)}</div>
-      <div className="block-meta muted">
-        <span>início {formatClock(block.started_at)}</span>
-        <span>fim {formatClock(block.expires_at)}</span>
-      </div>
+    <Card className="gap-2 transition-all duration-200 hover:-translate-y-0.5 hover:ring-emerald-500/40">
+      <CardContent className="flex flex-col gap-2 px-4 py-4">
+        <div className="flex items-center justify-between gap-2">
+          <span className="text-sm font-semibold break-all">{block.domain}</span>
+          <Badge variant="secondary" className="bg-emerald-500/10 text-emerald-500">
+            ativo
+          </Badge>
+        </div>
+        <div className="font-mono text-2xl font-bold tabular-nums text-primary">{formatMs(ms)}</div>
+        <div className="flex justify-between text-xs text-muted-foreground">
+          <span>início {formatClock(block.started_at)}</span>
+          <span>fim {formatClock(block.expires_at)}</span>
+        </div>
+      </CardContent>
     </Card>
   );
 }
