@@ -1779,6 +1779,44 @@ func TestServer_Stats_ReturnsSummary(t *testing.T) {
 	}
 }
 
+func TestServer_Sessions_NotConfigured(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "sessions"})
+	if resp.Success {
+		t.Error("expected failure when no analytics provider is configured")
+	}
+	if !strings.Contains(resp.Message, "não configurado") {
+		t.Errorf("expected 'não configurado' message, got %q", resp.Message)
+	}
+}
+
+// TestServer_Sessions_ReturnsRecentNewestFirst verifies the sessions action
+// surfaces the recent sessions sorted newest first (the cap and ordering live
+// in analytics.RecentSessions).
+func TestServer_Sessions_ReturnsRecentNewestFirst(t *testing.T) {
+	server := setupTestServer(t)
+	now := time.Now()
+	server.SetAnalytics(&fakeAnalyticsProvider{
+		sessions: []analytics.Session{
+			{End: now.Add(-2 * time.Hour), Preset: "social", Domains: []string{"twitter.com"}, Focus: time.Hour},
+			{End: now.Add(-time.Hour), Preset: "video", Domains: []string{"youtube.com"}, Focus: 30 * time.Minute},
+			{End: now, Preset: "news", Domains: []string{"g1.globo.com"}, Focus: 45 * time.Minute},
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "sessions"})
+	if !resp.Success {
+		t.Fatalf("sessions falhou: %s", resp.Message)
+	}
+	if len(resp.Sessions) != 3 {
+		t.Fatalf("got %d sessions, want 3", len(resp.Sessions))
+	}
+	if resp.Sessions[0].Preset != "news" || resp.Sessions[2].Preset != "social" {
+		t.Errorf("order = %q,..,%q, want news,..,social", resp.Sessions[0].Preset, resp.Sessions[2].Preset)
+	}
+}
+
 func TestServer_Pomodoro_StrictPassthrough(t *testing.T) {
 	server := setupTestServer(t)
 	fake := &fakePomodoroRunner{}

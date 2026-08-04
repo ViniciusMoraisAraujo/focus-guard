@@ -80,6 +80,9 @@ type Response struct {
 	PomodoroCycle int `json:"pomodoro_cycles,omitempty"`
 	// LabelStats aggregates focus per named mission (mission command).
 	LabelStats []analytics.LabelStat `json:"label_stats,omitempty"`
+	// Sessions lists the most recent completed focus sessions (sessions
+	// action), newest first, capped by the server.
+	Sessions []analytics.Session `json:"sessions,omitempty"`
 	// Apps is the process denylist (apps-list).
 	Apps []string `json:"apps,omitempty"`
 	// TamperLog lists detected tamper attempts (tamper-log).

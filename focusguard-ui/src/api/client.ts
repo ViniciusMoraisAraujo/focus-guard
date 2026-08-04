@@ -115,6 +115,7 @@ export const api = {
 
   // Estatísticas e missões
   missions: () => action({ action: "missions" }),
+  sessions: () => action({ action: "sessions" }),
 
   // Histórico de burla
   tamperLog: () => action({ action: "tamper-log" }),

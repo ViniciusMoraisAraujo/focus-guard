@@ -28,6 +28,11 @@ const updateTimeout = 120 * time.Second
 // (dev builds).
 var errUpdateNotConfigured = errors.New("auto-update não configurado")
 
+// maxSessionsReturned caps the "sessions" IPC response so the UI never
+// receives the whole analytics file (a long-time user can have thousands of
+// lines).
+const maxSessionsReturned = 50
+
 type Server struct {
 	scheduler       *scheduler.Scheduler
 	listener        net.Listener
@@ -629,6 +634,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 		resp = Response{Success: true, LabelStats: analytics.SummarizeLabels(sessions)}
+
+	case "sessions":
+		s.mu.RLock()
+		p := s.analytics
+		s.mu.RUnlock()
+		if p == nil {
+			resp = Response{Success: false, Message: "analytics não configurado"}
+			break
+		}
+		sessions, err := p.Sessions()
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{Success: true, Sessions: analytics.RecentSessions(sessions, maxSessionsReturned)}
 
 	case "status":
 		blocks, err := s.scheduler.ListBlocks()

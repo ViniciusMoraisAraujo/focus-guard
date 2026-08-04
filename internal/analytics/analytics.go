@@ -139,6 +139,23 @@ func (r *Recorder) Sessions() ([]Session, error) {
 	return sessions, nil
 }
 
+// RecentSessions returns up to `limit` sessions ordered by End descending
+// (newest first). A non-positive limit yields an empty slice. The input slice
+// is not mutated.
+func RecentSessions(sessions []Session, limit int) []Session {
+	if limit <= 0 {
+		return []Session{}
+	}
+	sorted := append([]Session(nil), sessions...)
+	sort.SliceStable(sorted, func(i, j int) bool {
+		return sorted[i].End.After(sorted[j].End)
+	})
+	if len(sorted) > limit {
+		sorted = sorted[:limit]
+	}
+	return sorted
+}
+
 // Summarize aggregates sessions into a Stats report: totals, a per-day window
 // of the last `days` days (zero-filled, oldest first) and per-domain focus
 // sorted by duration descending.

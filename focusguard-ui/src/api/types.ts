@@ -50,6 +50,20 @@ export interface LabelStat {
   sessions: number;
 }
 
+// FocusSession espelha analytics.Session — uma sessão de foco concluída.
+export interface FocusSession {
+  start: string; // RFC3339
+  end: string; // RFC3339
+  preset: string;
+  label?: string;
+  domains: string[];
+  work_min: number;
+  rest_min: number;
+  cycles: number;
+  focus: number; // nanosegundos
+  strict: boolean;
+}
+
 export interface ScheduleRule {
   id: string;
   label?: string;
@@ -112,6 +126,7 @@ export interface ApiResponse {
   schedules?: ScheduleRule[];
   tamper_log?: TamperEvent[];
   label_stats?: LabelStat[];
+  sessions?: FocusSession[];
   pomodoro_work?: number;
   pomodoro_rest?: number;
   pomodoro_cycles?: number;

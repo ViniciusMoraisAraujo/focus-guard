@@ -23,6 +23,56 @@ func testSession(start time.Time, end time.Time, preset string, focus time.Durat
 	}
 }
 
+// TestRecentSessions_NewestFirst verifies RecentSessions orders by End
+// descending, regardless of the input order, and does not mutate the input.
+func TestRecentSessions_NewestFirst(t *testing.T) {
+	now := time.Now()
+	old := testSession(now.Add(-3*time.Hour), now.Add(-2*time.Hour), "social", time.Hour)
+	mid := testSession(now.Add(-2*time.Hour), now.Add(-time.Hour), "video", 30*time.Minute)
+	newest := testSession(now.Add(-time.Hour), now, "news", 45*time.Minute)
+
+	input := []Session{mid, old, newest}
+	got := RecentSessions(input, 10)
+
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	if got[0].Preset != "news" || got[1].Preset != "video" || got[2].Preset != "social" {
+		t.Errorf("order = %q,%q,%q, want news,video,social", got[0].Preset, got[1].Preset, got[2].Preset)
+	}
+	if len(input) != 3 {
+		t.Error("input slice was mutated")
+	}
+}
+
+// TestRecentSessions_RespectsLimit verifies the result is capped at limit.
+func TestRecentSessions_RespectsLimit(t *testing.T) {
+	now := time.Now()
+	var sessions []Session
+	for i := 0; i < 10; i++ {
+		sessions = append(sessions, testSession(now.Add(-time.Duration(i)*time.Hour), now.Add(-time.Duration(i-1)*time.Hour), "social", time.Hour))
+	}
+
+	got := RecentSessions(sessions, 3)
+	if len(got) != 3 {
+		t.Fatalf("len = %d, want 3", len(got))
+	}
+	if got[0].End.Before(got[1].End) || got[1].End.Before(got[2].End) {
+		t.Error("result should be ordered newest first")
+	}
+}
+
+func TestRecentSessions_EmptyAndNonPositiveLimit(t *testing.T) {
+	if got := RecentSessions(nil, 10); len(got) != 0 {
+		t.Errorf("empty input → len %d, want 0", len(got))
+	}
+	now := time.Now()
+	s := []Session{testSession(now, now, "social", time.Minute)}
+	if got := RecentSessions(s, 0); len(got) != 0 {
+		t.Errorf("limit 0 → len %d, want 0", len(got))
+	}
+}
+
 // TestSummarize_Totals verifies the aggregate counters: number of sessions and
 // the total focus time across them.
 func TestSummarize_Totals(t *testing.T) {
