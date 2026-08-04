@@ -44,10 +44,16 @@ das ações IPC para o daemon). O `dist` compilado é copiado para
 
 ## Bugs e correções potenciais
 
-- **`src/api/client.ts` — `api.update()` existe mas a UI não expõe aplicar
-  update** (as telas só exibem `update_available`/`update_version`); a seção
-  7.4 do ui-plan diz que a UI "nunca aplica". Coerente, mas o helper
-  `api.update` pode confundir agentes — documentar ou remover.
+- **`src/api/client.ts` — helpers `api.*` redundantes com `execAction`**
+  (`api.update`, `api.pomodoro`, `api.missions`, etc.). A tela **Configurações
+  aplica update de verdade** (`Configuracoes.tsx`, `execAction({ action:
+  "update", channel })` com dialog de confirmação) — a seção 7.4 do ui-plan
+  está desatualizada nesse ponto. Prefira `execAction` para ações novas;
+  remova helpers não usados quando puder.
+
+- ~~`api.pomodoro` enviava `work`/`rest`~~ — **corrigido**: agora envia
+  `work_min`/`rest_min`, alinhado ao contrato Go (`internal/ipc`,
+  `ipc.Request.WorkMin/RestMin`).
 
 - **`src/context.tsx` — `refresh()` só limpa `status` quando o daemon cai;
   `presets` e `stats` ficam com dados velhos** até o próximo ciclo bem-sucedido
