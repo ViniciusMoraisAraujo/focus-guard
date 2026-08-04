@@ -1,7 +1,17 @@
 import { useEffect, useState } from "react";
-import { api, execAction } from "../api/client";
-import { Button, Card } from "../components/ui";
-import { useApp } from "../context";
+import { Ban, Plus, Trash2 } from "lucide-react";
+import { api, execAction } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Skeleton } from "@/components/ui/skeleton";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
+import { useApp } from "@/context";
 
 export function Apps() {
   const { daemonUp, toast } = useApp();
@@ -54,71 +64,81 @@ export function Apps() {
     }
   };
 
-  if (daemonUp === false) {
-    return (
-      <section className="screen">
-        <h2>Apps</h2>
-        <Card className="empty-card">
-          <p>O daemon está desligado — inicie o serviço para gerenciar os processos.</p>
-        </Card>
-      </section>
-    );
-  }
-
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Apps (denylist)</h2>
-        <p className="muted">
-          Processos encerrados enquanto uma sessão de foco estiver ativa.
-        </p>
-      </header>
+    <Screen>
+      <ScreenHeader
+        title="Apps (denylist)"
+        subtitle="Processos encerrados enquanto uma sessão de foco estiver ativa."
+      />
 
-      <Card>
-        <h3>Adicionar processo</h3>
-        <div className="inline-field">
-          <input
-            type="text"
-            className="input"
-            placeholder="ex: spotify.exe"
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && void add()}
-          />
-          <Button variant="primary" onClick={() => void add()} disabled={busy}>
-            {busy ? "Adicionando…" : "＋ Adicionar"}
-          </Button>
-        </div>
-      </Card>
-
-      <div className="section-title">
-        <h3>Processos da denylist</h3>
-        <span className="muted">{apps?.length ?? 0}</span>
-      </div>
-      {apps === null ? (
-        <Card className="empty-card">
-          <p className="muted">Carregando…</p>
-        </Card>
-      ) : apps.length === 0 ? (
-        <Card className="empty-card">
-          <p>Nenhum processo na denylist — o guard está inativo.</p>
-        </Card>
+      {daemonUp === false ? (
+        <EmptyCard>
+          <p>O daemon está desligado — inicie o serviço para gerenciar os processos.</p>
+        </EmptyCard>
       ) : (
-        <div className="rule-list">
-          {apps.map((a) => (
-            <Card key={a} className="rule-card">
-              <div className="rule-head">
-                <span className="rule-title">
-                  <code>{a}</code>
-                </span>
-                <Button variant="ghost" onClick={() => void remove(a)}>
-                  ✕
+        <>
+          <Card className="max-w-2xl">
+            <CardContent className="flex flex-col gap-4 px-5 py-5">
+              <h3 className="font-heading text-base font-semibold">Adicionar processo</h3>
+              <div className="flex gap-2">
+                <Input
+                  type="text"
+                  placeholder="ex: spotify.exe"
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && void add()}
+                />
+                <Button onClick={() => void add()} disabled={busy}>
+                  <Plus /> {busy ? "Adicionando…" : "Adicionar"}
                 </Button>
               </div>
-            </Card>
-          ))}
-        </div>
+            </CardContent>
+          </Card>
+
+          <SectionTitle count={apps?.length ?? 0}>Processos da denylist</SectionTitle>
+          {apps === null ? (
+            <div className="flex flex-col gap-3" aria-label="Carregando processos">
+              {[0, 1, 2].map((i) => (
+                <Skeleton key={i} className="h-12 w-full rounded-xl" />
+              ))}
+            </div>
+          ) : apps.length === 0 ? (
+            <EmptyCard>
+              <p>Nenhum processo na denylist — o guard está inativo.</p>
+            </EmptyCard>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {apps.map((a) => (
+                <Card
+                  key={a}
+                  size="sm"
+                  className="transition-colors hover:ring-foreground/20"
+                >
+                  <CardContent className="flex items-center justify-between gap-3 px-4 py-3">
+                    <span className="flex items-center gap-2 text-sm font-semibold">
+                      <Ban className="size-4 text-muted-foreground" />
+                      <code className="rounded bg-muted px-1.5 py-0.5">{a}</code>
+                    </span>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Remover ${a} da denylist`}
+                          onClick={() => void remove(a)}
+                        >
+                          <Trash2 />
+                        </Button>
+                      </TooltipTrigger>
+                      <TooltipContent>Remover processo</TooltipContent>
+                    </Tooltip>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
       )}
-    </section>
+    </Screen>
   );
 }

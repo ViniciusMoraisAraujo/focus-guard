@@ -4,6 +4,10 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="dark" />
+    <script>
+      // Evita flash de tema claro antes do React montar (tema fixo escuro).
+      document.documentElement.classList.add("dark");
+    </script>
     <title>FocusGuard — Painel de foco</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
   </head>

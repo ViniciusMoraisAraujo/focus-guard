@@ -3,6 +3,7 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"log"
 	"slices"
 	"sync"
 	"time"
@@ -263,6 +264,13 @@ func (s *Scheduler) ramState() *store.State {
 // and, on every subsequent call, restores any disk tampering from the in-memory
 // state. Expired blocks are cleaned up and the enforcer is re-applied only when
 // something actually changed.
+//
+// The expiry cleanup is committed only AFTER the enforcer confirms the OS rules
+// (hosts + firewall) were actually removed: a block is dropped from RAM and the
+// cleaned state is persisted only on success. If the removal fails (e.g. the
+// firewall service is still coming up right after boot, a transient netsh/
+// iptables error), the block stays in RAM and on disk and a retry timer is
+// armed — the state mirror never claims "clean" while stale rules remain.
 func (s *Scheduler) Reconcile() error {
 	s.mu.Lock()
 
@@ -290,6 +298,9 @@ func (s *Scheduler) Reconcile() error {
 		}
 	}
 
+	// Coleta os bloqueios expirados SEM removê-los ainda: a remoção do RAM e a
+	// gravação do state.json só acontecem depois que o enforcer confirmar a
+	// limpeza das regras do SO (hosts + firewall).
 	var toUnblock []unblockEntry
 	activeIPs := make(map[string][]string, len(s.blocks))
 	sentinelActive := false
@@ -299,12 +310,6 @@ func (s *Scheduler) Reconcile() error {
 		if isAllInternetBlock(block) {
 			if block.CanUnblock() {
 				sentinelExpired = true
-				delete(s.blocks, domain)
-				if t, ok := s.timers[domain]; ok {
-					t.Stop()
-					delete(s.timers, domain)
-				}
-				changed = true
 			} else {
 				sentinelActive = true
 				sentinelIPs = block.ResolvedIPs
@@ -314,35 +319,35 @@ func (s *Scheduler) Reconcile() error {
 		}
 		if block.CanUnblock() {
 			toUnblock = append(toUnblock, unblockEntry{domain, block.ResolvedIPs})
-			delete(s.blocks, domain)
-			if t, ok := s.timers[domain]; ok {
-				t.Stop()
-				delete(s.timers, domain)
-			}
-			changed = true
 		} else {
 			activeIPs[domain] = block.ResolvedIPs
 			s.setupTimerLocked(block)
 		}
 	}
+	hasExpired := len(toUnblock) > 0 || sentinelExpired
 
-	if changed {
-		if err := s.store.Save(s.ramState()); err != nil {
-			s.mu.Unlock()
-			return fmt.Errorf("scheduler: erro ao restaurar/salvar estado: %w", err)
-		}
+	if !changed && !hasExpired {
+		s.mu.Unlock()
+		return nil
 	}
 	s.mu.Unlock()
 
-	if !changed {
-		return nil
-	}
-
+	// Limpeza do enforcer ANTES de commitar a remoção: as regras do SO só
+	// saem quando o enforcer confirmar. Na falha (ex.: serviço de firewall
+	// ainda subindo no boot), o bloqueio permanece no estado para retry —
+	// nunca um state.json "limpo" com regras órfãs no sistema.
+	expiryClean := true
 	for _, e := range toUnblock {
-		_ = s.enforcer.UnblockDomain(e.domain, e.ips)
+		if err := s.enforcer.UnblockDomain(e.domain, e.ips); err != nil {
+			expiryClean = false
+			log.Printf("[Scheduler] Falha ao remover regras de %s (será re-tentado): %v", e.domain, err)
+		}
 	}
 	if sentinelExpired {
-		_ = s.enforcer.UnblockAll()
+		if err := s.enforcer.UnblockAll(); err != nil {
+			expiryClean = false
+			log.Printf("[Scheduler] Falha ao remover o bloqueio de internet (será re-tentado): %v", err)
+		}
 	}
 	if sentinelActive {
 		// Re-aplica o sentinela após restart (bootstrap) — o enforcer é
@@ -369,6 +374,51 @@ func (s *Scheduler) Reconcile() error {
 	} else {
 		_ = s.enforcer.UnblockDoH()
 	}
+
+	// Commit: remove os expirados do RAM e grava o estado limpo só quando o
+	// enforcer confirmou a remoção. Na falha, os bloqueios ficam no RAM/estado
+	// e um timer de retry re-tenta a limpeza (também no próximo Reconcile —
+	// próximo boot, tamper ou mudança externa de state.json).
+	s.mu.Lock()
+	if expiryClean && hasExpired {
+		for _, e := range toUnblock {
+			if _, exists := s.blocks[e.domain]; !exists {
+				continue // outro caminho (onExpire) já cuidou
+			}
+			delete(s.blocks, e.domain)
+			if t, ok := s.timers[e.domain]; ok {
+				t.Stop()
+				delete(s.timers, e.domain)
+			}
+		}
+		if sentinelExpired {
+			delete(s.blocks, enforcer.AllInternetDomain)
+			if t, ok := s.timers[enforcer.AllInternetDomain]; ok {
+				t.Stop()
+				delete(s.timers, enforcer.AllInternetDomain)
+			}
+		}
+		changed = true
+	}
+	if changed {
+		if err := s.store.Save(s.ramState()); err != nil {
+			s.mu.Unlock()
+			return fmt.Errorf("scheduler: erro ao restaurar/salvar estado: %w", err)
+		}
+	}
+	if !expiryClean && hasExpired {
+		for _, e := range toUnblock {
+			if _, exists := s.blocks[e.domain]; exists {
+				s.armExpiryRetryLocked(e.domain)
+			}
+		}
+		if sentinelExpired {
+			if _, exists := s.blocks[enforcer.AllInternetDomain]; exists {
+				s.armExpiryRetryLocked(enforcer.AllInternetDomain)
+			}
+		}
+	}
+	s.mu.Unlock()
 
 	return nil
 }
@@ -654,6 +704,25 @@ func (s *Scheduler) setupTimerLocked(block policy.Block) {
 	})
 }
 
+// retryExpiryDelay is how long the scheduler waits before re-attempting the
+// removal of a block whose OS rules could not be cleared. A transient failure
+// at boot (firewall service still coming up) or during expiry must self-heal
+// instead of leaving a clean state.json with stale rules in the OS.
+const retryExpiryDelay = 30 * time.Second
+
+// armExpiryRetryLocked schedules a retry of the expiry cleanup for domain.
+// Unlike setupTimerLocked (which fires at RemainingTime — 0 for an already
+// expired block, an instant busy loop), the retry always waits a fixed delay.
+// The caller must hold s.mu.
+func (s *Scheduler) armExpiryRetryLocked(domain string) {
+	if t, ok := s.timers[domain]; ok {
+		t.Stop()
+	}
+	s.timers[domain] = time.AfterFunc(retryExpiryDelay, func() {
+		s.onExpire(domain)
+	})
+}
+
 func (s *Scheduler) onExpire(domain string) {
 	s.mu.Lock()
 	block, exists := s.blocks[domain]
@@ -661,19 +730,40 @@ func (s *Scheduler) onExpire(domain string) {
 		s.mu.Unlock()
 		return
 	}
-
 	ips := block.ResolvedIPs
+	s.mu.Unlock()
+
+	// O enforcer limpa as regras ANTES de o bloqueio sair do RAM/estado: só
+	// removemos e gravamos o estado limpo depois que a remoção no SO
+	// confirmou. Na falha, o bloqueio permanece e o timer de retry re-tenta.
+	unblockOK := true
+	if isAllInternetBlock(block) {
+		if err := s.enforcer.UnblockAll(); err != nil {
+			unblockOK = false
+			log.Printf("[Scheduler] Falha ao remover o bloqueio de internet (será re-tentado): %v", err)
+		}
+	} else if err := s.enforcer.UnblockDomain(domain, ips); err != nil {
+		unblockOK = false
+		log.Printf("[Scheduler] Falha ao remover regras de %s (será re-tentado): %v", domain, err)
+	}
+
+	s.mu.Lock()
+	if !unblockOK {
+		if _, exists := s.blocks[domain]; exists {
+			s.armExpiryRetryLocked(domain)
+		}
+		s.mu.Unlock()
+		return
+	}
+	if _, exists := s.blocks[domain]; !exists {
+		s.mu.Unlock()
+		return // outro caminho (Reconcile) já removeu
+	}
 	delete(s.blocks, domain)
 	delete(s.timers, domain)
 	remaining := len(s.blocks)
 	_ = s.store.Save(s.ramState())
 	s.mu.Unlock()
-
-	if isAllInternetBlock(block) {
-		_ = s.enforcer.UnblockAll()
-	} else {
-		_ = s.enforcer.UnblockDomain(domain, ips)
-	}
 
 	if remaining == 0 {
 		_ = s.enforcer.UnblockDoH()

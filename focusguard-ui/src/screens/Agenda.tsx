@@ -1,8 +1,35 @@
 import { useEffect, useMemo, useState } from "react";
-import { api, execAction } from "../api/client";
-import type { ScheduleRule } from "../api/types";
-import { Button, Card, Field, Modal } from "../components/ui";
-import { useApp } from "../context";
+import { CalendarPlus, Trash2, Upload } from "lucide-react";
+import { api, execAction } from "@/api/client";
+import type { ScheduleRule } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
+import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
+import { WeeklyGrid } from "@/components/weekly-grid";
+import { useApp } from "@/context";
 
 const DAY_NAMES = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
 
@@ -135,164 +162,229 @@ export function Agenda() {
 
   const rules = useMemo(() => schedules ?? [], [schedules]);
 
-  if (daemonUp === false) {
-    return (
-      <section className="screen">
-        <h2>Agenda</h2>
-        <Card className="empty-card">
-          <p>O daemon está desligado — inicie o serviço para gerenciar a agenda.</p>
-        </Card>
-      </section>
-    );
-  }
-
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Agenda</h2>
-        <p className="muted">Bloqueios recorrentes por horário e importação de calendário.</p>
-      </header>
+    <Screen>
+      <ScreenHeader
+        title="Agenda"
+        subtitle="Bloqueios recorrentes por horário e importação de calendário."
+      />
 
-      <Card>
-        <h3>Nova regra</h3>
-        <div className="form-grid">
-          <Field label="Categoria">
-            <select className="input" value={preset} onChange={(e) => setPreset(e.target.value)}>
-              {presets.map((p) => (
-                <option key={p.name} value={p.name}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Rótulo (opcional)">
-            <input
-              type="text"
-              className="input"
-              placeholder="ex: Estudo matinal"
-              value={label}
-              onChange={(e) => setLabel(e.target.value)}
-            />
-          </Field>
-        </div>
-        <div className="field">
-          <span className="field-label">Dias da semana</span>
-          <div className="day-picker">
-            {DAY_NAMES.map((name, i) => (
-              <button
-                key={name}
-                type="button"
-                className={`chip${days.includes(i) ? " selected" : ""}`}
-                onClick={() => toggleDay(i)}
-              >
-                {name}
-              </button>
-            ))}
-          </div>
-        </div>
-        <div className="form-grid">
-          <Field label="Janelas (ex: 08:00-12:00,14:00-18:00)">
-            <input
-              type="text"
-              className="input"
-              placeholder="deixe vazio para usar início/fim"
-              value={windows}
-              onChange={(e) => setWindows(e.target.value)}
-            />
-          </Field>
-          {!windows.trim() && (
-            <>
-              <Field label="Início">
-                <input type="time" className="input" value={start} onChange={(e) => setStart(e.target.value)} />
-              </Field>
-              <Field label="Fim">
-                <input type="time" className="input" value={end} onChange={(e) => setEnd(e.target.value)} />
-              </Field>
-            </>
-          )}
-        </div>
-        <div className="card-actions">
-          <Button variant="primary" onClick={() => void add()} disabled={busy}>
-            {busy ? "Criando…" : "＋ Criar agendamento"}
-          </Button>
-        </div>
-      </Card>
-
-      <Card>
-        <h3>Importar calendário (.ics)</h3>
-        <p className="muted">
-          Eventos semanais do arquivo viram regras recorrentes da categoria escolhida.
-        </p>
-        <div className="form-grid">
-          <Field label="Categoria">
-            <select className="input" value={icsPreset} onChange={(e) => setIcsPreset(e.target.value)}>
-              {presets.map((p) => (
-                <option key={p.name} value={p.name}>
-                  {p.label}
-                </option>
-              ))}
-            </select>
-          </Field>
-          <Field label="Arquivo">
-            <input
-              type="file"
-              className="input file-input"
-              accept=".ics,text/calendar"
-              onChange={(e) => setIcsFile(e.target.files?.[0] ?? null)}
-            />
-          </Field>
-        </div>
-        <div className="card-actions">
-          <Button variant="secondary" onClick={() => void importIcs()} disabled={busy || !icsFile}>
-            {busy ? "Importando…" : "⬆ Importar"}
-          </Button>
-        </div>
-      </Card>
-
-      <div className="section-title">
-        <h3>Agendamentos</h3>
-        <span className="muted">{rules.length}</span>
-      </div>
-      {rules.length === 0 ? (
-        <Card className="empty-card">
-          <p>Nenhum agendamento recorrente configurado.</p>
-        </Card>
+      {daemonUp === false ? (
+        <EmptyCard>
+          <p>O daemon está desligado — inicie o serviço para gerenciar a agenda.</p>
+        </EmptyCard>
       ) : (
-        <div className="rule-list">
-          {rules.map((r) => (
-            <Card key={r.id} className="rule-card">
-              <div className="rule-head">
-                <span className="rule-title">
-                  {r.label || r.preset}
-                  {!r.enabled && <span className="badge">desativada</span>}
-                </span>
-                <Button variant="ghost" onClick={() => setToRemove(r)}>
-                  ✕
+        <>
+          <Card className="max-w-2xl">
+            <CardContent className="flex flex-col gap-5 px-5 py-5">
+              <div>
+                <h3 className="font-heading text-base font-semibold">Nova regra</h3>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                  <Label>Categoria</Label>
+                  <Select value={preset} onValueChange={setPreset}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Escolha uma categoria" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {presets.map((p) => (
+                        <SelectItem key={p.name} value={p.name}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="agenda-label">Rótulo (opcional)</Label>
+                  <Input
+                    id="agenda-label"
+                    type="text"
+                    placeholder="ex: Estudo matinal"
+                    value={label}
+                    onChange={(e) => setLabel(e.target.value)}
+                  />
+                </div>
+              </div>
+
+              <div className="flex flex-col gap-2">
+                <Label>Dias da semana</Label>
+                <div className="flex flex-wrap gap-1.5">
+                  {DAY_NAMES.map((name, i) => (
+                    <Button
+                      key={name}
+                      type="button"
+                      variant={days.includes(i) ? "default" : "outline"}
+                      onClick={() => toggleDay(i)}
+                      className="h-7"
+                    >
+                      {name}
+                    </Button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-3">
+                <div className="flex flex-col gap-2 sm:col-span-3">
+                  <Label htmlFor="agenda-windows">Janelas (ex: 08:00-12:00,14:00-18:00)</Label>
+                  <Input
+                    id="agenda-windows"
+                    type="text"
+                    placeholder="deixe vazio para usar início/fim"
+                    value={windows}
+                    onChange={(e) => setWindows(e.target.value)}
+                  />
+                </div>
+                {!windows.trim() && (
+                  <>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="agenda-start">Início</Label>
+                      <Input
+                        id="agenda-start"
+                        type="time"
+                        value={start}
+                        onChange={(e) => setStart(e.target.value)}
+                      />
+                    </div>
+                    <div className="flex flex-col gap-2">
+                      <Label htmlFor="agenda-end">Fim</Label>
+                      <Input
+                        id="agenda-end"
+                        type="time"
+                        value={end}
+                        onChange={(e) => setEnd(e.target.value)}
+                      />
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <Button onClick={() => void add()} disabled={busy} size="lg" className="w-full">
+                <CalendarPlus /> {busy ? "Criando…" : "Criar agendamento"}
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card className="max-w-2xl">
+            <CardContent className="flex flex-col gap-5 px-5 py-5">
+              <div>
+                <h3 className="font-heading text-base font-semibold">Importar calendário (.ics)</h3>
+                <p className="mt-1 text-sm text-muted-foreground">
+                  Eventos semanais do arquivo viram regras recorrentes da categoria escolhida.
+                </p>
+              </div>
+
+              <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+                <div className="flex flex-col gap-2">
+                  <Label>Categoria</Label>
+                  <Select value={icsPreset} onValueChange={setIcsPreset}>
+                    <SelectTrigger className="w-full">
+                      <SelectValue placeholder="Escolha uma categoria" />
+                    </SelectTrigger>
+                    <SelectContent>
+                      {presets.map((p) => (
+                        <SelectItem key={p.name} value={p.name}>
+                          {p.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                </div>
+                <div className="flex flex-col gap-2">
+                  <Label htmlFor="agenda-ics">Arquivo</Label>
+                  <Input
+                    id="agenda-ics"
+                    type="file"
+                    accept=".ics,text/calendar"
+                    onChange={(e) => setIcsFile(e.target.files?.[0] ?? null)}
+                  />
+                </div>
+              </div>
+
+              <div>
+                <Button variant="outline" onClick={() => void importIcs()} disabled={busy || !icsFile}>
+                  <Upload /> {busy ? "Importando…" : "Importar"}
                 </Button>
               </div>
-              <div className="rule-meta muted">
-                <span>{daysLabel(r.days)}</span>
-                <span>{windowLabel(r)}</span>
-              </div>
-            </Card>
-          ))}
-        </div>
+            </CardContent>
+          </Card>
+
+          {rules.length > 0 && (
+            <>
+              <SectionTitle>Grade semanal</SectionTitle>
+              <WeeklyGrid rules={rules} />
+            </>
+          )}
+
+          <SectionTitle count={rules.length}>Agendamentos</SectionTitle>
+          {rules.length === 0 ? (
+            <EmptyCard>
+              <p>Nenhum agendamento recorrente configurado.</p>
+            </EmptyCard>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {rules.map((r) => (
+                <Card key={r.id} size="sm">
+                  <CardContent className="flex flex-col gap-2 px-4 py-3">
+                    <div className="flex items-center justify-between gap-3">
+                      <span className="text-sm font-semibold">
+                        {r.label || r.preset}
+                        {!r.enabled && <Badge className="ml-2">desativada</Badge>}
+                      </span>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon-sm"
+                            aria-label="Remover agendamento"
+                            onClick={() => setToRemove(r)}
+                          >
+                            <Trash2 />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>Remover agendamento</TooltipContent>
+                      </Tooltip>
+                    </div>
+                    <div className="flex flex-wrap gap-4 text-xs text-muted-foreground">
+                      <span>{daysLabel(r.days)}</span>
+                      <span className="font-mono">{windowLabel(r)}</span>
+                    </div>
+                  </CardContent>
+                </Card>
+              ))}
+            </div>
+          )}
+        </>
       )}
 
-      {toRemove && (
-        <Modal
-          title="Remover agendamento?"
-          danger
-          onCancel={() => setToRemove(null)}
-          onConfirm={() => void remove()}
-          confirmLabel="Remover"
-          busy={busy}
-        >
-          <p>
-            {toRemove.label || toRemove.preset} — {daysLabel(toRemove.days)} {windowLabel(toRemove)}
-          </p>
-        </Modal>
-      )}
-    </section>
+      <Dialog open={toRemove !== null} onOpenChange={(o) => !o && setToRemove(null)}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remover agendamento?</DialogTitle>
+            <DialogDescription asChild>
+              <p>
+                {toRemove?.label || toRemove?.preset} — {toRemove ? daysLabel(toRemove.days) : ""}{" "}
+                {toRemove ? windowLabel(toRemove) : ""}
+              </p>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setToRemove(null)} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void remove()}
+              disabled={busy}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {busy ? "Removendo…" : "Remover"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Screen>
   );
 }

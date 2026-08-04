@@ -1,7 +1,21 @@
 import { useState } from "react";
-import { api, DaemonError } from "../api/client";
-import { Card, Chip, Field, Modal } from "../components/ui";
-import { useApp } from "../context";
+import { Siren } from "lucide-react";
+import { api, DaemonError } from "@/api/client";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import { Label } from "@/components/ui/label";
+import { Textarea } from "@/components/ui/textarea";
+import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
+import { useApp } from "@/context";
+import { cn } from "@/lib/utils";
 
 const DURATIONS = [
   { label: "15 min", value: "15m" },
@@ -42,72 +56,96 @@ export function Panico() {
   };
 
   return (
-    <section className="screen">
-      <header className="screen-head">
-        <h2>Modo pânico</h2>
-        <p className="muted">Bloqueia TODA a internet por um período. Use em momentos de decisão. 😤</p>
-      </header>
+    <Screen>
+      <ScreenHeader
+        title="Modo pânico"
+        subtitle="Bloqueia TODA a internet por um período. Use em momentos de decisão. 😤"
+      />
 
-      <Card className={`panic-card${panicActive ? " active" : ""}`}>
-        <button
-          type="button"
-          className="panic-button"
-          disabled={busy || daemonUp === false}
-          onClick={() => setConfirmOpen(true)}
-        >
-          <span className="panic-icon" aria-hidden="true">
-            🚨
-          </span>
-          <span className="panic-label">
-            {panicActive ? "Pânico em andamento" : "Bloquear toda a internet"}
-          </span>
-        </button>
+      {daemonUp === false ? (
+        <EmptyCard>
+          <p>O daemon está desligado — bloqueio indisponível.</p>
+        </EmptyCard>
+      ) : (
+        <Card className={cn("max-w-xl", panicActive && "ring-destructive/40")}>
+          <CardContent className="flex flex-col gap-5 px-5 py-5">
+            <Button
+              type="button"
+              onClick={() => setConfirmOpen(true)}
+              disabled={busy}
+              className={cn(
+                "h-auto flex-col gap-3 border-2 border-destructive/40 bg-destructive/10 py-8 text-destructive hover:bg-destructive/20 hover:text-destructive",
+                panicActive && "border-destructive/70",
+              )}
+            >
+              <Siren className="size-9 animate-pulse" />
+              <span className="text-lg font-bold">
+                {panicActive ? "Pânico em andamento" : "Bloquear toda a internet"}
+              </span>
+            </Button>
 
-        <Field label="Duração">
-          <div className="chips">
-            {DURATIONS.map((d) => (
-              <Chip
-                key={d.value}
-                selected={duration === d.value}
-                onClick={() => setDuration(d.value)}
-              >
-                {d.label}
-              </Chip>
-            ))}
-          </div>
-        </Field>
+            <div className="flex flex-col gap-2">
+              <Label>Duração</Label>
+              <div className="flex flex-wrap gap-2">
+                {DURATIONS.map((d) => (
+                  <Button
+                    key={d.value}
+                    type="button"
+                    variant={duration === d.value ? "default" : "outline"}
+                    onClick={() => setDuration(d.value)}
+                    className="h-7"
+                  >
+                    {d.label}
+                  </Button>
+                ))}
+              </div>
+            </div>
 
-        <Field label="Allowlist (opcional — o que continua acessível)">
-          <textarea
-            className="input textarea"
-            placeholder="docs.google.com, github.com"
-            value={allow}
-            onChange={(e) => setAllow(e.target.value)}
-          />
-          <p className="muted hint">
-            Separe por vírgula. Vazio = bloquear toda a internet (sem exceções).
-          </p>
-        </Field>
-        {daemonUp === false && <p className="muted">Daemon desligado — bloqueio indisponível.</p>}
-      </Card>
-
-      {confirmOpen && (
-        <Modal
-          title="Confirmar modo pânico"
-          danger
-          busy={busy}
-          confirmLabel="Bloquear internet"
-          onConfirm={run}
-          onCancel={() => setConfirmOpen(false)}
-        >
-          <p>
-            Toda a internet ficará bloqueada por{" "}
-            <strong>{duration}</strong>
-            {allow.trim() ? " — exceto os domínios permitidos." : ", sem exceções."}
-          </p>
-          <p className="muted">Bloqueios temporários não podem ser desfeitos manualmente.</p>
-        </Modal>
+            <div className="flex flex-col gap-2">
+              <Label htmlFor="allow">Allowlist (opcional — o que continua acessível)</Label>
+              <Textarea
+                id="allow"
+                placeholder="docs.google.com, github.com"
+                value={allow}
+                onChange={(e) => setAllow(e.target.value)}
+              />
+              <p className="text-xs text-muted-foreground">
+                Separe por vírgula. Vazio = bloquear toda a internet (sem exceções).
+              </p>
+            </div>
+          </CardContent>
+        </Card>
       )}
-    </section>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Confirmar modo pânico</DialogTitle>
+            <DialogDescription asChild>
+              <div>
+                <p>
+                  Toda a internet ficará bloqueada por <strong>{duration}</strong>
+                  {allow.trim() ? " — exceto os domínios permitidos." : ", sem exceções."}
+                </p>
+                <p className="mt-2">Bloqueios temporários não podem ser desfeitos manualmente.</p>
+              </div>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setConfirmOpen(false)} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button
+              variant="destructive"
+              onClick={() => void run()}
+              disabled={busy}
+              className="bg-destructive text-white hover:bg-destructive/90"
+            >
+              {busy ? "Bloqueando…" : "Bloquear internet"}
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </Screen>
   );
 }

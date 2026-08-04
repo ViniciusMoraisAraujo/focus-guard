@@ -1378,6 +1378,163 @@ func TestScheduler_BlockDomains_Deduplicates(t *testing.T) {
 	}
 }
 
+// failingUnblockEnforcer wraps mockEnforcer and makes UnblockDomain fail while
+// failUnblocks is true — simulating a transient failure (e.g. the Windows
+// Firewall service still starting at boot) that previously left stale rules in
+// the OS after state.json had already been cleaned.
+type failingUnblockEnforcer struct {
+	*mockEnforcer
+	failMu       sync.Mutex
+	failUnblocks bool
+}
+
+func (e *failingUnblockEnforcer) UnblockDomain(domain string, ips []string) error {
+	e.failMu.Lock()
+	fail := e.failUnblocks
+	e.failMu.Unlock()
+	if fail {
+		return errors.New("netsh: firewall service not running")
+	}
+	return e.mockEnforcer.UnblockDomain(domain, ips)
+}
+
+func (e *failingUnblockEnforcer) setFail(fail bool) {
+	e.failMu.Lock()
+	e.failUnblocks = fail
+	e.failMu.Unlock()
+}
+
+// TestScheduler_Reconcile_BootFailingUnblockKeepsBlockInState reproduces the
+// reported bug: a boot reconcile persisted the cleaned state.json before the
+// enforcer removed the OS rules, so a failed UnblockDomain (firewall service
+// not ready at boot) left stale hosts/firewall rules forever with the state
+// mirror already "clean" and no retry. Now the block must remain in RAM and in
+// state.json until the removal succeeds, and the retry must clean both.
+func TestScheduler_Reconcile_BootFailingUnblockKeepsBlockInState(t *testing.T) {
+	tempDir := t.TempDir()
+	st, err := store.NewStore(filepath.Join(tempDir, "state.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+
+	now := time.Now().UTC().Round(time.Second)
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{
+		"expired.com": {
+			Domain:      "expired.com",
+			StartedAt:   now.Add(-48 * time.Hour),
+			ExpiresAt:   now.Add(-24 * time.Hour),
+			ResolvedIPs: []string{"1.1.1.1"},
+		},
+	}}); err != nil {
+		t.Fatalf("prepare state: %v", err)
+	}
+
+	enf := &failingUnblockEnforcer{mockEnforcer: newMockEnforcer()}
+	enf.setFail(true)
+	sched := NewScheduler(st, enf)
+
+	// Boot reconcile with the enforcer failing (firewall still coming up).
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	// The block must NOT have been dropped: state.json must still reflect it,
+	// otherwise the UI would report "clean" while the OS rules remain.
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := state.Blocks["expired.com"]; !ok {
+		t.Error("expired block removed from state.json despite failed unblock")
+	}
+	blocks, _ := sched.ListBlocks()
+	if len(blocks) != 1 || blocks[0].Domain != "expired.com" {
+		t.Errorf("block should remain in RAM, got %+v", blocks)
+	}
+	enf.mu.Lock()
+	_, unblocked := enf.unblockedDomains["expired.com"]
+	enf.mu.Unlock()
+	if unblocked {
+		t.Error("enforcer recorded an unblock that failed")
+	}
+
+	// A retry timer must be armed so the cleanup self-heals.
+	sched.mu.Lock()
+	_, hasRetry := sched.timers["expired.com"]
+	sched.mu.Unlock()
+	if !hasRetry {
+		t.Error("expected a retry timer to be armed after the failed unblock")
+	}
+
+	// The enforcer recovers; the retry must now clean RAM + state + rules.
+	enf.setFail(false)
+	sched.onExpire("expired.com")
+
+	state, _ = st.Load()
+	if _, ok := state.Blocks["expired.com"]; ok {
+		t.Error("expired block should be removed from state.json after successful retry")
+	}
+	blocks, _ = sched.ListBlocks()
+	if len(blocks) != 0 {
+		t.Errorf("expected no blocks in RAM after successful retry, got %+v", blocks)
+	}
+	enf.mu.Lock()
+	_, unblocked = enf.unblockedDomains["expired.com"]
+	enf.mu.Unlock()
+	if !unblocked {
+		t.Error("expected the enforcer unblock after successful retry")
+	}
+}
+
+// TestScheduler_OnExpire_FailingUnblockKeepsBlock verifies the timer-expiry
+// path has the same guarantee: a block whose OS rules fail to be removed is
+// kept in RAM and state (with a retry) instead of being dropped while the
+// rules remain.
+func TestScheduler_OnExpire_FailingUnblockKeepsBlock(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+	block := policy.Block{
+		Domain:      "expired.com",
+		StartedAt:   now.Add(-48 * time.Hour),
+		ExpiresAt:   now.Add(-24 * time.Hour),
+		ResolvedIPs: []string{"1.1.1.1"},
+	}
+	if err := st.Save(&store.State{Blocks: map[string]policy.Block{"expired.com": block}}); err != nil {
+		t.Fatalf("prepare state: %v", err)
+	}
+	sched.mu.Lock()
+	sched.blocks["expired.com"] = block
+	sched.mu.Unlock()
+
+	failing := &failingUnblockEnforcer{mockEnforcer: enf}
+	failing.setFail(true)
+	sched.enforcer = failing
+
+	sched.onExpire("expired.com")
+
+	blocks, _ := sched.ListBlocks()
+	if len(blocks) != 1 {
+		t.Errorf("block should remain in RAM after failed unblock, got %+v", blocks)
+	}
+	state, _ := st.Load()
+	if _, ok := state.Blocks["expired.com"]; !ok {
+		t.Error("state.json should still contain the block after failed unblock")
+	}
+
+	failing.setFail(false)
+	sched.onExpire("expired.com")
+
+	blocks, _ = sched.ListBlocks()
+	if len(blocks) != 0 {
+		t.Errorf("block should be gone after successful retry, got %+v", blocks)
+	}
+	state, _ = st.Load()
+	if _, ok := state.Blocks["expired.com"]; ok {
+		t.Error("state.json should be clean after successful retry")
+	}
+}
+
 func TestScheduler_Reconcile_MatchNoOp(t *testing.T) {
 	sched, enf, st := setupTestScheduler(t)
 
