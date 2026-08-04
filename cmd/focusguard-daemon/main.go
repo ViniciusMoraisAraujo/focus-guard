@@ -412,6 +412,9 @@ func getWatchdogSec() int {
 }
 
 func main() {
+	stopLog := setupLogging()
+	defer stopLog()
+
 	if tryRunAsService() {
 		return
 	}

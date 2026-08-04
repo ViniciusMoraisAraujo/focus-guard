@@ -7,6 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 📝 Logs do daemon
+
+- **Log em arquivo na pasta de instalação** — o `focusguard-daemon` agora grava
+  seu log em `focusguard-daemon.log` ao lado do executável (`C:\Program Files\
+  FocusGuard` no Windows, `/opt/focusguard` no Linux), com rotação automática
+  quando o arquivo passa de 1 MiB (o anterior vira `focusguard-daemon.log.1`).
+  Se a pasta não for gravável, o log continua no stderr (best-effort).
+
 ### 🔄 Update reinicia na hora
 
 - **Update de versão reinicia imediatamente** — ao aplicar um update, o daemon
