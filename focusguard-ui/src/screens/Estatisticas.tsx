@@ -1,13 +1,14 @@
 import { useEffect, useMemo, useState } from "react";
 import { Download, Flame } from "lucide-react";
 import { api } from "@/api/client";
-import type { LabelStat } from "@/api/types";
+import type { FocusSession, LabelStat } from "@/api/types";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
 import { useApp } from "@/context";
-import { formatMinutes } from "@/hooks/useCountdown";
+import { formatClock, formatMinutes } from "@/hooks/useCountdown";
 
 function download(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -34,12 +35,20 @@ function csvCell(v: string): string {
 export function Estatisticas() {
   const { stats, daemonUp } = useApp();
   const [missions, setMissions] = useState<LabelStat[] | null>(null);
+  const [sessions, setSessions] = useState<FocusSession[] | null>(null);
 
   useEffect(() => {
     api
       .missions()
       .then((r) => setMissions(r.success ? (r.label_stats ?? []) : []))
       .catch(() => setMissions([]));
+  }, []);
+
+  useEffect(() => {
+    api
+      .sessions()
+      .then((r) => setSessions(r.success ? (r.sessions ?? []) : []))
+      .catch(() => setSessions([]));
   }, []);
 
   const s = stats?.stats;
@@ -206,10 +215,89 @@ export function Estatisticas() {
               )}
             </CardContent>
           </Card>
+
+          <Card>
+            <CardContent className="flex flex-col gap-3 px-5 py-4">
+              <h3 className="font-heading text-base font-semibold">Sessões recentes</h3>
+              {sessions === null ? (
+                <div
+                  className="flex flex-col gap-2.5"
+                  aria-busy="true"
+                  aria-label="Carregando sessões"
+                >
+                  {[0, 1, 2].map((i) => (
+                    <Skeleton key={i} className="h-14 w-full rounded-lg" />
+                  ))}
+                </div>
+              ) : sessions.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma sessão concluída ainda — complete um pomodoro para registrar seu foco.
+                </p>
+              ) : (
+                <ul className="divide-y">
+                  {sessions.slice(0, 15).map((s) => (
+                    <SessionRow key={`${s.start}-${s.preset}`} session={s} />
+                  ))}
+                </ul>
+              )}
+            </CardContent>
+          </Card>
         </>
       )}
     </Screen>
   );
+}
+
+function SessionRow({ session: s }: { session: FocusSession }) {
+  return (
+    <li className="flex flex-wrap items-center justify-between gap-2 py-2.5 text-sm">
+      <div className="flex min-w-0 flex-col gap-1">
+        <div className="flex items-center gap-2">
+          <Badge variant="secondary" className="capitalize">
+            {s.preset}
+          </Badge>
+          {s.strict && <Badge variant="destructive">estrita</Badge>}
+          {s.label && (
+            <span className="truncate font-medium" title={s.label}>
+              🎯 {s.label}
+            </span>
+          )}
+        </div>
+        <div className="flex flex-wrap items-center gap-x-3 text-xs text-muted-foreground">
+          <span>
+            {fmtDate(s.start)} · {formatClock(s.start)}–{formatClock(s.end)}
+          </span>
+          {s.cycles > 0 && <span>{s.cycles} ciclos</span>}
+        </div>
+        {s.domains.length > 0 && (
+          <div className="flex flex-wrap gap-1">
+            {s.domains.slice(0, 4).map((d) => (
+              <span
+                key={d}
+                className="max-w-40 truncate rounded bg-muted px-1.5 py-0.5 text-[11px] text-muted-foreground"
+              >
+                {d}
+              </span>
+            ))}
+            {s.domains.length > 4 && (
+              <span className="text-[11px] text-muted-foreground">
+                +{s.domains.length - 4}
+              </span>
+            )}
+          </div>
+        )}
+      </div>
+      <span className="shrink-0 text-sm font-semibold tabular-nums text-primary">
+        {formatMinutes(s.focus)}
+      </span>
+    </li>
+  );
+}
+
+function fmtDate(rfc3339: string): string {
+  const d = new Date(rfc3339);
+  if (Number.isNaN(d.getTime())) return "—";
+  return d.toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
 }
 
 function StatCard({ value, label, flame = false }: { value: string; label: string; flame?: boolean }) {
