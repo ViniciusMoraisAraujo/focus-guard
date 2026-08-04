@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"os"
@@ -49,6 +50,25 @@ var scheduleCheckInterval = 30 * time.Second
 var goos = runtime.GOOS
 var newHostswatch = hostswatch.New
 var newStatewatch = statewatch.New
+
+// probeDaemonAlive pings a daemon on the IPC port. Stubbable nos testes para
+// exercitar o comportamento de singleton sem um daemon real.
+var probeDaemonAlive = func() bool {
+	client := ipc.NewClient()
+	resp, err := client.SendWithTimeout(ipc.Request{Action: "ping"}, 3*time.Second)
+	return err == nil && resp.Success
+}
+
+// isAddrInUse reports whether err is a TCP bind "address already in use"
+// (EADDRINUSE / WSAEADDRINUSE) — o modo de falha por trás do crash-loop.
+func isAddrInUse(err error) bool {
+	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	msg := strings.ToLower(err.Error())
+	return strings.Contains(msg, "in use") || strings.Contains(msg, "em uso") ||
+		strings.Contains(msg, "already in use")
+}
 var newUpdater = func(owner, repo string) updaterAPI {
 	return update.NewUpdater(owner, repo, update.WithVersion(daemonVersion))
 }
@@ -422,7 +442,7 @@ func main() {
 	for {
 		shouldExit := runDaemon()
 		if shouldExit {
-			log.Println("[FocusGuard Daemon] Encerrado normalmente (sem bloqueios ativos).")
+			log.Println("[FocusGuard Daemon] Processo encerrado.")
 			return
 		}
 		log.Println("[FocusGuard Daemon] Reiniciando...")
@@ -432,6 +452,15 @@ func main() {
 
 func runDaemon() bool {
 	log.Println("[FocusGuard Daemon] Iniciando serviço...")
+
+	// Singleton: se outra instância do daemon já está atendendo o IPC, esta
+	// encerra limpo em vez de crash-loopar no bind (o log mostrou o ciclo
+	// "bind: address already in use → Reiniciando..." para sempre). O watchdog
+	// e o SCM já mantêm a instância legítima de pé; uma segunda não ajuda.
+	if probeDaemonAlive() {
+		log.Println("[FocusGuard Daemon] Outra instância já está ativa na porta IPC — encerrando esta (evita conflito de bind e crash-loop).")
+		return true
+	}
 
 	statePath := getStateFilePath()
 	st, err := store.NewStore(statePath)
@@ -559,15 +588,27 @@ func runDaemon() bool {
 	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
 
 	go func() {
+		// svcStop é a cópia local do canal de parada do serviço: após a PRIMEIRA
+		// notificação (mesmo quando ignorada por bloqueios ativos) o canal é
+		// zerado — um canal fechado fica "pronto" para sempre no select, o que
+		// faria este goroutine hot-looper como um canal de sinal fechado.
+		svcStop := serviceStopCh
 		for {
 			select {
-			case sig := <-sigChan:
+			case sig, ok := <-sigChan:
+				if !ok {
+					// Canal fechado pelo caminho de erro (close(sigChan)): o
+					// goroutine não pode continuar lendo nil para sempre — seria
+					// o hot-loop que inundou o log com "Sinal <nil> ignorado".
+					return
+				}
 				if sched.HasActiveBlocks() || server.HasActiveSession() {
 					log.Printf("[FocusGuard Daemon] Sinal %v ignorado: existem bloqueios/sessão ativos.", sig)
 					continue
 				}
 				log.Println("[FocusGuard Daemon] Nenhum bloqueio/sessão ativo. Encerrando servidor IPC...")
-			case <-serviceStopCh:
+			case <-svcStop:
+				svcStop = nil
 				if sched.HasActiveBlocks() || server.HasActiveSession() {
 					log.Println("[FocusGuard Daemon] Parada do serviço ignorada: existem bloqueios/sessão ativos.")
 					continue
@@ -587,9 +628,13 @@ func runDaemon() bool {
 
 	err = <-serverErr
 	if err != nil {
-		log.Printf("[FocusGuard Daemon] Servidor IPC encerrado inesperadamente: %v", err)
 		signal.Stop(sigChan)
 		close(sigChan)
+		if isAddrInUse(err) && probeDaemonAlive() {
+			log.Println("[FocusGuard Daemon] Outra instância já está ativa na porta IPC — encerrando esta (evita crash-loop no bind).")
+			return true
+		}
+		log.Printf("[FocusGuard Daemon] Servidor IPC encerrado inesperadamente: %v", err)
 		return false
 	}
 
