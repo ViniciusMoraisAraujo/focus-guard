@@ -61,6 +61,13 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node.js (web UI build)
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: focusguard-ui/package-lock.json
+
       - name: Install WiX Toolset (go-msi dependency)
         run: choco install wixtoolset --no-progress -y
 
@@ -69,6 +76,19 @@ jobs:
       # schema novo quebraria a geração silenciosamente.
       - name: Install go-msi (pinned)
         run: go install github.com/mat007/go-msi@4783d3eea8eb18a7819d1d1ffac877c3edd50527
+
+      # Compila a interface web (React) e copia o dist para
+      # cmd/focusguard-web/assets (embutido via go:embed). Sem isso o
+      # focusguard-web.exe gerado pelo build-msi.sh embute uma pasta de
+      # assets vazia e a UI não abre após instalar o .msi.
+      - name: Build web UI
+        shell: bash
+        run: |
+          cd focusguard-ui
+          npm ci
+          npm run build
+          find ../cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
+          cp -r dist/. ../cmd/focusguard-web/assets/
 
       - name: Build MSI installer
         shell: bash
