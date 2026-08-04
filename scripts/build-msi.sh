@@ -56,9 +56,18 @@ done
 
 echo "==> Gerando o .msi com go-msi..."
 MSI_NAME="focusguard-${VERSION}-${ARCH}.msi"
+# O go-msi resolve os caminhos do wix.json (ex.: bin/focusguard.exe) para
+# absolutos (filepath.Abs) e os torna relativos ao diretório de trabalho
+# (--out) via filepath.Rel. No Windows, filepath.Rel falha entre unidades
+# diferentes: no CI o checkout fica em D: e o diretório temporário do SO em
+# C:, o que aborta a geração ("Rel: can't make D:/... relative to C:/...").
+# Apontar --out para um diretório dentro do repositório mantém tudo na mesma
+# unidade; o instalador continua sendo gravado na raiz (--msi relativo).
+MSI_OUT="$(cygpath -w "$ROOT/build/go-msi" 2>/dev/null || echo "$ROOT/build/go-msi")"
 go-msi make \
   --path "${ROOT_WIN}/scripts/msi/wix.json" \
   --src "${ROOT_WIN}/scripts/msi" \
+  --out "$MSI_OUT" \
   --arch "$ARCH" \
   --msi "$MSI_NAME" \
   --version "$VERSION"
