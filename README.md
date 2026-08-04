@@ -90,6 +90,18 @@ instalação.
 
 O script copia os 4 executáveis para `C:\Program Files\FocusGuard\`, registra o serviço, cria o atalho do Desktop e inicia o daemon.
 
+#### Via instalador único `.msi` (implantação facilitada)
+
+Cada release também publica um instalador **`.msi`** (`focusguard-<versão>-amd64.msi`)
+que faz tudo em um clique — basta executá-lo (ou `msiexec /i focusguard_<versão>-amd64.msi`):
+
+- Instala os 5 executáveis em `C:\Program Files\FocusGuard` (Todos os Usuários);
+- Registra os serviços **`FocusGuard`** (daemon) e **`FocusGuardWatchdog`** com
+  início automático e **recovery** (`sc failure ... restart/5s/10s/30s`);
+- Registra o **tray** na inicialização (HKCU Run) e cria o atalho **FocusGuard** no Desktop;
+- A desinstalação (Programas e Recursos / `msiexec /x`) remove serviços, atalho
+  e pasta de instalação (o estado em `C:\ProgramData\FocusGuard` é preservado).
+
 #### Manualmente com `sc.exe`
 
 ```powershell
@@ -169,12 +181,16 @@ Cada release publicada no GitHub contém apenas os arquivos essenciais por plata
 | Plataforma | Arquivo | Conteúdo |
 |------------|---------|----------|
 | 🪟 Windows | `focusguard_<versão>_windows_<arch>.zip` | Executáveis (`focusguard.exe`, `focusguard-daemon.exe`, `focusguard-watchdog.exe`, `focusguard-tray.exe`) + `install-daemon.ps1` + `install.txt` |
+| 🪟 Windows | `focusguard-<versão>-amd64.msi` | Instalador único (serviços + recovery + tray + atalho) |
 | 🐧 Linux | `focusguard_<versão>_linux_<arch>.tar.gz` | Binários + `focusguard.service` + `install-linux.sh` + `install.txt` |
 
 **Windows:**
 
 ```powershell
-# Como Administrador
+# Opção 1 — instalador único (recomendado)
+msiexec /i focusguard-1.0.0-amd64.msi
+
+# Opção 2 — zip + script (como Administrador)
 Expand-Archive focusguard_1.0.0_windows_amd64.zip -DestinationPath focusguard
 cd focusguard
 .\install-daemon.ps1 install   # copia para C:\Program Files\FocusGuard e inicia o serviço
