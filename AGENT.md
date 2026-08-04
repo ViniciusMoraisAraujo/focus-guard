@@ -1,262 +1,321 @@
-# AGENT.md — Guia do repositório FocusGuard
+# AGENT.md — FocusGuard repository guide
 
-> Documento de referência para **agentes de IA e desenvolvedores** que vão
-> trabalhar neste repositório. Leia antes de editar código. Mantenha este
-> arquivo atualizado quando convenções, arquitetura ou regras mudarem.
+> Reference document for **AI agents and developers** working in this
+> repository. Read it before editing code. Keep it up to date whenever
+> conventions, architecture, or rules change.
+
+## Table of contents
+
+0. [Never do without explicit confirmation](#0-never-do-without-explicit-confirmation)
+1. [Specs — what this project is](#1-specs--what-this-project-is)
+2. [Language and stack](#2-language-and-stack)
+3. [Architecture](#3-architecture)
+4. [Code conventions](#4-code-conventions-current-rules)
+5. [Testing, validation, and Definition of Done](#5-testing-validation-and-definition-of-done)
+6. [Relevant file structure](#6-relevant-file-structure)
+7. [Commit conventions](#7-commit-conventions)
+8. [Release](#8-release)
+9. [Known pitfalls](#9-known-pitfalls)
+10. [Glossary](#10-glossary)
 
 ---
 
-## 1. Specs — O que é este projeto
+## 0. Never do without explicit confirmation
 
-**FocusGuard** é uma ferramenta Go para **bloquear sites distractivos** e
-manter o foco, operando em nível de sistema (arquivo `hosts` + regras de
-firewall). É uma aplicação cliente-servidor:
+If a task requires any of the following, **stop and ask** before proceeding —
+don't assume it's implied by the request:
 
-- **CLI** (`focusguard`) — interface de linha de comando; sem argumentos abre
-  a interface web no navegador.
-- **Daemon** (`focusguard-daemon`) — serviço em background que aplica e mantém
-  os bloqueios; comunica-se com a CLI via IPC (Unix socket).
-- **Tray** (`focusguard-tray`) — ícone na bandeja do sistema com ações rápidas.
-- **Watchdog** (`focusguard-watchdog`) — serviço externo de health-check e
-  Smart Recovery (rollback pós-update quebrado).
-- **`focusguard-icon`** — comando **somente de build** (stdlib pura) que gera o
-  ícone multi-tamanho `focusguard.ico` (Windows) e `focusguard.png` (Linux).
+- Adding a manifest/admin elevation to the tray or to `focusguard-web` (only
+  the daemon is privileged).
+- Creating a "manual unblock" command, or any shortcut to undo a block
+  before it expires — that's a product decision, not a bug.
+- Reintroducing the pending-restart mechanism (`pendingRestart`/watcher) in
+  the update flow — it was removed on purpose.
+- Calling `sc.exe`/`iptables`/`systemctl`/any other real OS binary inside a
+  unit test — always mock it (`execCommand`, `os.Stat`, etc.).
+- Manually editing/generating `.syso`, `.ico`/`.png`, or `versioninfo.json` —
+  only via `make icon` / `make winres`.
+- Changing the `internal/ipc` payload without updating CLI + tray + web +
+  `focusguard-ui/src/api/types.ts` in the same commit.
+- Changing the `state.json` schema without a migration/compatibility plan
+  for state already persisted on disk.
+- Saving `install-daemon.ps1` without preserving the UTF-8 BOM (`EF BB BF`).
 
-Funcionalidades principais: bloqueios temporários (sem desbloqueio manual),
-modo pânico (`block --internet`) com allowlist, presets por categoria, pomodoro,
-agendamento recorrente, metas diárias + streak, analytics com exportação,
-process guard (encerra processos da denylist), detecção de burla (tamper-log) e
-auto-update multi-binário com rollback.
+In any of these cases: describe the plan and ask for confirmation before
+editing code.
 
-> 🚧 **Interface web (em andamento):** `focusguard-web` (user-space, por
-> demanda) serve a UI React + TS (`focusguard-ui/`) e faz **proxy das ações IPC
-> para o daemon** em `http://127.0.0.1:48902` — **sem mudanças no daemon**.
-> F1 (servidor HTTP) e F2 (10 telas) implementadas em 2026-08-03; veja o
-> plano completo e o roadmap em `docs/ui-plan.md` antes de criar código
-> relacionado.
+---
 
-### Plataformas
+## 1. Specs — what this project is
+
+**FocusGuard** is a Go tool to **block distracting websites** and help
+maintain focus, operating at the system level (`hosts` file + firewall
+rules). It's a client-server application:
+
+- **CLI** (`focusguard`) — command-line interface; with no arguments it
+  opens the web UI in the browser.
+- **Daemon** (`focusguard-daemon`) — background service that applies and
+  maintains blocks; talks to the CLI via IPC (Unix socket).
+- **Tray** (`focusguard-tray`) — system tray icon with quick actions.
+- **Watchdog** (`focusguard-watchdog`) — external health-check service and
+  Smart Recovery (rollback after a broken update).
+- **`focusguard-icon`** — **build-only** command (pure stdlib) that
+  generates the multi-size icon `focusguard.ico` (Windows) and
+  `focusguard.png` (Linux).
+
+Main features: temporary blocks (no manual unblock), panic mode
+(`block --internet`) with allowlist, category presets, pomodoro, recurring
+scheduling, daily goals + streaks, analytics with export, process guard
+(kills denylisted processes), tamper detection (tamper log), and
+multi-binary auto-update with rollback.
+
+> 🚧 **Web interface (in progress):** `focusguard-web` (user-space, on
+> demand) serves the React + TS UI (`focusguard-ui/`) and **proxies IPC
+> actions to the daemon** at `http://127.0.0.1:48902` — **no changes to the
+> daemon**. F1 (HTTP server) and F2 (10 screens) were implemented on
+> 2026-08-03; see the full plan and roadmap in `docs/ui-plan.md` before
+> writing related code.
+
+### Platforms
 
 | | Linux | Windows |
 |---|---|---|
 | Firewall | `iptables`/`ip6tables` | `netsh advfirewall` |
 | Hosts | `/etc/hosts` | `C:\Windows\System32\drivers\etc\hosts` |
-| Socket IPC | `/run/focusguard.sock` | `%PROGRAMDATA%\FocusGuard\focusguard.sock` |
-| Serviço | systemd (unit + watchdog `NOTIFY_SOCKET`) | Serviço nativo `svc` (SCM), `sc.exe` |
-| Instalação | `/opt/focusguard` (root:root) | `C:\Program Files\FocusGuard` (Sistema / Todos os Usuários) |
-| Estado | `/var/lib/focusguard/` | `C:\ProgramData\FocusGuard\` |
+| IPC socket | `/run/focusguard.sock` | `%PROGRAMDATA%\FocusGuard\focusguard.sock` |
+| Service | systemd (unit + `NOTIFY_SOCKET` watchdog) | Native `svc` service (SCM), `sc.exe` |
+| Install path | `/opt/focusguard` (root:root) | `C:\Program Files\FocusGuard` (System / All Users) |
+| State | `/var/lib/focusguard/` | `C:\ProgramData\FocusGuard\` |
 | Tray autostart | `~/.config/autostart` (XDG) | HKCU `...\CurrentVersion\Run` |
 
 ---
 
-## 2. Linguagem e stack
+## 2. Language and stack
 
-- **Go 1.26.5** (ver `go.mod`, módulo `focusguard`). Sem CGO no Windows e no
-  Linux exceto o tray (`tray-linux` requer CGO: appindicator/GTK).
-- Dependências principais (todas já em `go.mod` — **evite adicionar novas sem
-  necessidade; stdlib primeiro**):
-  - `fsnotify` — watchers de arquivo (hosts, state).
-  - `getlantern/systray` — bandeja do sistema.
-  - `creativeprojects/go-selfupdate` — auto-update (canais beta/stable).
-  - `golang.org/x/sys` — serviço Windows (`svc`), etc.
-  - `golang.org/x/mod/semver` — comparação de versões no update.
-- **`go-winres`** (ferramenta de build, não é dependência Go) — gera os
-  metadados `.exe` do Windows (`rsrc_windows_*.syso`) a partir dos
-  `versioninfo.json`. Instale com:
-  `go install github.com/tc-hib/go-winres@latest`.
+- **Go 1.26.5** (see `go.mod`, module `focusguard`). No CGO on Windows or
+  Linux, except the tray (`tray-linux` requires CGO: appindicator/GTK).
+- Main dependencies (all already in `go.mod` — **avoid adding new ones
+  unless necessary; stdlib first**):
+  - `fsnotify` — file watchers (hosts, state).
+  - `getlantern/systray` — system tray.
+  - `creativeprojects/go-selfupdate` — auto-update (beta/stable channels).
+  - `golang.org/x/sys` — Windows service (`svc`), etc.
+  - `golang.org/x/mod/semver` — version comparison for updates.
+- **`go-winres`** (build tool, not a Go dependency) — generates Windows
+  `.exe` metadata (`rsrc_windows_*.syso`) from `versioninfo.json`. Install
+  with: `go install github.com/tc-hib/go-winres@latest`.
 
-### Idiomas
+### Languages used in the repo
 
-- **Código, identificadores e comentários de código**: inglês.
-- **Mensagens de UI/CLI, README, CHANGELOG, docs e este AGENT.md**: português
-  (PT-BR).
-- **Mensagens de commit**: inglês (Conventional Commits — seção 7).
+- **Code, identifiers, and code comments**: English.
+- **UI/CLI-facing strings**: currently Brazilian Portuguese (PT-BR) —
+  match the existing convention in the file you're editing rather than
+  mixing languages within the same package.
+- **README, CHANGELOG, and other docs**: PT-BR (this file is the
+  exception, kept in English).
+- **Commit messages**: English (Conventional Commits — section 7).
+- **This AGENT.md**: English. Agent-facing instructions live here in
+  English regardless of the language used elsewhere in the repo.
 
 ---
 
-## 3. Arquitetura
+## 3. Architecture
 
-### Fluxo de dados
+### Data flow
 
 ```
 CLI (focusguard) ────────┐
 Tray (focusguard-tray) ──┼── IPC (Unix socket, JSON) ──→ Daemon (focusguard-daemon)
 Web (focusguard-web) ────┘                                        │
-                                                             [Scheduler]  ← fonte de verdade em RAM
+                                                             [Scheduler]  ← source of truth, in RAM
                                                           ┌────────┴────────┐
                                                      [Store]          [Enforcer]
-                                               (state.json atômico)   ┌────┴────┐
+                                               (atomic state.json)   ┌────┴────┐
                                                                /etc/hosts  Firewall
                                                                (hosts)  (iptables/netsh)
                                                           ┌────────┴────────┐
                                                    [HostsWatcher]    [StateWatcher]
-                                                  (fsnotify + SHA-256, restauram o disco a partir da RAM)
+                                                  (fsnotify + SHA-256, restore disk from RAM)
 ```
 
-### Binários (`cmd/`)
+### Binaries (`cmd/`)
 
-| Binário | Papel | Recursos Windows |
+| Binary | Role | Windows resources |
 |---|---|---|
-| `focusguard` | CLI (comandos; sem args abre a web) | `cmd/focusguard/versioninfo.json` (ícone, sem manifest) |
-| `focusguard-daemon` | Serviço em background | `versioninfo.json` raiz + `focusguard-daemon.exe.manifest` (**`requireAdministrator`**) |
-| `focusguard-tray` | Bandeja do sistema | `cmd/focusguard-tray/versioninfo.json` (**só ícone — NUNCA manifest/admin**) |
-| `focusguard-watchdog` | Health-check / Smart Recovery | Sem recursos (console app) |
-| `focusguard-web` | Serve a UI web + proxy das ações IPC (user-space, por demanda) | Sem manifest — **nunca** adicionar admin |
-| `focusguard-icon` | Gera ícones (build-time) | — |
+| `focusguard` | CLI (commands; no args opens the web UI) | `cmd/focusguard/versioninfo.json` (icon only, no manifest) |
+| `focusguard-daemon` | Background service | root `versioninfo.json` + `focusguard-daemon.exe.manifest` (**`requireAdministrator`**) |
+| `focusguard-tray` | System tray | `cmd/focusguard-tray/versioninfo.json` (**icon only — NEVER manifest/admin**) |
+| `focusguard-watchdog` | Health-check / Smart Recovery | No resources (console app) |
+| `focusguard-web` | Serves the web UI + proxies IPC actions (user-space, on demand) | No manifest — **never** add admin |
+| `focusguard-icon` | Generates icons (build-time) | — |
 
-> ⚠️ O daemon embute manifest `requireAdministrator`; por isso **rodar
-> `go test ./cmd/focusguard-daemon/...` num shell sem elevação falha** (o
-> binário de teste não inicia) — é limitação ambiental, não bug.
+> ⚠️ The daemon embeds a `requireAdministrator` manifest; that's why
+> **running `go test ./cmd/focusguard-daemon/...` in a non-elevated shell
+> fails** (the test binary won't start) — this is an environment
+> limitation, not a bug.
 
-### Pacotes internos (`internal/`) — mapa rápido
+### Internal packages (`internal/`) — quick map
 
-| Pacote | Responsabilidade |
+Every package has a dedicated test (`*_test.go` in the same directory);
+implementation details belong in code comments, not here.
+
+| Package | One-liner |
 |---|---|
-| `analytics` | Histórico de sessões em JSONL; streak, `stats` (ASCII + export CSV/JSON/HTML), `report` |
-| `apps` | Denylist de processos (apps.json) consumida pelo process guard; fallback `steam, discord` |
-| `autostart` | Instala/remove serviço (`sc`/systemd), autostart do tray (HKCU Run / XDG) e **atalho de desktop** com ícone extraído (`ExtractIcon`) |
-| `enforcer` | Aplica bloqueios no SO: interface + `enforcer_linux.go` (hosts + iptables) / `enforcer_windows.go` (hosts + netsh); `BlockAll`/allowlist; sanitização de domínios |
-| `fsutil` | Helpers de filesystem compartilhados pelos watchers (ex.: SHA-256 de arquivo) |
-| `goal` | Meta diária de foco (goal.json) |
-| `hostswatch` | Watcher do `hosts`: fsnotify + hash SHA-256 dos self-writes; detecta/reverte adulterações |
-| `httpapi` | Servidor HTTP da interface web: proxy das ações IPC (`/api/action`, `/api/ping`, `/api/health`) + UI estática com SPA fallback + guardas de segurança localhost (Host, Content-Type, CSP) |
-| `icon` | Renderiza o artwork canônico `img/focusguard.png` em qualquer tamanho (CatmullRom via `golang.org/x/image`); `GenerateICO` multi-tamanho + `GeneratePNG` |
-| `ipc` | Protocolo cliente-servidor: `Request`/`Response` JSON sobre Unix socket; `SendWithTimeout` |
-| `policy` | Modelo `Block` e regras de negócio (`IsActive`, `CanUnblock`, `RemainingTime`) |
-| `pomodoro` | Sessões work/rest/cycles (`--strict`, `--save`/defaults, missões/labels) |
-| `preset` | Catálogo de categorias: builtin (`social`, `video`, `news`, `games`) + personalizados |
-| `processguard` | Encerra processos da denylist a cada 5s enquanto houver sessão ativa |
-| `recovery` | Smart Recovery: `FindRecentBackup`, `ShouldRollBack`, `RestoreFromBackup` (watchdog) |
-| `schedule` | Agendamento recorrente (dias/horários, janelas overnight, `--windows`, import iCal); worker 30s |
-| `scheduler` | Ciclo de vida dos bloqueios: `Block`, `Start` (reconcile), expiração, refresh de IPs (15min) |
-| `statewatch` | Watcher do `state.json`: restaura o disco a partir da RAM (memória é a fonte de verdade) |
-| `store` | Persistência JSON atômica (temp file + rename) + réplicas AES-256-GCM atreladas ao hardware |
-| `tamper` | Log JSONL append-only de tentativas de burla detectadas/revertidas (`tamper-log`) |
-| `tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
-| `update` | Auto-update via go-selfupdate: canais beta/stable, atualização **multi-binário atômica** (`UpdateToAll`); pós-update o daemon **reinicia na hora** (encerra a sessão pomodoro, preserva os bloqueios) |
-| `watchdog` | Health check systemd (`NOTIFY_SOCKET` → `READY=1`/`WATCHDOG=1`) |
-
-> A maioria desses pacotes tem teste dedicado (`*_test.go` no mesmo diretório).
+| `analytics` | Session history (JSONL), streaks, stats, export, report |
+| `apps` | Process denylist for the process guard |
+| `autostart` | Installs/removes the service + tray autostart + desktop shortcut |
+| `enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
+| `fsutil` | Filesystem helpers shared by the watchers |
+| `goal` | Daily focus goal |
+| `hostswatch` | Detects/reverts tampering of `hosts` |
+| `httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
+| `icon` | Generates `.ico`/`.png` from the canonical artwork |
+| `ipc` | Client-server protocol (Request/Response JSON over socket) |
+| `policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
+| `pomodoro` | Work/rest/cycle sessions |
+| `preset` | Catalog of block categories (builtin + custom) |
+| `processguard` | Kills denylisted processes during an active session |
+| `recovery` | Smart Recovery: detects and reverts a broken update |
+| `schedule` | Recurring block scheduling |
+| `scheduler` | Block lifecycle (source of truth in RAM) |
+| `statewatch` | Detects/reverts tampering of `state.json` |
+| `store` | Atomic JSON persistence + encrypted replicas |
+| `tamper` | Append-only log of tampering attempts |
+| `tray` | System tray icon controller |
+| `update` | Atomic multi-binary auto-update, with daemon restart |
+| `watchdog` | systemd health check (`NOTIFY_SOCKET`) |
 
 ---
 
-## 4. Padrões de código (regras atuais)
+## 4. Code conventions (current rules)
 
-1. **TDD** — escreva testes junto com a feature, no mesmo commit. Os pacotes
-   têm cobertura extensa (ver tabela de testes no README). Não quebre testes
-   existentes.
-2. **Arquivos por plataforma** — use sufixos `_windows.go`, `_linux.go`,
-   `_other.go` (build tags implícitas) para código de SO, com uma interface
-   comum no arquivo-base (ex.: `enforcer.go`, `systray.go`).
-3. **Fonte de verdade em RAM** — o scheduler mantém o estado em memória; o
-   disco (state.json) é reflexo. Watchers restauram o disco a partir da RAM
-   quando detectam adulteração.
-4. **Escrita atômica** — `store` grava em temp file + rename; gravações do
-   próprio daemon são marcadas por **SHA-256** para os watchers não reagirem a
-   self-writes (sem loop).
-5. **Best-effort para o SO** — falha de firewall/notificação/autostart **nunca
-   aborta o daemon**: loga, avisa e segue. Padrão: operações auxiliares
-   retornam erro sem derrubar o fluxo principal.
-6. **IPC nunca bloqueia o tray** — toda chamada do tray ao daemon usa
-   `SendWithTimeout` (5s); handlers do systray são não-bloqueantes.
-7. **Defensivo** — sanitize domínios (`sanitizeDomain`: remove scheme/CRLF/
-   espaços, colapsa `www.`), valide inputs, use tetos (ex.: pomodoro `--work`
-   máx 7 dias), rollback atômico no update, sweep de regras de firewall órfãs.
-8. **Persistência JSONL append-only** para logs (analytics, tamper) — linhas
-   corrompidas são puladas na leitura.
-9. **Sem dependências novas sem necessidade** — stdlib primeiro; confira o
-   `go.mod` antes de trazer biblioteca.
-10. **Recursos Windows via go-winres** — alterou `versioninfo.json` ou o ícone?
-    Rode `make winres` (e `make icon` para regenerar `focusguard.ico`/`.png`).
-    Os `.syso` **são commitados** (o CI precisa deles).
-14. **UI web: `make ui` antes de compilar o `focusguard-web`** — o dist do React
-    é copiado para `cmd/focusguard-web/assets` (gitignored, só o `.gitkeep` é
-    versionado) e embutido via `go:embed`. Sem `make ui`, o binário serve a
-    página "rode make ui". Dev: `go run ./cmd/focusguard-web -assets focusguard-ui/dist`
-    ou `cd focusguard-ui && npm run dev` (Vite :5173 com proxy `/api`).
-11. **Nunca adicione manifest ao tray** — o tray roda como usuário comum; sem
-    elevação. O daemon é o único com `requireAdministrator`.
-12. **Arquivos de script** — `*.sh` com EOL LF (`.gitattributes`); o
-    `install-daemon.ps1` deve manter **BOM UTF-8** (use escrita com
-    `UTF8Encoding($true)` ao re-salvar).
-13. **Testes mockam o SO** — os testes dos pacotes que executam comandos
-    externos (autostart, enforcer, etc.) mockam `execCommand` e `os.Stat`
-    (ex.: helper `fakeFileInfo`) para não depender de binários reais do
-    sistema nem de elevação. Siga esse padrão em testes novos — nunca chame
-    `sc.exe`/`iptables`/`systemctl` de verdade dentro de um teste unitário.
+1. **TDD** — write tests alongside the feature, in the same commit. Packages
+   have extensive coverage (see the test table in the README). Don't break
+   existing tests.
+2. **Per-platform files** — use `_windows.go`, `_linux.go`, `_other.go`
+   suffixes (implicit build tags) for OS-specific code, with a shared
+   interface in the base file (e.g., `enforcer.go`, `systray.go`).
+3. **Source of truth in RAM** — the scheduler keeps state in memory; disk
+   (`state.json`) is a reflection. Watchers restore disk from RAM when they
+   detect tampering.
+4. **Atomic writes** — `store` writes to a temp file then renames; writes
+   made by the daemon itself are marked via **SHA-256** so watchers don't
+   react to their own self-writes (no loop).
+5. **Best-effort for the OS** — a firewall/notification/autostart failure
+   **never aborts the daemon**: it logs, warns, and moves on. Convention:
+   auxiliary operations return an error without breaking the main flow.
+6. **IPC never blocks the tray** — every tray→daemon call uses
+   `SendWithTimeout` (5s); systray handlers are non-blocking.
+7. **Defensive coding** — sanitize domains (`sanitizeDomain`: strips
+   scheme/CRLF/whitespace, collapses `www.`), validate inputs, enforce caps
+   (e.g., pomodoro `--work` max 7 days), atomic rollback on update, sweep
+   orphaned firewall rules.
+8. **Append-only JSONL persistence** for logs (analytics, tamper) — corrupt
+   lines are skipped on read.
+9. **No new dependencies unless necessary** — stdlib first; check `go.mod`
+   before pulling in a library.
+10. **Windows resources via go-winres** — changed `versioninfo.json` or the
+    icon? Run `make winres` (and `make icon` to regenerate
+    `focusguard.ico`/`.png`). The `.syso` files **are committed** (CI needs
+    them).
+11. **Web UI: run `make ui` before building `focusguard-web`** — the React
+    dist is copied into `cmd/focusguard-web/assets` (gitignored, only
+    `.gitkeep` is versioned) and embedded via `go:embed`. Without `make ui`,
+    the binary serves a "run make ui" page. Dev: `go run ./cmd/focusguard-web
+    -assets focusguard-ui/dist` or `cd focusguard-ui && npm run dev` (Vite
+    on :5173 with `/api` proxy).
+12. **Never add a manifest to the tray** — the tray runs as a regular user,
+    unelevated. The daemon is the only binary with `requireAdministrator`.
+13. **Script files** — `*.sh` use LF line endings (`.gitattributes`);
+    `install-daemon.ps1` must keep its **UTF-8 BOM** (write with
+    `UTF8Encoding($true)` when re-saving).
+14. **Tests mock the OS** — tests for packages that shell out (autostart,
+    enforcer, etc.) mock `execCommand` and `os.Stat` (e.g., the
+    `fakeFileInfo` helper) so they don't depend on real system binaries or
+    elevation. Follow this pattern in new tests — never call real
+    `sc.exe`/`iptables`/`systemctl` inside a unit test.
 
 ---
 
-## 5. Testes e validação (checklist para agentes)
+## 5. Testing, validation, and Definition of Done
 
-Antes de terminar qualquer mudança:
+### Definition of Done — don't say "done" until every box is checked
+
+- [ ] `go build ./...` succeeds
+- [ ] `go vet ./...` succeeds
+- [ ] `gofmt -l <changed files>` has no output (or run `gofmt -w`)
+- [ ] `go test ./... -count=1 -timeout=60s` passes
+- [ ] `git status` shows no build artifacts (`bin/`, `.exe`, etc.)
+- [ ] New tests cover the change (section 4, rule 1)
+- [ ] Commit message follows Conventional Commits (section 7)
 
 ```bash
-go build ./...              # compila tudo
-go vet ./...                # análise estática
-gofmt -l <arquivos mudados> # formatação (ou gofmt -w)
+go build ./...                        # compiles everything
+go vet ./...                          # static analysis
+gofmt -l <changed files>              # formatting (or gofmt -w)
 go test ./... -count=1 -timeout=60s   # make test
 ```
 
-- Testes de pacote específico: `go test ./internal/<pkg>/... -v`.
-- Após mexer em ícone/versioninfo: `make icon && make winres` e confira o
-  ícone embutido com `go run ./scripts/verifyicon`.
-- Após mexer no `install-daemon.ps1`: valide a sintaxe com o parser do
-  PowerShell e **confira se o BOM (EF BB BF) foi preservado**.
-- ⚠️ Windows: `go test ./cmd/focusguard-daemon/...` exige shell **elevado**
-  (manifest `requireAdministrator`). Num shell sem admin, rode apenas os
-  pacotes não-elevados.
-- Cross-check de linha de comando no Windows: use bash POSIX (nunca `dir`/
-  `copy`/`findstr`); caminhos com `/`.
+- Package-specific tests: `go test ./internal/<pkg>/... -v`.
+- After touching icon/versioninfo: `make icon && make winres` and verify
+  the embedded icon with `go run ./scripts/verifyicon`.
+- After touching `install-daemon.ps1`: validate the syntax with the
+  PowerShell parser and **confirm the BOM (EF BB BF) was preserved**.
+- ⚠️ Windows: `go test ./cmd/focusguard-daemon/...` requires an **elevated**
+  shell (manifest `requireAdministrator`). In a non-admin shell, only run
+  the non-elevated packages.
+- Command-line cross-checks on Windows: use POSIX bash (never `dir`/`copy`/
+  `findstr`); use `/` in paths.
 
 ---
 
-## 6. Estrutura de arquivos relevante
+## 6. Relevant file structure
 
 ```
-├── AGENT.md                    # este guia
-├── docs/ui-plan.md             # plano da UI web (F1+F2 implementadas, roadmap)
+├── AGENT.md                    # this guide
+├── docs/ui-plan.md             # web UI plan (F1+F2 implemented, roadmap)
+├── docs/release.md             # release checklist and process
 ├── Makefile                    # build, icon, winres, ui, test, vet, fmt, tidy, clean, install, uninstall
-├── cmd/focusguard-web/         # servidor da interface web (user-space, embed da UI)
-├── internal/httpapi/           # HTTP: proxy IPC + estático + segurança localhost
-├── focusguard-ui/              # frontend React + Vite + TS (10 telas)
-│   └── src/screens/              # Dashboard, Bloquear, Panico, Configuracoes, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca
-├── .goreleaser.yaml            # pipeline de release
+├── cmd/focusguard-web/         # web interface server (user-space, embeds the UI)
+├── internal/httpapi/           # HTTP: IPC proxy + static assets + localhost security
+├── focusguard-ui/              # React + Vite + TS frontend (10 screens)
+│   └── src/screens/              # Dashboard, Block, Panic, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security
+├── .goreleaser.yaml            # release pipeline
 ├── .github/workflows/release.yml  # CI: tag v* → GoReleaser
 ├── .gitattributes              # *.sh → eol=lf
-├── focusguard.ico / .png       # ícone do sistema (gerados por cmd/focusguard-icon)
-├── versioninfo.json            # recursos Windows do daemon (ícone + manifest + versão)
+├── focusguard.ico / .png       # system icon (generated by cmd/focusguard-icon)
+├── versioninfo.json            # daemon's Windows resources (icon + manifest + version)
 ├── cmd/
-│   ├── focusguard/             # CLI (+ versioninfo.json próprio)
-│   ├── focusguard-daemon/      # serviço (+ rsrc_windows_*.syso)
-│   ├── focusguard-icon/        # gerador de ícones (build-time)
-│   ├── focusguard-tray/        # systray (+ versioninfo.json só-ícone)
+│   ├── focusguard/             # CLI (+ its own versioninfo.json)
+│   ├── focusguard-daemon/      # service (+ rsrc_windows_*.syso)
+│   ├── focusguard-icon/        # icon generator (build-time)
+│   ├── focusguard-tray/        # systray (+ icon-only versioninfo.json)
 │   └── focusguard-watchdog/    # health-check / Smart Recovery
-├── internal/                   # 23 pacotes (ver mapa na seção 3)
+├── internal/                   # 23 packages (see the map in section 3)
 └── scripts/
-    ├── install-daemon.ps1      # instalação Windows (copia p/ Program Files, serviço, atalho, tray, watchdog)
-    ├── install-linux.sh        # instalação Linux (/opt/focusguard, systemd, XDG autostart)
-    ├── focusguard.service      # unit systemd
-    ├── focusguard-tray.desktop # template de atalho do tray (Linux)
-    └── verifyicon/             # verifica ícone embutido == focusguard.ico
+    ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
+    ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart)
+    ├── focusguard.service      # systemd unit
+    ├── focusguard-tray.desktop # tray shortcut template (Linux)
+    └── verifyicon/             # verifies the embedded icon matches focusguard.ico
 ```
 
 ---
 
-## 7. Padrões de commit
+## 7. Commit conventions
 
-**Conventional Commits, em inglês, com escopo.** Formato:
+**Conventional Commits, in English, with scope.** Format:
 
 ```
-<tipo>(<escopo>): <descrição curta no imperativo>
+<type>(<scope>): <short imperative description>
 ```
 
-Tipos usados no histórico: `feat`, `fix`, `perf`, `docs`, `test`, `ci`,
-`chore`. Escopos típicos: `ui`, `install`, `icon`, `tray`, `update`, `store`,
+Types used in history: `feat`, `fix`, `perf`, `docs`, `test`, `ci`, `chore`.
+Typical scopes: `ui`, `install`, `icon`, `tray`, `update`, `store`,
 `scheduler`, `enforcer`, `watchers`, `daemon`, `ipc`, `autostart`, `focus`,
 `changelog`, `readme`, `release`.
 
-Exemplos reais do repositório:
+Real examples from the repository:
 
 ```
 refactor(cli): remove interactive TUI, open web UI by default
@@ -271,92 +330,81 @@ ci(release): allow different binary counts in linux archive
 test(daemon): cover real store-statewatch-scheduler chain
 ```
 
-Regras:
+Rules:
 
-- **Um commit por mudança coesa.** Não misture feature + docs + fix no mesmo
-  commit.
-- Atualização de docs (CHANGELOG/README) vira commit próprio
+- **One commit per coherent change.** Don't mix feature + docs + fix in the
+  same commit.
+- Docs updates (CHANGELOG/README) get their own commit
   (`docs(changelog): ...` / `docs(readme): ...`).
-- Descrição curta (≤ ~72 chars), minúscula, no imperativo.
-- Não commitar artefatos de build (`bin/`, executáveis compilados) — confira
-  `git status` antes. **Porém** `focusguard-daemon.exe.manifest`, os
-  `rsrc_windows_*.syso` e os `versioninfo.json` **são versionados de propósito**
-  (o `go build` e o CI precisam deles): commite-os normalmente junto do código.
-- Commit de código **com testes passando** (seção 5).
+- Short description (≤ ~72 chars), lowercase, imperative mood.
+- Don't commit build artifacts (`bin/`, compiled executables) — check
+  `git status` first. **However**, `focusguard-daemon.exe.manifest`, the
+  `rsrc_windows_*.syso` files, and `versioninfo.json` **are intentionally
+  versioned** (`go build` and CI need them): commit them normally alongside
+  code.
+- Commit code **with passing tests** (section 5).
 
 ---
 
-## 8. Padrões de release
+## 8. Release
 
-Versionamento **SemVer** (atual: **v0.8.0**). O changelog segue **Keep a
-Changelog** em PT-BR, com seções datadas e categorias por emoji
-(por exemplo `### 🛡 ...`).
-
-### Checklist de release
-
-1. **CHANGELOG** — mova o conteúdo de `## [Unreleased]` para uma nova seção
-   `## [x.y.z] - AAAA-MM-DD`, com resumo em PT-BR por tema (emoji + bullets),
-   e deixe um `## [Unreleased]` vazio no topo.
-2. **Commits** — faça os commits convencionais (incl. `docs(changelog)`).
-3. **Tag** — crie tag anotada e faça push da branch + tag:
-   ```bash
-   git tag -a vX.Y.Z -m "Release vX.Y.Z"
-   git push origin main
-   git push origin vX.Y.Z
-   ```
-4. **CI gera a release** — o push de tag `v*` dispara `.github/workflows/
-   release.yml`, que roda o GoReleaser (hooks: `go mod tidy`, regenera o ícone
-   via `go run ./cmd/focusguard-icon`, roda `go-winres make` para
-   daemon/CLI/tray, e compila a **UI web** com `npm ci && npm run build` —
-   exige Node.js no runner). A release sai **automaticamente** no GitHub com os
-   arquivos por plataforma.
-
-### O que a release contém
-
-- **Windows** (`focusguard_<v>_windows_<arch>.zip`): `focusguard.exe`,
-  `focusguard-daemon.exe`, `focusguard-watchdog.exe`, `focusguard-tray.exe`,
-  `focusguard-web.exe` + `install-daemon.ps1` + `install.txt`.
-- **Linux** (`focusguard_<v>_linux_<arch>.tar.gz`): binários (incl.
-  `focusguard-web`) + `focusguard.service` + `install-linux.sh` +
-  `focusguard-tray.desktop` + README/CHANGELOG + `focusguard.ico`/`.png` +
-  `install.txt`.
-
-### Detalhes
-
-- A **versão do daemon é injetada via ldflags** no GoReleaser:
-  `-X main.daemonVersion={{ .Version }}`. Builds de dev sem ldflags ficam com
-  `0.0.0-dev` → auto-update desativado (comportamento esperado).
-- Os `versioninfo.json` têm campos `file_version`/`product_version` fixos
-  (atualmente defasados) — são **informativos** nos metadados do `.exe`;
-  a versão funcional vem do tag/ldflags. Atualize-os junto da release se quiser
-  metadados corretos.
-- O changelog do GoReleaser exclui commits `docs:`, `test:` e `chore:`.
-- **Requisito local para `make winres` / hooks**: `go-winres` instalado
-  (`go install github.com/tc-hib/go-winres@latest`).
+This is a rare process, done manually by the maintainer — **not a standard
+agent task**. If asked to cut a release, follow `docs/release.md` (full
+checklist for CHANGELOG, tagging, and what CI/GoReleaser produces) and
+confirm the version/tag with the person before pushing the tag
+(`git push origin vX.Y.Z` triggers publication — not silently reversible).
 
 ---
 
-## 9. Armadilhas conhecidas
+## 9. Known pitfalls
 
-- **Daemon exige admin** — manifest `requireAdministrator`; testes do daemon
-  não rodam em shell sem elevação (Windows). Não "corrija" isso: é intencional.
-- **Tray sem admin** — o tray **não pode** ganhar manifest; ele roda como
-  usuário comum e não pode exigir elevação.
-- **BOM do ps1** — editar `install-daemon.ps1` e re-salvar sem BOM UTF-8 quebra
-  acentos no PowerShell 5.1. Preserve `EF BB BF`.
-- **Não regresse o fallback de ícone** — o tray usa **exclusivamente** o ícone
-  embutido (`RT_GROUP_ICON` + `RT_ICON`); não reintroduza renderização em
-  runtime nem dependa de assets externos em runtime.
-- **Update reinicia na hora** — aplicar um update encerra a sessão pomodoro (best-effort) e reinicia o daemon imediatamente (exit 1 → supervisor sobe a versão nova). Os bloqueios **não** são tocados: ficam no state.json e o boot os restaura. Não reintroduza o mecanismo de restart pendente (pendingRestart/watcher) — foi removido de propósito.
-- **goreleaser hook sem shell** — o hook do `go-winres` usa `sh -c` porque o
-  GoReleaser executa hooks sem shell; mantenha o condicional ao mexer.
-- **IPC é o contrato** — CLI/tray/daemon/**web** conversam pelo mesmo protocolo;
-  mudar o payload do `internal/ipc` exige atualizar os três lados + o
-  `focusguard-ui/src/api/types.ts`.
-- **`focusguard-web` é user-space** — nunca adicione manifest/admin a ele; o
-  daemon é o único processo privilegiado. O web apenas faz proxy via `ipc.Client`.
-- **Porta 48902** — `httpapi.DefaultAddr` é a fonte única (server + CLI probe);
-  não espalhe a porta por literais.
-- **`git status` antes de commit** — `.syso`, `focusguard.ico/.png` e
-  `versioninfo.json` são versionados e mudam ao rodar `make icon`/`make winres`;
-  não os ignore nem os commite por engano em commits de código.
+- **Daemon requires admin** — `requireAdministrator` manifest; daemon tests
+  don't run in a non-elevated shell (Windows). Don't "fix" this: it's
+  intentional.
+- **Tray without admin** — the tray **cannot** get a manifest; it runs as a
+  regular user and must not require elevation.
+- **ps1 BOM** — editing `install-daemon.ps1` and re-saving without a UTF-8
+  BOM breaks accented characters in PowerShell 5.1. Preserve `EF BB BF`.
+- **Don't regress the icon fallback** — the tray uses **exclusively** the
+  embedded icon (`RT_GROUP_ICON` + `RT_ICON`); don't reintroduce runtime
+  rendering or depend on external assets at runtime.
+- **Update restarts immediately** — applying an update ends the pomodoro
+  session (best-effort) and restarts the daemon right away (exit 1 →
+  supervisor brings up the new version). Blocks are **not** touched: they
+  stay in `state.json` and boot restores them. Don't reintroduce the
+  pending-restart mechanism (`pendingRestart`/watcher) — it was removed on
+  purpose.
+- **GoReleaser hook has no shell** — the `go-winres` hook uses `sh -c`
+  because GoReleaser runs hooks without a shell; keep that conditional when
+  touching it.
+- **IPC is the contract** — CLI/tray/daemon/**web** all speak the same
+  protocol; changing the `internal/ipc` payload requires updating all three
+  sides + `focusguard-ui/src/api/types.ts`.
+- **`focusguard-web` is user-space** — never add a manifest/admin to it;
+  the daemon is the only privileged process. Web only proxies via
+  `ipc.Client`.
+- **Port 48902** — `httpapi.DefaultAddr` is the single source of truth
+  (server + CLI probe); don't scatter the port across literals.
+- **`git status` before committing** — `.syso`, `focusguard.ico/.png`, and
+  `versioninfo.json` are versioned and change when you run `make icon`/
+  `make winres`; don't ignore them or accidentally commit them in code
+  commits.
+
+---
+
+## 10. Glossary
+
+- **Self-write** — a write to `hosts`/`state.json` made by the daemon
+  itself; marked via hash so watchers don't treat it as external tampering.
+- **Reconcile** — the scheduler re-reads state from RAM and reapplies
+  active blocks at the OS level (hosts + firewall), fixing any drift.
+- **Source of truth in RAM** — `state.json` reflects what the scheduler
+  holds in memory, not the other way around; on conflict, RAM wins and disk
+  is rewritten.
+- **Tamper** — any external change (outside the daemon) to `hosts` or
+  `state.json` that removes or weakens an active block.
+- **Best-effort** — an operation whose failure is logged but never aborts
+  the daemon (e.g., a failed notification, a failed autostart registration).
+- **Smart Recovery** — the watchdog's automatic rollback when an update
+  leaves the daemon broken (not to be confused with "manual unblock",
+  which doesn't exist).
