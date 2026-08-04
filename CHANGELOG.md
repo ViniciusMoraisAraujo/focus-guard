@@ -7,6 +7,19 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.10.1] - 2026-08-04
+
+### 🐛 Instalador .msi: correção do job `windows-msi` no CI
+
+- **Correção do cross-drive `filepath.Rel`** — o `go-msi` resolve os caminhos
+  do `wix.json` para absolutos e os torna relativos ao diretório de trabalho
+  (`--out`). No runner do CI o checkout fica em `D:` e o diretório temporário
+  do SO em `C:`, o que abortava a geração com
+  `Rel: can't make D:/... relative to C:/...`. O `build-msi.sh` agora aponta
+  `--out` para um diretório dentro do repositório (`build/go-msi`),
+  mantendo tudo na mesma unidade — junto com `--path`/`--src` em caminhos
+  absolutos Windows, o .msi volta a ser gerado e anexado à release.
+
 ## [0.10.0] - 2026-08-04
 
 ### 📦 Instalador único .msi (Windows)
