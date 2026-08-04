@@ -160,6 +160,42 @@ func TestActionForwardsRequestAndReturnsResponse(t *testing.T) {
 	}
 }
 
+// TestActionUpdateUsesLongTimeout garante que o update NÃO usa o timeout curto
+// do proxy (5s): aplicar uma atualização baixa/extrai/troca os binários e pode
+// levar mais tempo — com 5s a UI reportaria "daemon indisponível" mesmo quando
+// o update continua e termina com sucesso.
+func TestActionUpdateUsesLongTimeout(t *testing.T) {
+	sc := &stubClient{}
+	h := newTestServer(sc, uiFS())
+	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+		`{"action":"update","channel":"stable"}`, "127.0.0.1:48902")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if sc.lastReq.Action != "update" || sc.lastReq.Channel != "stable" {
+		t.Fatalf("request não repassado: %+v", sc.lastReq)
+	}
+	if sc.withTimeout != updateTimeout {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, updateTimeout)
+	}
+}
+
+func TestActionUpdateCheckUsesLongTimeout(t *testing.T) {
+	sc := &stubClient{}
+	h := newTestServer(sc, uiFS())
+	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+		`{"action":"update-check"}`, "127.0.0.1:48902")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if sc.lastReq.Action != "update-check" {
+		t.Fatalf("request não repassado: %+v", sc.lastReq)
+	}
+	if sc.withTimeout != updateTimeout {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, updateTimeout)
+	}
+}
+
 func TestActionDaemonDownReturns503(t *testing.T) {
 	sc := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 		return nil, errFake("connection refused")

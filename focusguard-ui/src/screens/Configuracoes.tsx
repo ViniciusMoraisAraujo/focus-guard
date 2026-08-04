@@ -25,7 +25,6 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { useApp } from "@/context";
 import { formatMinutes } from "@/hooks/useCountdown";
 import { cn } from "@/lib/utils";
-
 const GOALS = [
   { label: "2 h", minutes: 120 },
   { label: "4 h", minutes: 240 },
@@ -40,6 +39,9 @@ export function Configuracoes() {
   const [channel, setChannel] = useState("stable");
   const [confirmUpdate, setConfirmUpdate] = useState(false);
   const [updating, setUpdating] = useState(false);
+  const [checking, setChecking] = useState(false);
+  const [updateInfo, setUpdateInfo] = useState<string | null>(null);
+  const [updateError, setUpdateError] = useState<string | null>(null);
 
   const goalNs = status?.goal ?? 0;
   const goalMin = Math.round(goalNs / 6e10);
@@ -70,20 +72,55 @@ export function Configuracoes() {
     void setGoal(Math.round(n));
   };
 
+  // checkUpdate consulta o GitHub na hora (update-check, sem aplicar) e mostra
+  // o resultado na tela — com loading enquanto espera e erro inline se falhar.
+  const checkUpdate = async () => {
+    setChecking(true);
+    setUpdateError(null);
+    setUpdateInfo(null);
+    try {
+      const resp = await api.updateCheck(channel);
+      if (!resp.success) {
+        setUpdateError(resp.message ?? "Falha ao verificar atualizações.");
+        return;
+      }
+      setUpdateInfo(
+        resp.update_available
+          ? `Nova versão ${resp.update_version} disponível (atual: ${resp.current_version}).`
+          : "Nenhuma atualização disponível.",
+      );
+      await refresh();
+    } catch (e) {
+      setUpdateError(
+        e instanceof DaemonError ? e.message : "Erro ao verificar atualizações.",
+      );
+    } finally {
+      setChecking(false);
+    }
+  };
+
   const applyUpdate = async () => {
     setUpdating(true);
+    setUpdateError(null);
+    setUpdateInfo(null);
     try {
       const res = await execAction({ action: "update", channel });
+      if (res.ok) {
+        setUpdateInfo(
+          res.message || "Atualização aplicada — o daemon reinicia ao final.",
+        );
+      } else {
+        setUpdateError(res.message || "Falha ao atualizar.");
+      }
       toast(
-        res.message ||
-          (res.ok
-            ? "Atualização aplicada — o daemon reinicia ao final."
-            : "Falha ao atualizar."),
+        res.message || (res.ok ? "Atualização aplicada." : "Falha ao atualizar."),
         res.ok ? "ok" : "err",
       );
       await refresh();
     } catch (e) {
-      toast(e instanceof DaemonError ? e.message : "Erro ao atualizar.", "err");
+      const msg = e instanceof DaemonError ? e.message : "Erro ao atualizar.";
+      setUpdateError(msg);
+      toast(msg, "err");
     } finally {
       setUpdating(false);
       setConfirmUpdate(false);
@@ -140,7 +177,16 @@ export function Configuracoes() {
             <Download className="size-4 text-muted-foreground" />
             <h3 className="font-heading text-base font-semibold">Atualizações</h3>
           </div>
-          {status?.update_available ? (
+          {updateError ? (
+            <p
+              className="-mt-3 rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive"
+              role="alert"
+            >
+              {updateError}
+            </p>
+          ) : updateInfo ? (
+            <p className="-mt-3 text-sm text-muted-foreground">{updateInfo}</p>
+          ) : status?.update_available ? (
             <p className="-mt-3 text-sm">
               Nova versão <strong>{status.update_version}</strong> disponível (atual:{" "}
               {status.current_version}).
@@ -153,7 +199,7 @@ export function Configuracoes() {
           )}
           <div className="flex max-w-60 flex-col gap-2">
             <Label htmlFor="channel">Canal</Label>
-            <Select value={channel} onValueChange={setChannel}>
+            <Select value={channel} onValueChange={setChannel} disabled={checking || updating}>
               <SelectTrigger id="channel" className="w-full">
                 <SelectValue />
               </SelectTrigger>
@@ -164,10 +210,18 @@ export function Configuracoes() {
             </Select>
           </div>
           <div className="flex flex-wrap gap-2">
-            <Button variant="outline" onClick={() => void refresh()} disabled={busy}>
-              <RefreshCw /> Verificar
+            <Button
+              variant="outline"
+              onClick={() => void checkUpdate()}
+              disabled={checking || updating || !daemonUp}
+            >
+              <RefreshCw className={cn(checking && "animate-spin")} />
+              {checking ? "Verificando…" : "Verificar"}
             </Button>
-            <Button disabled={!status?.update_available} onClick={() => setConfirmUpdate(true)}>
+            <Button
+              disabled={!status?.update_available || checking || updating}
+              onClick={() => setConfirmUpdate(true)}
+            >
               <Download /> Aplicar atualização
             </Button>
           </div>
@@ -244,6 +298,7 @@ export function Configuracoes() {
               Cancelar
             </Button>
             <Button onClick={() => void applyUpdate()} disabled={updating}>
+              <Download className={cn(updating && "animate-pulse")} />
               {updating ? "Atualizando…" : "Atualizar"}
             </Button>
           </DialogFooter>

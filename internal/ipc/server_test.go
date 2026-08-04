@@ -528,6 +528,127 @@ func TestServer_Update_PassesApplyFlag(t *testing.T) {
 	}
 }
 
+func TestServer_UpdateCheck_NotConfigured(t *testing.T) {
+	server := setupTestServer(t)
+
+	resp := executeRequest(t, server, Request{Action: "update-check"})
+
+	if resp.Success {
+		t.Error("expected failure when no update checker is configured")
+	}
+	if !strings.Contains(resp.Message, "não configurado") {
+		t.Errorf("expected 'não configurado' message, got %q", resp.Message)
+	}
+}
+
+func TestServer_UpdateCheck_NoUpdate(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update-check"})
+
+	if !resp.Success {
+		t.Fatalf("expected success, got: %s", resp.Message)
+	}
+	if resp.UpdateAvailable {
+		t.Error("expected UpdateAvailable=false when no update exists")
+	}
+	if resp.CurrentVersion != "1.0.0" {
+		t.Errorf("expected CurrentVersion 1.0.0, got %q", resp.CurrentVersion)
+	}
+	if !strings.Contains(resp.Message, "Nenhuma atualização disponível") {
+		t.Errorf("expected up-to-date message, got %q", resp.Message)
+	}
+}
+
+func TestServer_UpdateCheck_Available(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		status: UpdateStatus{
+			CurrentVersion: "1.0.0",
+			NewVersion:     "1.1.0",
+			Available:      true,
+		},
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update-check"})
+
+	if !resp.Success {
+		t.Fatalf("expected success, got: %s", resp.Message)
+	}
+	if !resp.UpdateAvailable {
+		t.Error("expected UpdateAvailable=true")
+	}
+	if resp.UpdateVersion != "1.1.0" {
+		t.Errorf("expected UpdateVersion 1.1.0, got %q", resp.UpdateVersion)
+	}
+	if !strings.Contains(resp.Message, "Atualização disponível") {
+		t.Errorf("expected available message, got %q", resp.Message)
+	}
+}
+
+// TestServer_UpdateCheck_DoesNotApply verifies update-check runs check-only:
+// apply=false é repassado ao checker e o hook de restart nunca é disparado.
+func TestServer_UpdateCheck_DoesNotApply(t *testing.T) {
+	server := setupTestServer(t)
+	notified := make(chan struct{}, 1)
+	server.SetOnUpdateApplied(func() { notified <- struct{}{} })
+	fake := &fakeUpdateChecker{
+		status: UpdateStatus{
+			CurrentVersion: "1.0.0",
+			NewVersion:     "1.1.0",
+			Available:      true,
+		},
+	}
+	server.SetUpdateChecker(fake)
+
+	resp := executeRequest(t, server, Request{Action: "update-check"})
+
+	if !resp.Success {
+		t.Fatalf("expected success, got: %s", resp.Message)
+	}
+	if fake.apply {
+		t.Error("expected checker.Check to be called with apply=false")
+	}
+	select {
+	case <-notified:
+		t.Fatal("update-check não deveria disparar o hook de restart")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+func TestServer_UpdateCheck_CheckerError(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetUpdateChecker(&fakeUpdateChecker{
+		err: errors.New("github api unreachable"),
+	})
+
+	resp := executeRequest(t, server, Request{Action: "update-check"})
+
+	if resp.Success {
+		t.Error("expected failure when checker returns error")
+	}
+	if !strings.Contains(resp.Message, "github api unreachable") {
+		t.Errorf("expected error message, got %q", resp.Message)
+	}
+}
+
+func TestServer_UpdateCheck_PassesChannel(t *testing.T) {
+	server := setupTestServer(t)
+	fake := &fakeUpdateChecker{
+		status: UpdateStatus{CurrentVersion: "1.0.0"},
+	}
+	server.SetUpdateChecker(fake)
+
+	executeRequest(t, server, Request{Action: "update-check", Channel: "beta"})
+
+	if fake.channel != "beta" {
+		t.Errorf("expected checker.Check channel=beta, got %q", fake.channel)
+	}
+}
+
 // TestServer_Update_PassesChannel verifies the update action forwards the
 // requested release channel ("stable"/"beta") to the checker — the daemon
 // configures the updater to include prereleases only for the beta channel.

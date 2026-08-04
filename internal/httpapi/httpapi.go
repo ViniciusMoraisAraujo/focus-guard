@@ -31,6 +31,13 @@ const DefaultAddr = "127.0.0.1:48902"
 // the tray's SendWithTimeout discipline: a hung daemon must never hang the UI.
 const proxyTimeout = 5 * time.Second
 
+// updateTimeout bounds the update/update-check actions, which can take minutes:
+// they make the daemon download the release archive, extract it and swap the
+// binaries. It must be at least as generous as the daemon's own IPC budget
+// (internal/ipc.updateTimeout) so a slow-but-successful update is not reported
+// as "daemon indisponível".
+const updateTimeout = 150 * time.Second
+
 // maxBodyBytes caps the action payload. Actions carry a handful of fields
 // (domains, durations); anything bigger is a local process misbehaving.
 const maxBodyBytes = 1 << 20 // 1 MiB
@@ -141,7 +148,13 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	resp, err := s.client.SendWithTimeout(req, proxyTimeout)
+	// O update/update-check precisam de um orçamento generoso (download +
+	// troca de binários); as demais ações usam o timeout curto do proxy.
+	timeout := proxyTimeout
+	if req.Action == "update" || req.Action == "update-check" {
+		timeout = updateTimeout
+	}
+	resp, err := s.client.SendWithTimeout(req, timeout)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable,
 			"daemon indisponível — verifique se o serviço FocusGuard está rodando")

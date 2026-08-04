@@ -18,6 +18,16 @@ import (
 	"focusguard/internal/tamper"
 )
 
+// updateTimeout bounds the update/update-check IPC actions. Aplicar uma
+// atualização baixa o release (~13 MB), extrai e troca os binários — 30s era
+// apertado em conexões lentas; 120s cobre download + apply sem travar o daemon
+// (cada conexão IPC roda na própria goroutine, então pings não são bloqueados).
+const updateTimeout = 120 * time.Second
+
+// errUpdateNotConfigured is returned when no update checker is wired up
+// (dev builds).
+var errUpdateNotConfigured = errors.New("auto-update não configurado")
+
 type Server struct {
 	scheduler       *scheduler.Scheduler
 	listener        net.Listener
@@ -232,6 +242,27 @@ func (s *Server) RefreshUpdateStatus(ctx context.Context) (UpdateStatus, error) 
 	// A checagem em background sempre usa o canal estável — nunca surpreender
 	// um usuário estável com uma prerelease.
 	st, err := c.Check(ctx, false, "")
+	if err != nil {
+		return st, err
+	}
+	s.mu.Lock()
+	s.updateStatus = st
+	s.mu.Unlock()
+	return st, nil
+}
+
+// runUpdateCheck runs the update checker for the given channel, caches the
+// result (so the status action surfaces it) and returns it. apply=true also
+// applies the update to the binaries. Shared by the "update" and
+// "update-check" IPC actions.
+func (s *Server) runUpdateCheck(ctx context.Context, apply bool, channel string) (UpdateStatus, error) {
+	s.mu.RLock()
+	c := s.updateChecker
+	s.mu.RUnlock()
+	if c == nil {
+		return UpdateStatus{}, errUpdateNotConfigured
+	}
+	st, err := c.Check(ctx, apply, channel)
 	if err != nil {
 		return st, err
 	}
@@ -641,23 +672,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 	case "update":
-		s.mu.RLock()
-		c := s.updateChecker
-		s.mu.RUnlock()
-		if c == nil {
-			resp = Response{Success: false, Message: "auto-update não configurado"}
-			break
-		}
-		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-		st, err := c.Check(ctx, true, req.Channel)
+		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
+		st, err := s.runUpdateCheck(ctx, true, req.Channel)
 		cancel()
 		if err != nil {
 			resp = Response{Success: false, Message: err.Error()}
 			break
 		}
-		s.mu.Lock()
-		s.updateStatus = st
-		s.mu.Unlock()
 		resp = Response{
 			Success:         true,
 			UpdateAvailable: st.Available,
@@ -668,6 +689,29 @@ func (s *Server) handleConnection(conn net.Conn) {
 			updateApplied = true
 			resp.Message = fmt.Sprintf("Atualização aplicada: %s → %s. O daemon será reiniciado automaticamente.", st.CurrentVersion, st.NewVersion)
 		} else if st.Available {
+			resp.Message = fmt.Sprintf("Atualização disponível: %s → %s", st.CurrentVersion, st.NewVersion)
+		} else {
+			resp.Message = "Nenhuma atualização disponível."
+		}
+
+	case "update-check":
+		// Verificação explícita (sem aplicar): usada pela UI no botão
+		// "Verificar" para consultar o GitHub na hora, em vez de ler o cache
+		// do status (que só atualiza a cada 24h).
+		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
+		st, err := s.runUpdateCheck(ctx, false, req.Channel)
+		cancel()
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{
+			Success:         true,
+			UpdateAvailable: st.Available,
+			UpdateVersion:   st.NewVersion,
+			CurrentVersion:  st.CurrentVersion,
+		}
+		if st.Available {
 			resp.Message = fmt.Sprintf("Atualização disponível: %s → %s", st.CurrentVersion, st.NewVersion)
 		} else {
 			resp.Message = "Nenhuma atualização disponível."

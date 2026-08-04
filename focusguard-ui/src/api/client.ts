@@ -4,6 +4,12 @@ import type {
   ScheduleRule,
 } from "./types";
 
+// UPDATE_ACTION_TIMEOUT_MS: o proxy web (internal/httpapi) dá 150s para as
+// ações update/update-check (download + troca de binários). O timeout do
+// browser precisa ser maior para não cancelar um update que ainda vai
+// terminar bem — 170s cobre o proxy com folga.
+const UPDATE_ACTION_TIMEOUT_MS = 170_000;
+
 // DaemonError distingue falha de conectividade (daemon/servidor fora do ar)
 // de uma resposta de erro do daemon (que chega como success:false normal).
 export class DaemonError extends Error {
@@ -13,16 +19,29 @@ export class DaemonError extends Error {
   }
 }
 
-async function action(req: ApiRequest): Promise<ApiResponse> {
+// action envia uma ação ao servidor web. timeoutMs opcional protege contra
+// respostas que nunca chegam (ex.: o proxy IPC travou); o padrão deixa o
+// servidor web decidir (proxyTimeout/updateTimeout do lado Go).
+async function action(req: ApiRequest, timeoutMs?: number): Promise<ApiResponse> {
+  const controller = timeoutMs ? new AbortController() : undefined;
+  const timer = timeoutMs
+    ? window.setTimeout(() => controller?.abort(), timeoutMs)
+    : undefined;
   let res: Response;
   try {
     res = await fetch("/api/action", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
+      signal: controller?.signal,
     });
   } catch {
+    if (controller?.signal.aborted) {
+      throw new DaemonError("A operação demorou demais e foi cancelada. Tente novamente.");
+    }
     throw new DaemonError("Não foi possível falar com o servidor web. Ele está rodando?");
+  } finally {
+    if (timer) window.clearTimeout(timer);
   }
   if (res.status === 503) {
     throw new DaemonError("O daemon FocusGuard está desligado.");
@@ -101,5 +120,8 @@ export const api = {
   tamperLog: () => action({ action: "tamper-log" }),
 
   // Atualização
-  update: (channel?: string) => action({ action: "update", channel }),
+  update: (channel?: string) =>
+    action({ action: "update", channel }, UPDATE_ACTION_TIMEOUT_MS),
+  updateCheck: (channel?: string) =>
+    action({ action: "update-check", channel }, UPDATE_ACTION_TIMEOUT_MS),
 };
