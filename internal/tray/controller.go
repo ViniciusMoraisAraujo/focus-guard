@@ -46,12 +46,12 @@ type Daemon interface {
 type Controller struct {
 	systray      Systray
 	daemon       Daemon
-	openTUI      func()
+	openPanel    func()
 	statusItem   MenuItem
 	blockParent  MenuItem
 	presetParent MenuItem
 	updateItem   MenuItem
-	tuiItem      MenuItem
+	panelItem    MenuItem
 	quitItem     MenuItem
 	quickItems   []MenuItem
 
@@ -66,8 +66,8 @@ type Controller struct {
 }
 
 // NewController builds a tray controller.
-func NewController(s Systray, d Daemon, openTUI func()) *Controller {
-	return &Controller{systray: s, daemon: d, openTUI: openTUI}
+func NewController(s Systray, d Daemon, openPanel func()) *Controller {
+	return &Controller{systray: s, daemon: d, openPanel: openPanel}
 }
 
 // Run blocks until the tray exits.
@@ -91,7 +91,7 @@ func (c *Controller) onReady() {
 	c.systray.AddSeparator()
 	c.updateItem = c.systray.AddMenuItem("🔄 Verificar atualização", "Verificar e aplicar nova versão do daemon")
 	c.systray.AddSeparator()
-	c.tuiItem = c.systray.AddMenuItem("💻 Abrir TUI", "Abrir a interface de terminal")
+	c.panelItem = c.systray.AddMenuItem("🌐 Abrir painel", "Abrir a interface web no navegador")
 	c.systray.AddSeparator()
 	c.quitItem = c.systray.AddMenuItem("🚪 Sair", "Sair do FocusGuard (o daemon continua rodando)")
 
@@ -115,9 +115,9 @@ func (c *Controller) onReady() {
 		}
 	}()
 	go func() {
-		for range c.tuiItem.Clicked() {
-			if c.openTUI != nil {
-				c.openTUI()
+		for range c.panelItem.Clicked() {
+			if c.openPanel != nil {
+				c.openPanel()
 			}
 		}
 	}()

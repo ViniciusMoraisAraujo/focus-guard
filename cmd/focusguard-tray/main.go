@@ -5,7 +5,6 @@ package main
 import (
 	"log"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 
@@ -22,7 +21,7 @@ func main() {
 	// impede o tray de abrir.
 	ensureTrayAutostart()
 
-	ctrl := tray.NewController(tray.NewSystray(), ipc.NewClient(), openTUI)
+	ctrl := tray.NewController(tray.NewSystray(), ipc.NewClient(), openPanel)
 	ctrl.Run()
 }
 
@@ -51,7 +50,13 @@ func ensureTrayAutostart() {
 	}
 }
 
-func openTUI() {
+// openPanel abre a interface web no navegador. O comando "focusguard web"
+// (sem argumentos também) sonda o focusguard-web, sobe o servidor por demanda
+// se necessário e abre o navegador padrão. O spawn do CLI é específico por
+// plataforma (startCli): no Windows sem janela de console (HideWindow), no
+// Linux em nova sessão (setsid), para não deixar um terminal visível preso ao
+// tray.
+func openPanel() {
 	exe, err := os.Executable()
 	if err != nil {
 		return
@@ -60,17 +65,5 @@ func openTUI() {
 	if runtime.GOOS == "windows" {
 		cli += ".exe"
 	}
-	if runtime.GOOS == "windows" {
-		_ = exec.Command("cmd", "/c", "start", "", cli).Start()
-		return
-	}
-	for _, term := range [][]string{
-		{"x-terminal-emulator", "-e", cli},
-		{"gnome-terminal", "--", cli},
-	} {
-		if path, err := exec.LookPath(term[0]); err == nil {
-			_ = exec.Command(path, term[1:]...).Start()
-			return
-		}
-	}
+	startCli(cli)
 }

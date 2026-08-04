@@ -210,7 +210,7 @@ func TestController_BuildsMenuAndShowsStatus(t *testing.T) {
 	if s.getTitle() != "FocusGuard" {
 		t.Errorf("title = %q, want FocusGuard", s.getTitle())
 	}
-	for _, title := range []string{"📊 Status", "🚫 Bloco rápido", "🔄 Verificar atualização", "💻 Abrir TUI", "🚪 Sair"} {
+	for _, title := range []string{"📊 Status", "🚫 Bloco rápido", "🔄 Verificar atualização", "🌐 Abrir painel", "🚪 Sair"} {
 		if s.itemByTitle(title) == nil {
 			t.Errorf("menu item %q nao criado", title)
 		}
@@ -334,18 +334,18 @@ func TestController_DaemonDownShowsTooltip(t *testing.T) {
 	}
 }
 
-func TestController_OpenTUIIsCalledOnClick(t *testing.T) {
+func TestController_OpenPanelIsCalledOnClick(t *testing.T) {
 	s := newMockSystray()
 	d := &mockDaemon{resp: &ipc.Response{Success: true}}
 	opened := make(chan struct{})
 	c := NewController(s, d, func() { close(opened) })
 	c.Run()
 
-	s.itemByTitle("💻 Abrir TUI").click()
+	s.itemByTitle("🌐 Abrir painel").click()
 	select {
 	case <-opened:
 	case <-time.After(2 * time.Second):
-		t.Fatal("openTUI nao foi chamado")
+		t.Fatal("openPanel nao foi chamado")
 	}
 }
 
