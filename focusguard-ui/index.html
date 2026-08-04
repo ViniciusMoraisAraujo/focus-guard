@@ -3,10 +3,20 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <meta name="color-scheme" content="dark" />
+    <meta name="color-scheme" content="dark light" />
     <script>
-      // Evita flash de tema claro antes do React montar (tema fixo escuro).
-      document.documentElement.classList.add("dark");
+      // Evita flash de tema errado antes do React montar: aplica o tema salvo
+      // (next-themes persiste em localStorage "theme"), padrão escuro.
+      (function () {
+        try {
+          var t = localStorage.getItem("theme");
+          var dark = t !== "light"; // ausente ou "dark" => escuro
+          document.documentElement.classList.toggle("dark", dark);
+          document.documentElement.style.colorScheme = dark ? "dark" : "light";
+        } catch (e) {
+          document.documentElement.classList.add("dark");
+        }
+      })();
     </script>
     <title>FocusGuard — Painel de foco</title>
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />

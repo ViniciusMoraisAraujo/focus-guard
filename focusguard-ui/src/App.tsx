@@ -35,6 +35,7 @@ import {
 } from "./components/ui/sheet";
 import { TooltipProvider } from "./components/ui/tooltip";
 import { Toaster } from "./components/ui/sonner";
+import { ThemeToggle } from "./components/theme-toggle";
 import { AppProvider, useApp, type Screen } from "./context";
 import { cn } from "./lib/utils";
 
@@ -174,6 +175,7 @@ function SidebarContent({
             {status?.current_version ? `v${status.current_version}` : "—"}
           </Badge>
           <DaemonStatus />
+          <ThemeToggle className="ml-auto" />
         </div>
       </div>
     </>
@@ -224,7 +226,10 @@ function MobileHeader({
         <span className="font-heading text-sm font-semibold">FocusGuard</span>
       </div>
 
-      <DaemonStatus pill className="ml-auto" />
+      <div className="ml-auto flex items-center gap-1">
+        <ThemeToggle />
+        <DaemonStatus pill />
+      </div>
     </header>
   );
 }
