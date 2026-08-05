@@ -2248,6 +2248,11 @@ func TestWebExePath(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		want += ".exe"
 	}
+	// Sob `go test`, os.Executable() aponta para o binário de teste do pacote
+	// (focusguard.test): a extensão ".test" entra no nome derivado
+	// (focusguard-web.test). Tolera esse sufixo — o que interessa é o nome do
+	// irmão (focusguard-web[.exe]) ser derivado do executável atual.
+	p = strings.TrimSuffix(p, ".test")
 	if !strings.HasSuffix(p, want) {
 		t.Errorf("webExePath = %q, deveria terminar com %q", p, want)
 	}
