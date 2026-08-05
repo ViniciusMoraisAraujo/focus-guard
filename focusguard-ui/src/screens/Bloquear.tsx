@@ -45,14 +45,17 @@ export function Bloquear() {
   const [busy, setBusy] = useState(false);
   const [conflict, setConflict] = useState<ConflictState | null>(null);
 
-  const effectiveDuration = duration === "custom" && customMin ? `${customMin}m` : duration;
+  const effectiveDuration = duration === "custom" ? `${customMin}m` : duration;
 
   const submit = async (resolve?: { extend?: boolean; replace?: boolean }) => {
-    if (!resolve) {
-      if (!effectiveDuration) {
-        toast("Escolha uma duração.", "err");
+    if (duration === "custom") {
+      const n = Number(customMin);
+      if (!customMin.trim() || !Number.isFinite(n) || n <= 0) {
+        toast("Digite a duração em minutos (maior que zero).", "err");
         return;
       }
+    }
+    if (!resolve) {
       if (mode === "preset" && !preset) {
         toast("Escolha uma categoria.", "err");
         return;
