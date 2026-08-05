@@ -375,6 +375,17 @@ confirm the version/tag with the person before pushing the tag
   stay in `state.json` and boot restores them. Don't reintroduce the
   pending-restart mechanism (`pendingRestart`/watcher) — it was removed on
   purpose.
+- **Windows update stops watchdog + tray before the swap** — before
+  `UpdateToAll`, the daemon stops the `FocusGuardWatchdog` service and
+  `taskkill`s the tray (running GUI exes are locked against rename — the
+  "Acesso negado" bug). The tray only returns at the next login (HKCU Run).
+  If the daemon's own exe still refuses to be renamed (it can't stop
+  itself), `UpdateToAll` schedules the whole suite via
+  `MoveFileEx(MOVEFILE_DELAY_UNTIL_REBOOT)` and returns
+  `ErrScheduledOnReboot`: the daemon keeps running the old version, clears
+  `update.inprogress` and reports `PendingReboot` (no restart). The staged
+  files use `.<name>.new` (never `focusguard-daemon-new*`, which
+  `CleanupStale` would sweep before reboot).
 - **GoReleaser hook has no shell** — the `go-winres` hook uses `sh -c`
   because GoReleaser runs hooks without a shell; keep that conditional when
   touching it.
