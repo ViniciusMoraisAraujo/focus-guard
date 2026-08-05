@@ -26,8 +26,12 @@ var (
 )
 
 // defaultInterval is how often the guard scans the process table while a
-// session is active.
-const defaultInterval = 5 * time.Second
+// session is active. Each scan spawns a platform enumeration
+// (tasklist/pkill in the real daemon profile: 26.6% of CPU while a session is
+// active, each spawn ~hundreds of ms with AV on Windows) — 15s keeps the
+// response time to launching a blocked app reasonable while cutting the
+// enumeration cost 3x versus the previous 5s.
+const defaultInterval = 15 * time.Second
 
 // Guard periodically scans running processes and kills any that match the
 // denylist, but only while the session is active.
