@@ -32,6 +32,9 @@ const (
 )
 
 func main() {
+	stopLog := setupLogging()
+	defer stopLog()
+
 	if runtime.GOOS == "windows" {
 		if tryRunAsService() {
 			return

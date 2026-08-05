@@ -14,6 +14,11 @@ import (
 )
 
 func main() {
+	stopLog := setupLogging()
+	defer stopLog()
+
+	log.Println("[FocusGuard Tray] Tray iniciado.")
+
 	// Auto-registro do tray no HKCU Run do usuário logado. O .msi (instalação
 	// per-machine roda como SYSTEM) não consegue gravar a chave Run do usuário
 	// real, então o tray se registra no primeiro launch — garantindo que ele

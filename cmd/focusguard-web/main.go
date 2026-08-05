@@ -25,6 +25,9 @@ import (
 var embeddedAssets embed.FS
 
 func main() {
+	stopLog := setupLogging()
+	defer stopLog()
+
 	addr := flag.String("addr", httpapi.DefaultAddr, "endereço de escuta (somente localhost)")
 	assetsDir := flag.String("assets", "", "diretório alternativo com a UI compilada (dev; vazio = embutida)")
 	flag.Parse()
