@@ -30,6 +30,14 @@ export interface AuthState {
   isAdmin: boolean;
 }
 
+/**
+ * Estado "não autenticado" — um AuthState de verdade (authenticated: false),
+ * NUNCA null. No gate do App.tsx, null significa "ainda checando a sessão" e
+ * renderiza o splash para sempre: confundir os dois tornava a tela de login
+ * inalcançável (a UI ficava presa no ícone pulsando com o ping respondendo ok).
+ */
+const NOT_AUTHENTICATED: AuthState = { authenticated: false, username: "", isAdmin: false };
+
 interface AppState {
   /** null = ainda verificando; true/false = daemon acessível. */
   daemonUp: boolean | null;
@@ -121,7 +129,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const logout = async () => {
     await apiLogout();
-    setAuthBoth(null);
+    setAuthBoth(NOT_AUTHENTICATED);
     setStatus(null);
     setPresets([]);
     setStats(null);
@@ -142,7 +150,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         });
         void refresh();
       } else {
-        setAuthBoth(null);
+        setAuthBoth(NOT_AUTHENTICATED);
       }
     })();
     return () => {
