@@ -1,7 +1,10 @@
 package httpapi
 
 import (
+	"bytes"
+	"compress/gzip"
 	"encoding/json"
+	"io"
 	"io/fs"
 	"net/http"
 	"net/http/httptest"
@@ -283,6 +286,70 @@ func TestSecurityHeaders(t *testing.T) {
 		if rec.Header().Get(hdr) == "" {
 			t.Errorf("header %s ausente", hdr)
 		}
+	}
+}
+
+func TestActionGzipWhenAccepted(t *testing.T) {
+	// payload grande o bastante para o gzip valer a pena: o estado real com
+	// muitos bloqueios (1.4 MB a 1000) é o alvo do P1 de compressão.
+	resp := &ipc.Response{Success: true, Message: strings.Repeat("abc", 20000)}
+	payload, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+
+	stub := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
+		return resp, nil
+	}}
+	h := newTestServer(stub, uiFS())
+
+	req := httptest.NewRequest("POST", "/api/action", strings.NewReader(`{"action":"status"}`))
+	req.Host = "127.0.0.1:48902"
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Encoding", "gzip")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("Content-Encoding = %q, want gzip", rec.Header().Get("Content-Encoding"))
+	}
+	if rec.Header().Get("Vary") == "" {
+		t.Error("Vary: Accept-Encoding ausente")
+	}
+	if rec.Body.Len() >= len(payload) {
+		t.Errorf("gzip não reduziu o payload: %d bytes >= %d", rec.Body.Len(), len(payload))
+	}
+
+	gz, err := gzip.NewReader(bytes.NewReader(rec.Body.Bytes()))
+	if err != nil {
+		t.Fatalf("corpo não é gzip válido: %v", err)
+	}
+	plain, err := io.ReadAll(gz)
+	if err != nil {
+		t.Fatalf("decompress: %v", err)
+	}
+	if got := strings.TrimSuffix(string(plain), "\n"); got != string(payload) {
+		t.Errorf("corpo descompactado != payload original (%d bytes)", len(plain))
+	}
+}
+
+func TestActionGzipOnlyWhenAccepted(t *testing.T) {
+	stub := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
+		return &ipc.Response{Success: true, Message: "ok"}, nil
+	}}
+	h := newTestServer(stub, uiFS())
+	rec := doJSON(t, h, "POST", "/api/action", "application/json", `{"action":"status"}`, "127.0.0.1:48902")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	if rec.Header().Get("Content-Encoding") == "gzip" {
+		t.Error("sem Accept-Encoding não deve gzipar")
+	}
+	if got := rec.Body.String(); got != "{\"success\":true,\"message\":\"ok\"}\n" {
+		t.Errorf("corpo = %q, want JSON simples", got)
 	}
 }
 

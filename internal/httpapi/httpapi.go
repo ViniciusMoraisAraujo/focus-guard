@@ -10,6 +10,7 @@
 package httpapi
 
 import (
+	"compress/gzip"
 	"encoding/json"
 	"io"
 	"io/fs"
@@ -68,7 +69,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/ping", s.handlePing)
 	mux.HandleFunc("/api/action", s.handleAction)
 	mux.HandleFunc("/", s.handleStatic)
-	return s.secure(mux)
+	return s.secure(gzipMiddleware(mux))
 }
 
 // secure applies the loopback-only guards to every request.
@@ -84,6 +85,45 @@ func (s *Server) secure(next http.Handler) http.Handler {
 		w.Header().Set("Content-Security-Policy",
 			"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'")
 		next.ServeHTTP(w, r)
+	})
+}
+
+// gzipResponseWriter compresses body writes; WriteHeader and headers pass
+// through to the underlying ResponseWriter.
+type gzipResponseWriter struct {
+	http.ResponseWriter
+	Writer io.Writer
+}
+
+func (g *gzipResponseWriter) Write(b []byte) (int, error) {
+	return g.Writer.Write(b)
+}
+
+func (g *gzipResponseWriter) Flush() {
+	if gw, ok := g.Writer.(*gzip.Writer); ok {
+		gw.Flush()
+	}
+	if f, ok := g.ResponseWriter.(http.Flusher); ok {
+		f.Flush()
+	}
+}
+
+// gzipMiddleware compresses the response body when the client advertises gzip
+// support. The status payload — the full block list — is the heaviest object
+// the web UI fetches (1.4 MB at 1000 blocks) and compresses to ~10%;
+// browsers always send Accept-Encoding, so the UI gets the compact form
+// automatically while plain clients (tests, curl) keep the uncompressed JSON.
+func gzipMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Add("Vary", "Accept-Encoding")
+		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
+			next.ServeHTTP(w, r)
+			return
+		}
+		w.Header().Set("Content-Encoding", "gzip")
+		gz := gzip.NewWriter(w)
+		defer gz.Close()
+		next.ServeHTTP(&gzipResponseWriter{ResponseWriter: w, Writer: gz}, r)
 	})
 }
 
