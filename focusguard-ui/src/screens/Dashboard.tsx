@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   BarChart3,
   CalendarDays,
@@ -50,14 +50,25 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
 
   const goalNs = status?.goal ?? 0;
   const goalMin = goalNs / 6e10;
+
+  // Tick de 1s apenas durante sessão ativa, para o acumulado andar em tempo
+  // real (o status/statísticas só atualizam a cada 10s/60s).
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    if (!pomo?.started_at) return;
+    setNow(Date.now());
+    const id = setInterval(() => setNow(Date.now()), 1000);
+    return () => clearInterval(id);
+  }, [pomo?.started_at, pomo?.active]);
+
   const todayFocusNs = useMemo(() => {
     let ns = stats?.stats?.per_day.at(-1)?.duration ?? 0;
     if (pomo?.started_at) {
-      const elapsed = Math.max(0, Date.now() - new Date(pomo.started_at).getTime());
+      const elapsed = Math.max(0, now - new Date(pomo.started_at).getTime());
       ns += elapsed * 1e6; // ms → ns
     }
     return ns;
-  }, [stats, pomo?.started_at, pomo?.active]);
+  }, [stats, pomo?.started_at, pomo?.active, now]);
   const todayFocusMs = todayFocusNs / 1e6;
   const progress = goalMin > 0 ? Math.min(1, todayFocusMs / (goalMin * 60_000)) : 0;
 
