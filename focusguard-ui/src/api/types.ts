@@ -138,4 +138,13 @@ export interface ApiResponse {
   pomodoro_cycles?: number;
   conflict?: boolean;
   conflict_block?: Block;
+  // Servidor DNS sinkhole ("Rei da Rede"): espelha dnsserver.Status + o flag
+  // persistido dns_enabled (vem no status quando o daemon tem o controller).
+  dns_enabled?: boolean;
+  dns_listening?: boolean;
+  dns_addr?: string;
+  dns_upstream?: string;
+  dns_queries?: number;
+  dns_blocked?: number;
+  dns_bind_error?: string;
 }

@@ -5,6 +5,7 @@ import {
   Leaf,
   Lock,
   MoreHorizontal,
+  Network,
   Settings,
   ShieldCheck,
   Siren,
@@ -193,6 +194,8 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
             </Card>
           )}
 
+          <DnsCard onNavigate={onNavigate} />
+
           <SectionTitle count={blocks.length}>Bloqueios ativos</SectionTitle>
           {blocks.length === 0 ? (
             <EmptyCard>
@@ -228,6 +231,43 @@ function BlockCard({ block }: { block: Block }) {
           <span>início {formatClock(block.started_at)}</span>
           <span>fim {formatClock(block.expires_at)}</span>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+/** Card do servidor DNS: status resumido + atalho para a tela Rede. */
+function DnsCard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
+  const { status } = useApp();
+  const enabled = status?.dns_enabled === true;
+  const listening = status?.dns_listening === true;
+  const queries = status?.dns_queries ?? 0;
+  const blocked = status?.dns_blocked ?? 0;
+
+  return (
+    <Card className="flex-row items-center justify-between gap-4">
+      <CardContent className="flex flex-1 flex-wrap items-center gap-3 px-5 py-4">
+        <div
+          className={cn(
+            "grid size-10 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
+            listening && "bg-emerald-500/10 text-emerald-500 ring-emerald-500/30",
+          )}
+        >
+          <Network className="size-5" />
+        </div>
+        <div className="min-w-0 flex-1">
+          <p className="text-sm font-medium">Servidor DNS</p>
+          <p className="text-xs text-muted-foreground">
+            {listening
+              ? `Ativo — ${queries.toLocaleString("pt-BR")} consultas, ${blocked.toLocaleString("pt-BR")} bloqueios`
+              : enabled
+                ? "Habilitado, mas parado"
+                : "Desativado"}
+          </p>
+        </div>
+        <Button variant="outline" size="sm" onClick={() => onNavigate("rede")}>
+          Gerenciar
+        </Button>
       </CardContent>
     </Card>
   );

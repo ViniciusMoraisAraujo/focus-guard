@@ -7,6 +7,7 @@ import {
   History,
   Lock,
   Menu,
+  Network,
   Settings,
   Shield,
   ShieldCheck,
@@ -23,6 +24,7 @@ import { Estatisticas } from "./screens/Estatisticas";
 import { Panico } from "./screens/Panico";
 import { Pomodoro } from "./screens/Pomodoro";
 import { Presets } from "./screens/Presets";
+import { Rede } from "./screens/Rede";
 import { Seguranca } from "./screens/Seguranca";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
@@ -46,6 +48,7 @@ const NAV: { id: Screen; label: string; icon: typeof Shield }[] = [
   { id: "pomodoro", label: "Pomodoro", icon: Timer },
   { id: "agenda", label: "Agenda", icon: CalendarDays },
   { id: "apps", label: "Apps", icon: Ban },
+  { id: "rede", label: "Rede", icon: Network },
   { id: "presets", label: "Presets", icon: Folder },
   { id: "stats", label: "Estatísticas", icon: BarChart3 },
   { id: "seguranca", label: "Segurança", icon: History },
@@ -99,6 +102,7 @@ function Shell() {
           {screen === "pomodoro" && <Pomodoro />}
           {screen === "agenda" && <Agenda />}
           {screen === "apps" && <Apps />}
+          {screen === "rede" && <Rede />}
           {screen === "presets" && <Presets />}
           {screen === "stats" && <Estatisticas />}
           {screen === "seguranca" && <Seguranca />}

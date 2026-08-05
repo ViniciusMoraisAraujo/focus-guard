@@ -129,6 +129,11 @@ export const api = {
   // Histórico de burla
   tamperLog: () => action({ action: "tamper-log" }),
 
+  // Servidor DNS sinkhole ("Rei da Rede")
+  dnsStart: () => action({ action: "dns-start" }),
+  dnsStop: () => action({ action: "dns-stop" }),
+  dnsStatus: () => action({ action: "dns-status" }),
+
   // Atualização
   update: (channel?: string) =>
     action({ action: "update", channel }, UPDATE_ACTION_TIMEOUT_MS),

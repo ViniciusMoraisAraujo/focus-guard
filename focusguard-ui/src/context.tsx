@@ -18,6 +18,7 @@ export type Screen =
   | "apps"
   | "presets"
   | "stats"
+  | "rede"
   | "seguranca"
   | "config";
 
