@@ -107,6 +107,11 @@ export interface ApiRequest {
   ics_preset?: string;
   extend?: boolean;
   replace?: boolean;
+  // Usuários (user-add / user-remove / user-set-password)
+  user_name?: string;
+  user_password?: string;
+  // Upstream DNS (dns-set-upstream)
+  upstream?: string;
 }
 
 export interface ApiResponse {
@@ -147,4 +152,6 @@ export interface ApiResponse {
   dns_queries?: number;
   dns_blocked?: number;
   dns_bind_error?: string;
+  // Usuários da interface web (user-list) — nomes apenas, nunca hashes.
+  users?: string[];
 }

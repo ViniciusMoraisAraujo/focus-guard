@@ -1,5 +1,17 @@
-import { useState } from "react";
-import { Download, RefreshCw, Settings, ShieldCheck, Target } from "lucide-react";
+import { useEffect, useState } from "react";
+import {
+  Download,
+  KeyRound,
+  Loader2,
+  Plus,
+  RefreshCw,
+  Settings,
+  ShieldCheck,
+  Target,
+  Trash2,
+  UserRound,
+  Users,
+} from "lucide-react";
 import { api, DaemonError, execAction } from "@/api/client";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -33,7 +45,7 @@ const GOALS = [
 ];
 
 export function Configuracoes() {
-  const { status, toast, daemonUp, refresh } = useApp();
+  const { status, toast, daemonUp, refresh, auth } = useApp();
   const [customGoal, setCustomGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const [channel, setChannel] = useState("stable");
@@ -256,6 +268,8 @@ export function Configuracoes() {
         </CardContent>
       </Card>
 
+      {auth && <UsersCard />}
+
       <Card className="max-w-2xl">
         <CardContent className="flex flex-col gap-3 px-5 py-5">
           <div className="flex items-center gap-2">
@@ -317,5 +331,351 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
       <dt className="text-muted-foreground">{label}</dt>
       <dd className="font-medium">{children}</dd>
     </div>
+  );
+}
+
+// UsersCard — gestão de contas da interface web. O admin lista, cria, remove e
+// troca senhas de qualquer usuário; um usuário comum só vê a própria conta
+// (a troca de senha própria também passa pelo user-set-password).
+function UsersCard() {
+  const { auth, toast } = useApp();
+  const isAdmin = auth?.isAdmin === true;
+  const self = auth?.username ?? "";
+
+  const [users, setUsers] = useState<string[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+
+  // Novo usuário
+  const [addOpen, setAddOpen] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPass, setNewPass] = useState("");
+
+  // Trocar senha
+  const [pwTarget, setPwTarget] = useState<string | null>(null);
+  const [pw1, setPw1] = useState("");
+  const [pw2, setPw2] = useState("");
+
+  // Remover
+  const [removeTarget, setRemoveTarget] = useState<string | null>(null);
+
+  const load = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const resp = await api.usersList();
+      if (resp.success) setUsers(resp.users ?? []);
+      else setError(resp.message ?? "Falha ao listar usuários.");
+    } catch (e) {
+      setError(e instanceof DaemonError ? e.message : "Falha ao listar usuários.");
+    } finally {
+      setLoading(false);
+    }
+  };
+  // Só o admin lista usuários (user-list é 403 para o resto).
+  useEffect(() => {
+    if (isAdmin) void load();
+  }, [isAdmin]);
+
+  const addUser = async () => {
+    const name = newName.trim().toLowerCase();
+    if (!name) {
+      toast("Informe um nome de usuário.", "err");
+      return;
+    }
+    if (newPass.length < 8) {
+      toast("A senha precisa de ao menos 8 caracteres.", "err");
+      return;
+    }
+    setBusy(true);
+    try {
+      const resp = await api.userAdd(name, newPass);
+      toast(
+        resp.message ?? (resp.success ? "Usuário criado." : "Falha ao criar usuário."),
+        resp.success ? "ok" : "err",
+      );
+      if (resp.success) {
+        setAddOpen(false);
+        setNewName("");
+        setNewPass("");
+        void load();
+      }
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Falha ao criar usuário.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const changePassword = async () => {
+    if (!pwTarget) return;
+    if (pw1.length < 8) {
+      toast("A senha precisa de ao menos 8 caracteres.", "err");
+      return;
+    }
+    if (pw1 !== pw2) {
+      toast("As senhas não conferem.", "err");
+      return;
+    }
+    setBusy(true);
+    try {
+      const resp = await api.userSetPassword(pwTarget, pw1);
+      toast(
+        resp.message ?? (resp.success ? "Senha atualizada." : "Falha ao atualizar a senha."),
+        resp.success ? "ok" : "err",
+      );
+      if (resp.success) {
+        setPwTarget(null);
+        setPw1("");
+        setPw2("");
+      }
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Falha ao atualizar a senha.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const removeUser = async () => {
+    if (!removeTarget) return;
+    setBusy(true);
+    try {
+      const resp = await api.userRemove(removeTarget);
+      toast(
+        resp.message ?? (resp.success ? "Usuário removido." : "Falha ao remover usuário."),
+        resp.success ? "ok" : "err",
+      );
+      if (resp.success) {
+        setRemoveTarget(null);
+        void load();
+      }
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Falha ao remover usuário.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const openPassword = (target: string) => {
+    setPwTarget(target);
+    setPw1("");
+    setPw2("");
+  };
+
+  return (
+    <>
+      <Card className="max-w-2xl">
+        <CardContent className="flex flex-col gap-3 px-5 py-5">
+          <div className="flex items-center gap-2">
+            <Users className="size-4 text-muted-foreground" />
+            <h3 className="font-heading text-base font-semibold">
+              {isAdmin ? "Usuários" : "Minha conta"}
+            </h3>
+            {isAdmin && (
+              <Button
+                size="sm"
+                className="ml-auto"
+                onClick={() => setAddOpen(true)}
+                disabled={busy}
+              >
+                <Plus /> Novo usuário
+              </Button>
+            )}
+          </div>
+
+          {isAdmin ? (
+            loading ? (
+              <p className="text-sm text-muted-foreground">Carregando usuários…</p>
+            ) : error ? (
+              <p role="alert" className="text-sm text-destructive">
+                {error}
+              </p>
+            ) : (
+              <ul className="divide-y">
+                {users.map((u) => (
+                  <li key={u} className="flex items-center gap-3 py-2.5 text-sm">
+                    <UserRound className="size-4 shrink-0 text-muted-foreground" />
+                    <span className="font-medium">{u}</span>
+                    {u === "admin" && <Badge variant="secondary">admin</Badge>}
+                    {u === self && <Badge variant="outline">você</Badge>}
+                    <div className="ml-auto flex items-center gap-1">
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Trocar senha de ${u}`}
+                        title="Trocar senha"
+                        onClick={() => openPassword(u)}
+                        disabled={busy}
+                      >
+                        <KeyRound />
+                      </Button>
+                      {u !== "admin" && (
+                        <Button
+                          variant="ghost"
+                          size="icon-sm"
+                          aria-label={`Remover ${u}`}
+                          title="Remover usuário"
+                          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+                          onClick={() => setRemoveTarget(u)}
+                          disabled={busy}
+                        >
+                          <Trash2 />
+                        </Button>
+                      )}
+                    </div>
+                  </li>
+                ))}
+              </ul>
+            )
+          ) : (
+            <div className="flex items-center gap-3 py-1 text-sm">
+              <UserRound className="size-4 shrink-0 text-muted-foreground" />
+              <span className="font-medium">{self}</span>
+              <Badge variant="outline">você</Badge>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="ml-auto"
+                onClick={() => openPassword(self)}
+                disabled={busy}
+              >
+                <KeyRound /> Trocar minha senha
+              </Button>
+            </div>
+          )}
+
+          <p className="text-xs text-muted-foreground">
+            {isAdmin
+              ? "O usuário admin é único e não pode ser removido."
+              : "Altere sua senha de acesso à interface web."}
+          </p>
+        </CardContent>
+      </Card>
+
+      {/* Novo usuário */}
+      <Dialog open={addOpen} onOpenChange={setAddOpen}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Novo usuário</DialogTitle>
+            <DialogDescription asChild>
+              <p>
+                Crie uma conta para outra pessoa acessar a interface. A senha
+                precisa de ao menos 8 caracteres.
+              </p>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-username">Usuário</Label>
+              <Input
+                id="new-username"
+                autoComplete="off"
+                placeholder="ex.: maria"
+                value={newName}
+                onChange={(e) => setNewName(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="new-password">Senha</Label>
+              <Input
+                id="new-password"
+                type="password"
+                autoComplete="new-password"
+                placeholder="mínimo 8 caracteres"
+                value={newPass}
+                onChange={(e) => setNewPass(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setAddOpen(false)} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button onClick={() => void addUser()} disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" /> : <Plus />} Criar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Trocar senha */}
+      <Dialog
+        open={pwTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setPwTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              {pwTarget === self ? "Trocar minha senha" : `Trocar senha de ${pwTarget}`}
+            </DialogTitle>
+            <DialogDescription asChild>
+              <p>Defina uma nova senha (mínimo 8 caracteres).</p>
+            </DialogDescription>
+          </DialogHeader>
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pw1">Nova senha</Label>
+              <Input
+                id="pw1"
+                type="password"
+                autoComplete="new-password"
+                value={pw1}
+                onChange={(e) => setPw1(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="pw2">Confirmar nova senha</Label>
+              <Input
+                id="pw2"
+                type="password"
+                autoComplete="new-password"
+                value={pw2}
+                onChange={(e) => setPw2(e.target.value)}
+                disabled={busy}
+              />
+            </div>
+          </div>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setPwTarget(null)} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button onClick={() => void changePassword()} disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" /> : <KeyRound />} Salvar
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+
+      {/* Remover usuário */}
+      <Dialog
+        open={removeTarget !== null}
+        onOpenChange={(o) => {
+          if (!o) setRemoveTarget(null);
+        }}
+      >
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>Remover {removeTarget}?</DialogTitle>
+            <DialogDescription asChild>
+              <p>O usuário perderá o acesso à interface web imediatamente.</p>
+            </DialogDescription>
+          </DialogHeader>
+          <DialogFooter>
+            <Button variant="ghost" onClick={() => setRemoveTarget(null)} disabled={busy}>
+              Cancelar
+            </Button>
+            <Button variant="destructive" onClick={() => void removeUser()} disabled={busy}>
+              {busy ? <Loader2 className="animate-spin" /> : <Trash2 />} Remover
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
