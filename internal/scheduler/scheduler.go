@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -206,6 +207,10 @@ type Scheduler struct {
 	bootstrapped bool
 	refreshStop  chan struct{}
 	dns          *dnsCache
+	// dnsEnabled persists whether the DNS sinkhole server should run. It is a
+	// setting, not a live state: starting/stopping the actual listener is the
+	// daemon's job, which reads this after the bootstrap Reconcile.
+	dnsEnabled bool
 	// snapshot is the immutable read cache for ListBlocks, rebuilt on demand so
 	// query paths never iterate the source-of-truth map. Writers only mark it
 	// stale (invalidateSnapshot); the first reader after a mutation rebuilds it
@@ -315,9 +320,13 @@ func refreshResolvedIPs(entries []refreshEntry, timeout time.Duration, resolve f
 }
 
 // statesEqual reports whether two states are semantically identical. Any
-// difference (missing/extra domain, altered timestamps or IPs) means the disk
-// copy no longer mirrors the in-memory state and must be restored.
+// difference (missing/extra domain, altered timestamps or IPs, a flipped
+// DNS-enabled flag) means the disk copy no longer mirrors the in-memory state
+// and must be restored.
 func statesEqual(a, b *store.State) bool {
+	if a.DNSEnabled != b.DNSEnabled {
+		return false
+	}
 	if len(a.Blocks) != len(b.Blocks) {
 		return false
 	}
@@ -329,7 +338,7 @@ func statesEqual(a, b *store.State) bool {
 		if ab.Domain != bb.Domain || !ab.StartedAt.Equal(bb.StartedAt) || !ab.ExpiresAt.Equal(bb.ExpiresAt) {
 			return false
 		}
-		if !slices.Equal(ab.ResolvedIPs, bb.ResolvedIPs) {
+		if !slices.Equal(ab.ResolvedIPs, bb.ResolvedIPs) || !slices.Equal(ab.Allowlist, bb.Allowlist) {
 			return false
 		}
 	}
@@ -341,7 +350,7 @@ func (s *Scheduler) ramState() *store.State {
 	for domain, block := range s.blocks {
 		blocks[domain] = block
 	}
-	return &store.State{Version: 1, Blocks: blocks}
+	return &store.State{Version: 1, Blocks: blocks, DNSEnabled: s.dnsEnabled}
 }
 
 // invalidateSnapshot marks the ListBlocks snapshot stale so the next read
@@ -377,6 +386,7 @@ func (s *Scheduler) Reconcile() error {
 		for domain, block := range state.Blocks {
 			s.blocks[domain] = block
 		}
+		s.dnsEnabled = state.DNSEnabled
 		s.invalidateSnapshot()
 		s.bootstrapped = true
 		changed = true
@@ -786,6 +796,7 @@ func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Du
 		StartedAt:   now,
 		ExpiresAt:   now.Add(duration),
 		ResolvedIPs: dedupeIPs(allowlistIPs),
+		Allowlist:   dedupeDomains(allowlistDomains),
 	}
 
 	s.mu.Lock()
@@ -939,6 +950,69 @@ func (s *Scheduler) HasActiveBlocks() bool {
 		}
 	}
 	return false
+}
+
+// IsBlocked reports whether the DNS sinkhole server should answer a query for
+// domain with a dead address. It walks up the parent domains (a block on
+// example.com also covers www.example.com and a.b.example.com), ignores
+// expired blocks, and treats an active all-internet sentinel as "block
+// everything except the allowlisted domains". Matching is case-insensitive and
+// the trailing dot is tolerated, so callers (the DNS server) may pass either
+// the raw wire name or the already-normalized one.
+func (s *Scheduler) IsBlocked(domain string) bool {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if sentinel, ok := s.blocks[enforcer.AllInternetDomain]; ok && sentinel.IsActive() {
+		return !domainAllowlisted(sentinel.Allowlist, domain)
+	}
+
+	for labels := domain; labels != ""; {
+		if b, ok := s.blocks[labels]; ok && b.IsActive() {
+			return true
+		}
+		i := strings.IndexByte(labels, '.')
+		if i < 0 {
+			break
+		}
+		labels = labels[i+1:]
+	}
+	return false
+}
+
+// domainAllowlisted reports whether domain equals an allowlist entry or sits
+// under one (allowlist "example.com" covers "api.example.com").
+func domainAllowlisted(allowlist []string, domain string) bool {
+	for _, a := range allowlist {
+		a = strings.ToLower(a)
+		if domain == a || strings.HasSuffix(domain, "."+a) {
+			return true
+		}
+	}
+	return false
+}
+
+// SetDNSEnabled persists whether the DNS sinkhole server should run. It only
+// touches the state mirror — starting/stopping the actual listener is the
+// daemon's job. Setting the same value is a no-op.
+func (s *Scheduler) SetDNSEnabled(enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dnsEnabled == enabled {
+		return nil
+	}
+	s.dnsEnabled = enabled
+	return s.store.Save(s.ramState())
+}
+
+// DNSEnabled reports whether the DNS sinkhole server should be running
+// (persisted setting, not the live listener state).
+func (s *Scheduler) DNSEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dnsEnabled
 }
 
 type ProtectionStatus struct {

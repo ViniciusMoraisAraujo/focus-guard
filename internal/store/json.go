@@ -14,6 +14,10 @@ import (
 type State struct {
 	Version int                     `json:"version"`
 	Blocks  map[string]policy.Block `json:"blocks"`
+	// DNSEnabled persists whether the DNS sinkhole server should be running
+	// (network-wide blocking). Additive field: old state files load with
+	// false, so no migration is needed.
+	DNSEnabled bool `json:"dns_enabled,omitempty"`
 }
 
 type Store struct {

@@ -7,6 +7,12 @@ type Block struct {
 	StartedAt   time.Time `json:"started_at"`
 	ExpiresAt   time.Time `json:"expires_at"`
 	ResolvedIPs []string  `json:"resolved_ips"`
+	// Allowlist names the domains still reachable under the all-internet
+	// sentinel (deep-focus mode). Only populated for the
+	// enforcer.AllInternetDomain block: the DNS sinkhole must NOT sinkhole
+	// these, so the names (not just their IPs) are carried here. Additive
+	// field — old blocks simply have an empty list.
+	Allowlist []string `json:"allowlist,omitempty"`
 }
 
 func (b *Block) IsActive() bool {

@@ -171,7 +171,80 @@ func TestLoad_ZeroByteFile_ReturnsCleanState(t *testing.T) {
 	}
 }
 
-// TestLoad_CorruptedJSON_HealsFile verifies that Load() not only returns a
+// TestStoreSaveAndLoad_AdditiveFields verifies the additive schema fields
+// round-trip: DNSEnabled (the sinkhole switch) and the all-internet block's
+// Allowlist survive a save/load cycle.
+func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "focusguard-test*")
+	if err != nil {
+		t.Fatalf("failed to make temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	s, err := NewStore(filepath.Join(tempDir, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+
+	now := time.Now()
+	state := &State{
+		Version:    1,
+		DNSEnabled: true,
+		Blocks: map[string]policy.Block{
+			"*all-internet*": {
+				Domain:      "*all-internet*",
+				StartedAt:   now,
+				ExpiresAt:   now.Add(time.Hour),
+				ResolvedIPs: []string{"1.2.3.4"},
+				Allowlist:   []string{"docs.com"},
+			},
+		},
+	}
+	if err := s.Save(state); err != nil {
+		t.Fatalf("failed to save state: %v", err)
+	}
+
+	loaded, err := s.Load()
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if !loaded.DNSEnabled {
+		t.Error("DNSEnabled não sobreviveu ao round-trip")
+	}
+	sentinel := loaded.Blocks["*all-internet*"]
+	if len(sentinel.Allowlist) != 1 || sentinel.Allowlist[0] != "docs.com" {
+		t.Errorf("Allowlist = %v, want [docs.com]", sentinel.Allowlist)
+	}
+}
+
+// TestLoad_LegacyStateFile_DefaultsDNSOff verifies that a state file written
+// before the DNS field existed loads with DNSEnabled=false — no migration
+// required for the additive field.
+func TestLoad_LegacyStateFile_DefaultsDNSOff(t *testing.T) {
+	tempDir, err := os.MkdirTemp("", "focusguard-test*")
+	if err != nil {
+		t.Fatalf("failed to make temp dir: %v", err)
+	}
+	defer os.RemoveAll(tempDir)
+
+	dbPath := filepath.Join(tempDir, "state.json")
+	if err := os.WriteFile(dbPath, []byte(`{"version":1,"blocks":{}}`), 0644); err != nil {
+		t.Fatalf("failed to write legacy state: %v", err)
+	}
+
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("failed to create store: %v", err)
+	}
+	state, err := s.Load()
+	if err != nil {
+		t.Fatalf("failed to load state: %v", err)
+	}
+	if state.DNSEnabled {
+		t.Error("legacy state should load with DNSEnabled=false")
+	}
+}
+
 // clean state but also rewrites the corrupted disk copy, so a later Reconcile
 // with empty RAM cannot mistake corruption for "in sync" — the file heals
 // itself and never stays corrupted until the next restart.
