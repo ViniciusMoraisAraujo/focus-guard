@@ -164,6 +164,7 @@ implementation details belong in code comments, not here.
 | `analytics` | Session history (JSONL), streaks, stats, export, report |
 | `apps` | Process denylist for the process guard |
 | `autostart` | Installs/removes the service + tray autostart + desktop shortcut |
+| `dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
 | `enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
 | `filelog` | Shared file logging (append + rotation) next to the executable |
 | `fsutil` | Filesystem helpers shared by the watchers |
@@ -292,7 +293,7 @@ go test ./... -count=1 -timeout=60s   # make test
 │   ├── focusguard-icon/        # icon generator (build-time)
 │   ├── focusguard-tray/        # systray (+ icon-only versioninfo.json)
 │   └── focusguard-watchdog/    # health-check / Smart Recovery (+ versioninfo.json with icon)
-├── internal/                   # 24 packages (see the map in section 3)
+├── internal/                   # 25 packages (see the map in section 3)
 └── scripts/
     ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
     ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart)

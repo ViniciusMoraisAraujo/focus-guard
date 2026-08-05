@@ -13,7 +13,7 @@ cliente-servidor: CLI/TUI ↔ daemon via IPC (Unix socket) + tray + watchdog.
 - **5 binários** em `cmd/`: `focusguard` (CLI/TUI), `focusguard-daemon`
   (serviço; manifest `requireAdministrator`), `focusguard-tray` (systray,
   **sem** manifest/admin), `focusguard-watchdog` e `focusguard-icon` (build).
-- **23 pacotes** em `internal/` (mapa completo na seção 3 do AGENT.md).
+- **25 pacotes** em `internal/` (mapa completo na seção 3 do AGENT.md).
 - **Idiomas**: código/comentários em inglês; UI, README, CHANGELOG e docs em
   PT-BR; commits em inglês (Conventional Commits com escopo).
 - **Plataformas**: Linux (systemd/iptables, `/opt/focusguard`) e Windows

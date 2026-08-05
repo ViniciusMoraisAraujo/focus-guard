@@ -325,6 +325,37 @@ focusguard schedule add --preset social --days seg,ter,qua,qui,sex --windows 08:
 focusguard schedule import --file horario.ics --preset social
 ```
 
+#### DNS Sinkhole — "Rei da Rede" (v0.15.0+)
+
+O FocusGuard pode atuar como **servidor DNS da rede inteira**: o daemon escuta
+na porta 53 (`0.0.0.0:53`) e responde `0.0.0.0` para domínios bloqueados,
+encaminhando as demais consultas ao upstream Cloudflare Security (`1.1.1.2`,
+com filtro nativo de malware). Qualquer dispositivo que use o DNS do roteador
+fica protegido — celular, TV, console — sem depender de sessão de foco ativa
+nem do arquivo `hosts`.
+
+```bash
+focusguard dns start        # subir o sinkhole (porta 53)
+focusguard dns status       # estado, upstream, consultas e bloqueios
+focusguard dns stop         # desligar o sinkhole
+```
+
+Configuração "Rei da Rede" no roteador:
+1. **IP fixo** — no painel do roteador, reserve o IP do PC que roda o
+   FocusGuard (ex: `192.168.1.100`).
+2. **DNS primário** — no DHCP do roteador, aponte o DNS primário para o IP do
+   PC (`192.168.1.100`).
+3. **DNS secundário** — configure um DNS público de confiança (ex: `1.1.1.1`)
+   como secundário: se o PC cair, a rede continua navegando normalmente.
+
+Ao ligar o sinkhole, o FocusGuard também bloqueia **DNS-over-HTTPS (porta
+853)** para os navegadores não contornarem o bloqueio. QUIC/DoH3 (UDP 443)
+ainda não é bloqueado automaticamente nesta versão.
+
+> ⚠️ Porta 53 em uso? A causa mais comum é o ICS do Windows — desative com
+> `sc config SharedAccess start= disabled` e `net stop SharedAccess`. O
+> diagnóstico completo aparece em `focusguard dns status`.
+
 > ⚠️ O daemon (`focusguard-daemon`) precisa estar rodando para que `block` e `status` funcionem.
 
 ### Makefile
@@ -591,6 +622,21 @@ Gerencia o ciclo de vida dos bloqueios:
 - `onExpire()` — Remove bloqueio quando o tempo expira
 - `startPeriodicIPRefresh()` — Atualiza IPs periodicamente (a cada 15 min)
 - `HasActiveBlocks()` — Verifica se há bloqueios ativos (usado para bloquear shutdown)
+- `IsBlocked(domain)` — Verifica se um domínio deve ser bloqueado no DNS
+  sinkhole (mapa em RAM, case-insensitive, com allowlist do deep-focus)
+
+### DNS Server (`internal/dnsserver/`)
+
+Sinkhole DNS embutido (v0.15.0) usando `miekg/dns`:
+- Escuta **UDP+TCP na mesma porta** (`0.0.0.0:53`, bind atômico dos dois)
+- Domínio bloqueado → responde `A 0.0.0.0` / `AAAA ::` com **Status OK**
+  (nunca SERVFAIL/REFUSED — evita o fallback ao DNS secundário do roteador)
+- Domínio permitido → encaminha ao upstream Cloudflare Security (`1.1.1.2`)
+- TTL curto (60s) nas respostas de autoridade para o cache dos celulares
+  renovar rápido; panic recovery em cada conexão (a internet da rede não cai)
+- `Scheduler.IsBlocked` é o verificador de política; o flag `dns_enabled` é
+  persistido no `state.json` e o servidor sobe junto com o daemon quando ativo
+- Ao subir, o daemon também aplica o bloqueio de DoH (porta 853) via enforcer
 
 ### Enforcer (`internal/enforcer/`)
 
@@ -677,6 +723,7 @@ go test ./internal/scheduler/... -v
 | `pomodoro` | Ciclos work/rest, expiração automática, sessão estrita (--strict) |
 | `goal` | Set/Get persistido, validação de duração |
 | `analytics` | Recorder JSONL, Summarize, streak, RenderStats, ExportCSV/JSON, linhas corrompidas puladas |
+| `dnsserver` | Sinkhole (A/AAAA 0.0.0.0/::), upstream forwarding, TCP/UDP same-port bind, upstream-down SERVFAIL, controller Start/Stop idempotente |
 | `recovery` | FindRecentBackup, ShouldRollBack, RestoreFromBackup, RecoverIfNeeded |
 | `watchdog` | New() config, sendNotification, Start() com health check |
 | `cmd/focusguard` | printUsage, handleBlockCommand (domínio/preset/internet), schedule add/list/remove, preset add/remove, goal set/get, stats --export, main com flags (sem args abre a web) |

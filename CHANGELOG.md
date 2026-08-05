@@ -7,6 +7,18 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### ✨ Novas funcionalidades
+
+- **DNS Sinkhole — "Rei da Rede" (v0.15.0)** — o FocusGuard passa a atuar
+  como servidor DNS da rede inteira: o daemon escuta na porta 53 e responde
+  `0.0.0.0` para domínios bloqueados, encaminhando as demais consultas ao
+  upstream Cloudflare Security (`1.1.1.2`). Não depende de sessão de foco
+  ativa nem do arquivo `hosts` — qualquer dispositivo que use o DNS do
+  roteador fica protegido. Novos comandos: `focusguard dns start|stop|status`.
+- **Bloqueio de DNS-over-HTTPS ao ligar o sinkhole** — ao subir o servidor
+  DNS, o daemon também bloqueia a porta 853 (TCP/UDP) para navegadores não
+  contornarem o bloqueio. QUIC/DoH3 (UDP 443) não é bloqueado nesta versão.
+
 ## [0.14.0] - 2026-08-05
 
 ### 🛠️ Correções
