@@ -7,6 +7,35 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.14.0] - 2026-08-05
+
+### 🛠️ Correções
+
+- **Atualização no Windows ("Acesso negado")** — o `rename` dos binários
+  falhava porque o tray e o watchdog estavam em execução (file lock) e o
+  daemon trocava o próprio exe sem plano B. Agora, antes do swap: o daemon
+  para o serviço `FocusGuardWatchdog`, encerra o `focusguard-tray.exe` e
+  aguarda os handles liberarem; o rename ganhou retry (3× 500 ms) para locks
+  transitórios de antivírus; e o daemon é trocado **primeiro**, preservando o
+  all-or-nothing (se o próprio rename falhar, nada mais foi alterado).
+- **Update agendado para o reboot** — se o rename do daemon falhar mesmo com
+  retry, o FocusGuard não deixa a suíte pela metade: agenda a substituição
+  completa via `MoveFileEx` + `MOVEFILE_DELAY_UNTIL_REBOOT`, continua rodando
+  a versão antiga e avisa "atualização será concluída no próximo reinício" na
+  CLI, no tray e no painel web (novo estado `PendingReboot` no IPC). Após o
+  swap, o watchdog é religado; o tray reaparece no próximo login (autostart
+  via chave Run do Windows).
+- **Validação de duração custom (web)** — o botão de bloquear agora valida o
+  valor digitado antes de submeter, evitando janelas de bloqueio inválidas.
+- **Grid semanal com janelas overnight (web)** — horários de agenda que
+  atravessam a meia-noite agora são renderizados corretamente no grid.
+- **Contador de foco ao vivo (web)** — o contador da sessão ativa no dashboard
+  não congela mais; permanece atualizado enquanto a sessão roda.
+- **Presets (web)** — o rótulo do preset usa o nome original em vez do
+  slug/nome de exibição quando o fallback é acionado.
+- **Meta do foco (web)** — o botão de meta no dashboard só fica destacado
+  quando o valor exato da meta é atingido.
+
 ## [0.13.0] - 2026-08-05
 
 ### ✨ Novas funcionalidades
