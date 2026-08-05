@@ -926,12 +926,15 @@ func TestSiblingBinaries_ReturnsAllFocusGuardBinaries(t *testing.T) {
 		"/usr/local/bin/focusguard-daemon",
 		"/usr/local/bin/focusguard-tray",
 		"/usr/local/bin/focusguard-watchdog",
+		"/usr/local/bin/focusguard-web",
 	}
 	if len(got) != len(want) {
 		t.Fatalf("siblingBinaries = %v, want %v", got, want)
 	}
 	for i := range want {
-		if got[i] != want[i] {
+		// separadores de path dependem do SO (POSIX no Linux, barra invertida no
+		// Windows) — normalize para comparar em qualquer plataforma
+		if got[i] != filepath.FromSlash(want[i]) {
 			t.Errorf("siblingBinaries[%d] = %q, want %q", i, got[i], want[i])
 		}
 	}
