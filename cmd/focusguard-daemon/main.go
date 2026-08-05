@@ -62,7 +62,18 @@ var probeDaemonAlive = func() bool {
 // isAddrInUse reports whether err is a TCP bind "address already in use"
 // (EADDRINUSE / WSAEADDRINUSE) — o modo de falha por trás do crash-loop.
 func isAddrInUse(err error) bool {
+	if err == nil {
+		return false
+	}
 	if errors.Is(err, syscall.EADDRINUSE) {
+		return true
+	}
+	// No Windows o syscall.EADDRINUSE do Go não mapeia para o errno do Winsock
+	// (WSAEADDRINUSE = 10048) — sem esse check, a mensagem localizada (ex. PT-BR)
+	// não casa com as heurísticas abaixo e um daemon duplicado entraria em retry
+	// em vez de encerrar limpo.
+	var errno syscall.Errno
+	if errors.As(err, &errno) && errno == 10048 {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
@@ -241,6 +252,9 @@ func getStateFilePath() string {
 
 func startHostswatch(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hostswatch.HostsWatcher {
 	hw := newHostswatch(enf, sched)
+	if hw == nil {
+		return nil
+	}
 	if err := hw.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro ao iniciar hostswatch: %v", err)
 		return nil
@@ -251,6 +265,9 @@ func startHostswatch(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hosts
 
 func startStatewatch(rec statewatch.Reconciler, statePath string) *statewatch.StateWatcher {
 	sw := newStatewatch(rec, statePath)
+	if sw == nil {
+		return nil
+	}
 	if err := sw.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro ao iniciar statewatch: %v", err)
 		return nil

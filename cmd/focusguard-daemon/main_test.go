@@ -169,6 +169,37 @@ func TestStartStatewatch_StartFails(t *testing.T) {
 	}
 }
 
+// TestStartHostswatch_NilConstructorIsNoOp verifies startHostswatch returns nil
+// without panicking when the watcher constructor yields nil — regression for
+// the nil pointer panic that crashed TestRunDaemon_RestartOnFalseReturn (a
+// stubbed nil constructor used to reach hw.Start() on a nil receiver).
+func TestStartHostswatch_NilConstructorIsNoOp(t *testing.T) {
+	origNew := newHostswatch
+	newHostswatch = func(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hostswatch.HostsWatcher {
+		return nil
+	}
+	defer func() { newHostswatch = origNew }()
+
+	if hw := startHostswatch(nil, nil); hw != nil {
+		t.Fatal("expected nil when the constructor returns nil")
+	}
+}
+
+// TestStartStatewatch_NilConstructorIsNoOp verifies startStatewatch returns nil
+// without panicking when the watcher constructor yields nil (same defensive
+// contract as startHostswatch).
+func TestStartStatewatch_NilConstructorIsNoOp(t *testing.T) {
+	origNew := newStatewatch
+	newStatewatch = func(rec statewatch.Reconciler, statePath string) *statewatch.StateWatcher {
+		return nil
+	}
+	defer func() { newStatewatch = origNew }()
+
+	if sw := startStatewatch(nil, ""); sw != nil {
+		t.Fatal("expected nil when the constructor returns nil")
+	}
+}
+
 func TestStartStatewatch_PassesCorrectArgs(t *testing.T) {
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
