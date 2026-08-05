@@ -1,6 +1,7 @@
 package analytics
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -444,6 +445,67 @@ func TestRecorder_MissingFile_Empty(t *testing.T) {
 	}
 	if len(sessions) != 0 {
 		t.Errorf("expected no sessions, got %d", len(sessions))
+	}
+}
+
+// TestRecorder_IncrementalCache verifies the incremental read cache: repeated
+// Sessions() over an unchanged file hit the cache (no re-read), a new Record
+// extends it without a full read, and an external write invalidates it.
+func TestRecorder_IncrementalCache(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "analytics.jsonl")
+	rec := NewRecorder(path)
+	now := time.Now()
+
+	rec.Record(testSession(now.Add(-time.Hour), now, "social", time.Hour))
+
+	sessions, err := rec.Sessions()
+	if err != nil {
+		t.Fatalf("Sessions: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Fatalf("len(sessions) = %d, want 1", len(sessions))
+	}
+
+	// Cache hit: mesma Sessions sem mudança de arquivo.
+	again, err := rec.Sessions()
+	if err != nil {
+		t.Fatalf("Sessions (cache hit): %v", err)
+	}
+	if len(again) != 1 {
+		t.Fatalf("cache hit: len = %d, want 1", len(again))
+	}
+
+	// Novo Record estende o cache.
+	rec.Record(testSession(now.Add(-2*time.Hour), now.Add(-time.Hour), "video", 30*time.Minute))
+	sessions, err = rec.Sessions()
+	if err != nil {
+		t.Fatalf("Sessions (após Record): %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Fatalf("len(sessions) = %d, want 2", len(sessions))
+	}
+
+	// Append externo entre Records: o cache não pode perder o dado externo.
+	external := testSession(now.Add(-3*time.Hour), now.Add(-2*time.Hour), "study", 45*time.Minute)
+	data, err := json.Marshal(external)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0600)
+	if err != nil {
+		t.Fatalf("open external: %v", err)
+	}
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		t.Fatalf("write external: %v", err)
+	}
+	f.Close()
+
+	sessions, err = rec.Sessions()
+	if err != nil {
+		t.Fatalf("Sessions (append externo): %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("append externo perdido: len = %d, want 3", len(sessions))
 	}
 }
 

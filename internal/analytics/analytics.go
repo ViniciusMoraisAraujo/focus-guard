@@ -71,6 +71,18 @@ type Recorder struct {
 	mu     sync.Mutex
 	path   string
 	memory []Session
+
+	// cache incremental do arquivo JSONL: espelha o que este processo já leu
+	// ou gravou. fileEOF/fileMtime formam o fingerprint do arquivo no último
+	// estado conhecido — quando um Sessions() o encontra intacto, devolve o
+	// cache sem reler o disco (um `stats` repetido deixa de recomputar o
+	// arquivo inteiro). Qualquer divergência (append externo, reescrita,
+	// truncamento) força uma releitura integral: o arquivo continua sendo a
+	// fonte da verdade.
+	cache     []Session
+	loaded    bool
+	fileEOF   int64
+	fileMtime time.Time
 }
 
 // NewRecorder returns a Recorder writing to path, or an in-memory recorder
@@ -93,16 +105,44 @@ func (r *Recorder) Record(s Session) {
 	if err != nil {
 		return
 	}
+
+	// Se o arquivo estiver exatamente no estado que conhecemos antes da
+	// escrita, o append próprio estende o cache de forma limpa; caso contrário
+	// (mudança externa no meio), o cache já está obsoleto e o próximo
+	// Sessions() relê tudo — um append de outro processo não pode ser perdido.
+	clean := false
+	if fi, err := os.Stat(r.path); err == nil {
+		clean = r.loaded && fi.Size() == r.fileEOF && fi.ModTime().Equal(r.fileMtime)
+	} else if os.IsNotExist(err) {
+		clean = true // arquivo recém-criado: nada para divergir
+	}
+
 	f, err := os.OpenFile(r.path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
 	if err != nil {
 		return
 	}
 	defer f.Close()
-	_, _ = f.Write(append(data, '\n'))
+	if _, err := f.Write(append(data, '\n')); err != nil {
+		return
+	}
+
+	if fi, err := os.Stat(r.path); err == nil {
+		r.fileEOF = fi.Size()
+		r.fileMtime = fi.ModTime()
+		if clean {
+			r.cache = append(r.cache, s)
+			r.loaded = true
+		} else {
+			r.cache = nil
+			r.loaded = false
+		}
+	}
 }
 
 // Sessions returns every session read from the file (or memory), skipping
-// corrupt lines. A missing file yields an empty list without error.
+// corrupt lines. A missing file yields an empty list without error. Repeats
+// over an unchanged file hit the incremental cache instead of re-reading and
+// re-parsing the whole JSONL.
 func (r *Recorder) Sessions() ([]Session, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -111,10 +151,21 @@ func (r *Recorder) Sessions() ([]Session, error) {
 		return append([]Session(nil), r.memory...), nil
 	}
 
-	f, err := os.Open(r.path)
+	fi, err := os.Stat(r.path)
 	if os.IsNotExist(err) {
+		r.cache = nil
+		r.loaded = false
 		return nil, nil
 	}
+	if err != nil {
+		return nil, err
+	}
+
+	if r.loaded && fi.Size() == r.fileEOF && fi.ModTime().Equal(r.fileMtime) {
+		return append([]Session(nil), r.cache...), nil
+	}
+
+	f, err := os.Open(r.path)
 	if err != nil {
 		return nil, err
 	}
@@ -136,7 +187,12 @@ func (r *Recorder) Sessions() ([]Session, error) {
 	if err := sc.Err(); err != nil {
 		return nil, err
 	}
-	return sessions, nil
+
+	r.cache = sessions
+	r.loaded = true
+	r.fileEOF = fi.Size()
+	r.fileMtime = fi.ModTime()
+	return append([]Session(nil), r.cache...), nil
 }
 
 // RecentSessions returns up to `limit` sessions ordered by End descending
