@@ -188,8 +188,9 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 
 	now := time.Now()
 	state := &State{
-		Version:    1,
-		DNSEnabled: true,
+		Version:     1,
+		DNSEnabled:  true,
+		DNSUpstream: "9.9.9.9:53",
 		Blocks: map[string]policy.Block{
 			"*all-internet*": {
 				Domain:      "*all-internet*",
@@ -210,6 +211,9 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 	}
 	if !loaded.DNSEnabled {
 		t.Error("DNSEnabled não sobreviveu ao round-trip")
+	}
+	if loaded.DNSUpstream != "9.9.9.9:53" {
+		t.Errorf("DNSUpstream = %q, want 9.9.9.9:53", loaded.DNSUpstream)
 	}
 	sentinel := loaded.Blocks["*all-internet*"]
 	if len(sentinel.Allowlist) != 1 || sentinel.Allowlist[0] != "docs.com" {
@@ -242,6 +246,9 @@ func TestLoad_LegacyStateFile_DefaultsDNSOff(t *testing.T) {
 	}
 	if state.DNSEnabled {
 		t.Error("legacy state should load with DNSEnabled=false")
+	}
+	if state.DNSUpstream != "" {
+		t.Errorf("legacy state should load with DNSUpstream empty, got %q", state.DNSUpstream)
 	}
 }
 

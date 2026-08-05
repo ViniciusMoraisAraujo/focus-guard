@@ -211,6 +211,11 @@ type Scheduler struct {
 	// setting, not a live state: starting/stopping the actual listener is the
 	// daemon's job, which reads this after the bootstrap Reconcile.
 	dnsEnabled bool
+	// dnsUpstream persists the upstream resolver (host:port) the sinkhole
+	// forwards allowed queries to. Empty means the daemon default
+	// (dnsserver.DefaultUpstream). Like dnsEnabled, it is a setting mirrored
+	// to disk, not live state.
+	dnsUpstream string
 	// snapshot is the immutable read cache for ListBlocks, rebuilt on demand so
 	// query paths never iterate the source-of-truth map. Writers only mark it
 	// stale (invalidateSnapshot); the first reader after a mutation rebuilds it
@@ -324,7 +329,7 @@ func refreshResolvedIPs(entries []refreshEntry, timeout time.Duration, resolve f
 // DNS-enabled flag) means the disk copy no longer mirrors the in-memory state
 // and must be restored.
 func statesEqual(a, b *store.State) bool {
-	if a.DNSEnabled != b.DNSEnabled {
+	if a.DNSEnabled != b.DNSEnabled || a.DNSUpstream != b.DNSUpstream {
 		return false
 	}
 	if len(a.Blocks) != len(b.Blocks) {
@@ -350,7 +355,7 @@ func (s *Scheduler) ramState() *store.State {
 	for domain, block := range s.blocks {
 		blocks[domain] = block
 	}
-	return &store.State{Version: 1, Blocks: blocks, DNSEnabled: s.dnsEnabled}
+	return &store.State{Version: 1, Blocks: blocks, DNSEnabled: s.dnsEnabled, DNSUpstream: s.dnsUpstream}
 }
 
 // invalidateSnapshot marks the ListBlocks snapshot stale so the next read
@@ -387,6 +392,7 @@ func (s *Scheduler) Reconcile() error {
 			s.blocks[domain] = block
 		}
 		s.dnsEnabled = state.DNSEnabled
+		s.dnsUpstream = state.DNSUpstream
 		s.invalidateSnapshot()
 		s.bootstrapped = true
 		changed = true
@@ -1013,6 +1019,27 @@ func (s *Scheduler) DNSEnabled() bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dnsEnabled
+}
+
+// SetDNSUpstream persists the upstream resolver (host:port) the DNS sinkhole
+// forwards allowed queries to. It only touches the state mirror — applying the
+// change to the live listener is the daemon's job (Controller.SetUpstream).
+// Setting the same value is a no-op.
+func (s *Scheduler) SetDNSUpstream(upstream string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.dnsUpstream == upstream {
+		return nil
+	}
+	s.dnsUpstream = upstream
+	return s.store.Save(s.ramState())
+}
+
+// DNSUpstream reports the persisted upstream resolver ("" = daemon default).
+func (s *Scheduler) DNSUpstream() string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.dnsUpstream
 }
 
 type ProtectionStatus struct {

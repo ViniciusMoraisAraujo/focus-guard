@@ -136,6 +136,86 @@ func TestScheduler_SetDNSEnabledPersistsAndBootstraps(t *testing.T) {
 	}
 }
 
+func TestScheduler_SetDNSUpstreamPersistsAndBootstraps(t *testing.T) {
+	sched, _, st := setupTestScheduler(t)
+
+	if sched.DNSUpstream() != "" {
+		t.Errorf("DNSUpstream = %q no estado inicial, esperava vazio", sched.DNSUpstream())
+	}
+	if err := sched.SetDNSUpstream("9.9.9.9:53"); err != nil {
+		t.Fatalf("SetDNSUpstream: %v", err)
+	}
+	if got := sched.DNSUpstream(); got != "9.9.9.9:53" {
+		t.Errorf("DNSUpstream = %q após set, esperava 9.9.9.9:53", got)
+	}
+
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if state.DNSUpstream != "9.9.9.9:53" {
+		t.Errorf("store não persistiu DNSUpstream, got %q", state.DNSUpstream)
+	}
+
+	// Um novo scheduler bootstrapped do mesmo store deve restaurar o upstream.
+	sched2 := NewScheduler(st, newMockEnforcer())
+	if err := sched2.Reconcile(); err != nil {
+		t.Fatalf("Reconcile bootstrap: %v", err)
+	}
+	if got := sched2.DNSUpstream(); got != "9.9.9.9:53" {
+		t.Errorf("DNSUpstream perdido após bootstrap, got %q", got)
+	}
+}
+
+func TestScheduler_SetDNSUpstreamSameValueIsNoOp(t *testing.T) {
+	sched, _, st := setupTestScheduler(t)
+	if err := sched.SetDNSUpstream("9.9.9.9:53"); err != nil {
+		t.Fatalf("SetDNSUpstream: %v", err)
+	}
+	if err := sched.SetDNSUpstream("9.9.9.9:53"); err != nil {
+		t.Fatalf("SetDNSUpstream mesmo valor: %v", err)
+	}
+	// No-op: estado em disco continua com o mesmo valor e nada quebrou.
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if state.DNSUpstream != "9.9.9.9:53" {
+		t.Errorf("DNSUpstream = %q após no-op, esperava 9.9.9.9:53", state.DNSUpstream)
+	}
+}
+
+func TestScheduler_ReconcileRestoresTamperedDNSUpstream(t *testing.T) {
+	sched, _, st := setupTestScheduler(t)
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile bootstrap: %v", err)
+	}
+	if err := sched.SetDNSUpstream("9.9.9.9:53"); err != nil {
+		t.Fatalf("SetDNSUpstream: %v", err)
+	}
+
+	// Tamper: um editor externo zera o dns_upstream no disco.
+	if err := st.Save(&store.State{Version: 1, Blocks: map[string]policy.Block{}, DNSEnabled: false, DNSUpstream: ""}); err != nil {
+		t.Fatalf("Save tampered: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if state.DNSUpstream != "9.9.9.9:53" {
+		t.Errorf("Reconcile não restaurou DNSUpstream após tamper, got %q", state.DNSUpstream)
+	}
+	if sched.DNSUpstream() != "9.9.9.9:53" {
+		t.Error("Reconcile derrubou o upstream em RAM")
+	}
+}
+
 func TestScheduler_SetDNSEnabledFalsePersists(t *testing.T) {
 	sched, _, st := setupTestScheduler(t)
 	if err := sched.SetDNSEnabled(true); err != nil {

@@ -18,6 +18,10 @@ type State struct {
 	// (network-wide blocking). Additive field: old state files load with
 	// false, so no migration is needed.
 	DNSEnabled bool `json:"dns_enabled,omitempty"`
+	// DNSUpstream persists the upstream resolver (host:port) the sinkhole
+	// forwards allowed queries to. Additive field: empty loads fall back to
+	// dnsserver.DefaultUpstream, so no migration is needed.
+	DNSUpstream string `json:"dns_upstream,omitempty"`
 }
 
 type Store struct {

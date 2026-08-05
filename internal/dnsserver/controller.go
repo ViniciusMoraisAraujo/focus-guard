@@ -85,6 +85,49 @@ func (c *Controller) Stop() error {
 	return err
 }
 
+// SetUpstream changes the upstream resolver the server forwards allowed
+// queries to. When the server is listening, the change is applied by
+// restarting it — DNS is stateless, so the gap is instant; as with any
+// restart the live counters reset (Start resets them). When the server is
+// stopped, the new upstream is used on the next Start. An empty upstream
+// falls back to DefaultUpstream.
+func (c *Controller) SetUpstream(upstream string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if upstream == "" {
+		upstream = DefaultUpstream
+	}
+	c.upstream = upstream
+	if !c.listening || c.server == nil {
+		return nil
+	}
+
+	// Restart para aplicar: para o listener atual e sobe um novo com o
+	// upstream novo. Um bind que falha no restart deixa o estado "parado"
+	// (listening=false) com o erro visível no status — igual ao Start comum.
+	//
+	// Stop é best-effort de propósito: mesmo que ele reporte erro, os sockets
+	// normalmente fecham — seguir o restart impede que o upstream gravado e o
+	// servidor vivo divirjam (um return aqui deixaria listening=true com o
+	// server antigo e o c.upstream novo).
+	_ = c.server.Stop()
+	c.server = nil
+	c.listening = false
+	c.addr = ""
+
+	srv := New(c.checker, c.upstream)
+	if err := srv.Start(c.bindAddr); err != nil {
+		c.startErr = fmt.Errorf("%w%s", err, bindHint(c.bindAddr))
+		return c.startErr
+	}
+	c.server = srv
+	c.listening = true
+	c.addr = srv.Addr()
+	c.startedAt = time.Now()
+	c.startErr = nil
+	return nil
+}
+
 // Status snapshots the current controller state.
 func (c *Controller) Status() Status {
 	c.mu.RLock()
