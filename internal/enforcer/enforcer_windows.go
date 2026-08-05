@@ -24,7 +24,20 @@ type windowsEnforcer struct {
 	statusMu       sync.Mutex
 	lastStatus     EnforcerStatus
 	lastStatusTime time.Time
+
+	// rulesMu guards the cached FocusGuard rule inventory. A full
+	// `netsh show rule name=all` dump is the daemon's hottest syscall
+	// (existingFocusGuardRules runs on every Sync), so the inventory is cached
+	// and only re-enumerated after a mutation or the TTL expiry.
+	rulesMu       sync.Mutex
+	lastRules     map[string]bool
+	lastRulesTime time.Time
 }
+
+// rulesCacheTTL bounds how long the cached FocusGuard rule inventory is reused
+// before the firewall is re-enumerated. Mutations invalidate the cache
+// immediately, so the TTL only delays reflecting external changes.
+const rulesCacheTTL = 10 * time.Second
 
 func (e *windowsEnforcer) SetOnHostsWrite(fn func()) {
 	e.mu.Lock()
@@ -212,8 +225,29 @@ func (e *windowsEnforcer) sweepOrphanRules(existing map[string]bool, expected ma
 
 // existingFocusGuardRules consults the firewall once and returns the names of
 // every FocusGuard rule already present, so Sync/block can add only the missing
-// ones.
+// ones. The result is cached (rulesCacheTTL) because the enumeration dominates
+// the daemon's CPU when Sync runs on every tamper or hosts change; mutations
+// invalidate the cache. The caller must hold e.mu.
 func (e *windowsEnforcer) existingFocusGuardRules() map[string]bool {
+	return e.focusGuardRules(false)
+}
+
+// refreshFocusGuardRules forces a fresh firewall enumeration and replaces the
+// cache with the current rule inventory. Used by runNetshAddBatch's post-add
+// verification, which must observe the rules it just created. The caller must
+// hold e.mu.
+func (e *windowsEnforcer) refreshFocusGuardRules() map[string]bool {
+	return e.focusGuardRules(true)
+}
+
+func (e *windowsEnforcer) focusGuardRules(force bool) map[string]bool {
+	e.rulesMu.Lock()
+	defer e.rulesMu.Unlock()
+
+	if !force && e.lastRules != nil && time.Since(e.lastRulesTime) < rulesCacheTTL {
+		return e.lastRules
+	}
+
 	names := make(map[string]bool)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
@@ -221,9 +255,24 @@ func (e *windowsEnforcer) existingFocusGuardRules() map[string]bool {
 	cmd := execCommandContext(ctx, "netsh", "advfirewall", "firewall", "show", "rule", "name=all")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		// Não atualiza o cache em falha: um netsh indisponível deve ser
+		// re-tentado na próxima chamada, não mascarado por 10s de vazio.
 		return names
 	}
-	return parseFocusGuardRuleNames(out)
+	names = parseFocusGuardRuleNames(out)
+
+	e.lastRules = names
+	e.lastRulesTime = time.Now()
+	return names
+}
+
+// invalidateRuleCache drops the cached rule inventory so the next enumeration
+// re-queries the firewall. Called after every mutation so a subsequent Sync
+// re-reads the real state instead of the stale snapshot.
+func (e *windowsEnforcer) invalidateRuleCache() {
+	e.rulesMu.Lock()
+	e.lastRules = nil
+	e.rulesMu.Unlock()
 }
 
 // addFirewallRulesBatch applies one FocusGuard rule per IP with a single netsh
@@ -263,7 +312,10 @@ func (e *windowsEnforcer) runNetshAddBatch(ips []string) error {
 	}
 
 	// netsh pode mascarar falha interna com exit 0: confirma a aplicação real.
-	after := e.existingFocusGuardRules()
+	// A verificação força uma nova enumeração (refreshFocusGuardRules) e
+	// atualiza o cache com o inventário pós-add — um cache hit aqui esconderia
+	// as regras recém-criadas e invalidaria a checagem.
+	after := e.refreshFocusGuardRules()
 	for _, ip := range ips {
 		if !after[domainRuleName(ip)] {
 			return fmt.Errorf("netsh firewall add em lote incompleto: regra %s ausente", domainRuleName(ip))
@@ -409,6 +461,9 @@ func (e *windowsEnforcer) removeFirewallRule(ip string) error {
 		}
 	}
 
+	// A remoção mudou o firewall: invalida o cache de regras para o próximo
+	// Sync re-enumerar e não tentar adicionar/limpar com base no estado antigo.
+	e.invalidateRuleCache()
 	return nil
 }
 
@@ -497,6 +552,7 @@ func (e *windowsEnforcer) BlockAll(allowlistIPs []string) error {
 		return fmt.Errorf("netsh block-all falhou: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 	e.invalidateStatusCache()
+	e.invalidateRuleCache()
 	return nil
 }
 
@@ -513,6 +569,7 @@ func (e *windowsEnforcer) UnblockAll() error {
 		return err
 	}
 	e.invalidateStatusCache()
+	e.invalidateRuleCache()
 	return nil
 }
 
@@ -703,6 +760,7 @@ func (e *windowsEnforcer) BlockDoH() error {
 		}
 	}
 	e.invalidateStatusCache()
+	e.invalidateRuleCache()
 	return nil
 }
 
@@ -720,6 +778,7 @@ func (e *windowsEnforcer) UnblockDoH() error {
 		}
 	}
 	e.invalidateStatusCache()
+	e.invalidateRuleCache()
 	return nil
 }
 
