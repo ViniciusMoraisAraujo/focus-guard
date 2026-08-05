@@ -7,6 +7,37 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-08-05
+
+### ✨ Novas funcionalidades
+
+- **Bloqueio duplicado: somar ou substituir** — bloquear um domínio que já
+  possui bloqueio ativo agora retorna conflito em vez de sobrescrever
+  silenciosamente. A CLI ganhou `--extend` (soma o tempo ao término atual) e
+  `--replace` (reinicia o bloqueio); o painel web exibe um diálogo com
+  "cancelar", "somar" ou "substituir" e o tempo restante do bloqueio vigente.
+
+### 🛠️ Correções
+
+- **Enforcer (Windows)** — os IPs são validados/canonicalizados antes do
+  `remoteip=` do `netsh`, descartando domínios e entradas inválidas que
+  faziam o batch falhar com `exit status 1`; a migração de regras legadas
+  IPv6 saiu do script e virou delete tolerante pré-lote (não aborta mais o
+  `BlockAll` quando a regra antiga não existe).
+- **Web vs Daemon** — o status "daemon ligado" do painel agora é decidido pelo
+  ping IPC real (e não pela resposta de `status`, que falhava com poucos
+  bloqueios) e cada ação passou a ter orçamento de timeout próprio (status
+  15 s, mutações 30 s, update 150 s), eliminando o falso "daemon desligado".
+- **Limpeza pós-update** — cada atualização deixava um `.bak.<timestamp>` por
+  binário para sempre. Agora o daemon varre a pasta de instalação após o
+  update e no boot: mantém apenas o backup mais recente de cada binário (o
+  que o smart recovery do watchdog ainda precisa) e remove órfãos
+  `.old`/`.trash`/`*-new.exe`.
+- **Watchdog vs update** — o daemon grava a flag `update.inprogress` antes de
+  aplicar a atualização e a nova versão a remove ao concluir um boot saudável.
+  Durante a janela o watchdog não mata nem desfaz o update (tetos: `updateGrace`
+  de 3 minutos — um update travado não silencia a proteção para sempre).
+
 ## [0.12.1] - 2026-08-05
 
 ### ✨ Novas funcionalidades
