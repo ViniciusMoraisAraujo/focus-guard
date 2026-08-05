@@ -786,6 +786,117 @@ func TestRestoreBackup_MissingBackup(t *testing.T) {
 	}
 }
 
+// TestReplaceOneBinary_RetriesTransientRenameLock simula o lock transitório
+// (ex.: antivírus) no Windows: o primeiro rename-aside falha e o retry conclui
+// a troca. Fora do Windows o retry é desligado (tentativa única, comportamento
+// histórico).
+func TestReplaceOneBinary_RetriesTransientRenameLock(t *testing.T) {
+	origGoos, origRetry, origRename := goos, renameRetryEnabled, osRename
+	goos = "windows"
+	renameRetryEnabled = true
+	defer func() { goos, renameRetryEnabled, osRename = origGoos, origRetry, origRename }()
+
+	dir := t.TempDir()
+	newPath := filepath.Join(dir, "new")
+	target := filepath.Join(dir, "focusguard")
+	if err := os.WriteFile(newPath, []byte("new-content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(target, []byte("old-content"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	var renameCalls int
+	osRename = func(old, new string) error {
+		renameCalls++
+		if renameCalls == 1 && strings.HasSuffix(old, "focusguard") {
+			return errors.New("Acesso negado.") // lock transitório
+		}
+		return os.Rename(old, new)
+	}
+
+	if err := replaceOneBinary(newPath, target); err != nil {
+		t.Fatalf("replaceOneBinary: %v", err)
+	}
+	if got := readBinary(t, target); got != "new-content" {
+		t.Errorf("target = %q, want new-content", got)
+	}
+	if renameCalls < 2 {
+		t.Errorf("esperava retry no rename-aside, renameCalls = %d", renameCalls)
+	}
+}
+
+// TestUpdateToAll_SchedulesRebootWhenFirstBinaryLocked verifica o fallback
+// move-on-reboot: quando o PRIMEIRO binário (o daemon, que não pode ser
+// parado) falha no rename-aside mesmo com retry e nada foi trocado ainda, a
+// suíte inteira é agendada para o próximo boot e o UpdateToAll retorna
+// ErrScheduledOnReboot — sem rollback e sem meia-atualização.
+func TestUpdateToAll_SchedulesRebootWhenFirstBinaryLocked(t *testing.T) {
+	origGoos, origRetry, origReplace, origSchedule := goos, renameRetryEnabled, replaceOneBinary, scheduleReplaceOnReboot
+	goos = "windows"
+	renameRetryEnabled = true
+	defer func() {
+		goos, renameRetryEnabled, replaceOneBinary, scheduleReplaceOnReboot = origGoos, origRetry, origReplace, origSchedule
+	}()
+
+	dir := t.TempDir()
+	bins := []string{
+		writeBinary(t, dir, "focusguard-daemon", "old-daemon"),
+		writeBinary(t, dir, "focusguard-tray", "old-tray"),
+	}
+
+	replaceOneBinary = func(_, _ string) error {
+		return errors.New("rename ... Acesso negado.") // sempre falha
+	}
+
+	var scheduled []string
+	scheduleReplaceOnReboot = func(targetPath, _ string) error {
+		scheduled = append(scheduled, targetPath)
+		return nil
+	}
+
+	archive := filepath.Join(t.TempDir(), "focusguard.zip")
+	makeTestZip(t, archive, "", map[string]string{
+		"focusguard-daemon": "new-daemon",
+		"focusguard-tray":   "new-tray",
+	})
+	server := serveZip(t, archive)
+	defer server.Close()
+
+	u := NewUpdater("o", "r")
+	result := &UpdateResult{Version: "1.1.0", Release: &selfupdate.Release{
+		AssetURL:  server.URL + "/focusguard.zip",
+		AssetName: "focusguard.zip",
+	}}
+
+	backups, err := u.UpdateToAll(context.Background(), result, bins)
+	if !errors.Is(err, ErrScheduledOnReboot) {
+		t.Fatalf("esperava ErrScheduledOnReboot, got %v", err)
+	}
+	// Os .bak ficam para o smart recovery do watchdog pós-reboot.
+	if len(backups) != len(bins) {
+		t.Errorf("backups = %d, want %d", len(backups), len(bins))
+	}
+	// Todos os binários existentes foram agendados para o boot.
+	if len(scheduled) != len(bins) {
+		t.Fatalf("agendados = %v, want %d binários", scheduled, len(bins))
+	}
+	// Nada foi trocado no disco — tudo continua na versão antiga.
+	if got := readBinary(t, bins[0]); got != "old-daemon" {
+		t.Errorf("daemon deveria permanecer antigo, got %q", got)
+	}
+	if got := readBinary(t, bins[1]); got != "old-tray" {
+		t.Errorf("tray deveria permanecer antigo, got %q", got)
+	}
+	// Os estágios .new ficam ao lado dos binários para o boot consumir.
+	for _, b := range bins {
+		staged := filepath.Join(dir, "."+filepath.Base(b)+".new")
+		if _, err := os.Stat(staged); err != nil {
+			t.Errorf("estágio %s deveria existir: %v", staged, err)
+		}
+	}
+}
+
 // TestCleanupStale_KeepsOnlyNewestBackupPerBinary verifies the core of Bug 1:
 // each update leaves one .bak per binary and, without a sweep, they accumulate
 // forever. CleanupStale must keep ONLY the newest .bak per binary.

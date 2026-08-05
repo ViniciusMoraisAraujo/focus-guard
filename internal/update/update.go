@@ -5,6 +5,7 @@ import (
 	"archive/zip"
 	"compress/gzip"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"io/fs"
@@ -272,6 +273,17 @@ func (u *Updater) UpdateToAll(ctx context.Context, result *UpdateResult, binarie
 			return rollback(fmt.Errorf("failed to update binary %s: %w", b, err))
 		}
 		if err := replaceOneBinary(extracted, b); err != nil {
+			// Último recurso no Windows: se NADA foi trocado ainda (o daemon é o
+			// primeiro binário da lista — o único que não pode ser parado) e o
+			// rename-aside segue falhando mesmo com retry, agenda a troca de
+			// toda a suíte para o próximo boot (MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT).
+			// Os .bak continuam guardados para o smart recovery do watchdog caso
+			// a nova versão falhe após o reboot.
+			if goos == "windows" && len(okPaths) == 0 {
+				if serr := scheduleAllReplacementsOnReboot(binaries, tmpDir); serr == nil {
+					return backups, ErrScheduledOnReboot
+				}
+			}
 			return rollback(fmt.Errorf("failed to update binary %s: %w", b, err))
 		}
 		okPaths = append(okPaths, b)
@@ -311,6 +323,49 @@ var osRename = os.Rename
 // qualquer plataforma (espelha o var goos do daemon).
 var goos = runtime.GOOS
 
+// ErrScheduledOnReboot é retornado pelo UpdateToAll quando a troca imediata
+// dos binários falha (Windows: executável em execução travado para rename) e
+// a substituição de toda a suíte foi agendada para o próximo boot via
+// MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT. O daemon trata como "a atualização
+// será concluída no próximo reinício": segue rodando a versão antiga e NÃO
+// reinicia (a flag de update é removida).
+var ErrScheduledOnReboot = errors.New("atualização agendada para conclusão no próximo reboot")
+
+// renameRetryEnabled limita o retry do rename-aside ao Windows, onde um
+// executável em execução (ou sob varredura de antivírus) pode segurar o
+// arquivo por um instante. No Linux o rename nunca é transitório, então o
+// comportamento histórico (tentativa única) é preservado.
+var renameRetryEnabled = goos == "windows"
+
+const (
+	// renameRetryAttempts é quantas vezes o rename-aside é tentado no Windows
+	// antes de desistir (lock transitório de AV/Defender).
+	renameRetryAttempts = 3
+	// renameRetryDelay é a pausa entre as tentativas.
+	renameRetryDelay = 500 * time.Millisecond
+)
+
+// renameAside move src para dst, repetindo no Windows locks transitórios. O
+// lock de um binário em execução é permanente enquanto o processo vive — o
+// retry não mascara o caso real (que cai no fallback move-on-reboot), apenas
+// o caso do antivírus indexando um exe recém-gerado.
+func renameAside(src, dst string) error {
+	attempts := 1
+	if renameRetryEnabled {
+		attempts = renameRetryAttempts
+	}
+	var err error
+	for i := 0; i < attempts; i++ {
+		if err = osRename(src, dst); err == nil {
+			return nil
+		}
+		if i < attempts-1 {
+			time.Sleep(renameRetryDelay)
+		}
+	}
+	return err
+}
+
 // RestoreBackup restores a backup binary to the original path. On Windows a
 // running executable cannot be overwritten or deleted, but it CAN be renamed:
 // the original is moved aside first so copyFile can create a fresh file, then
@@ -324,10 +379,12 @@ func (u *Updater) RestoreBackup(backupPath, originalPath string) error {
 	}
 
 	// Windows não permite sobrescrever um executável em execução com os.Create:
-	// renomear o destino para um .trash libera o file lock do SO.
+	// renomear o destino para um .trash libera o file lock do SO. Usa o
+	// renameAside (com retry) porque o mesmo lock que impede o update pode
+	// segurar o restore.
 	if goos == "windows" {
 		if _, err := os.Stat(originalPath); err == nil {
-			if err := osRename(originalPath, originalPath+".trash"); err == nil {
+			if err := renameAside(originalPath, originalPath+".trash"); err == nil {
 				defer func() { _ = os.Remove(originalPath + ".trash") }()
 			}
 		}
@@ -365,6 +422,12 @@ func (u *Updater) CleanupStale(installDir string) {
 	}
 
 	// prefixo do binário (parte antes do ".bak.") → caminho do .bak mais novo.
+	//
+	// NOTA: os estágios ".<nome>.new" do fallback move-on-reboot NÃO são
+	// varridos de propósito — um PendingFileRenameOperations ainda pendente
+	// precisa do arquivo-fonte até o reboot que vai consumi-lo; varrer aqui
+	// quebraria a troca agendada (uma entrada pendente cujo source sumiu não
+	// executa). Fica na pasta até o boot, quando é consumido pela troca.
 	newest := make(map[string]string)
 	for _, e := range entries {
 		name := e.Name()
@@ -622,7 +685,9 @@ var replaceOneBinary = func(newPath, targetPath string) error {
 
 	oldPath := filepath.Join(dir, "."+name+".old")
 	_ = os.Remove(oldPath) // remove .old órfão de um update anterior
-	if err := os.Rename(targetPath, oldPath); err != nil {
+	// O rename-aside usa renameAside (com retry): no Windows, o lock de um
+	// executável em execução ou sob varredura de AV pode ser transitório.
+	if err := renameAside(targetPath, oldPath); err != nil {
 		return fmt.Errorf("failed to move current binary aside: %w", err)
 	}
 	if err := os.Rename(newLocal, targetPath); err != nil {
@@ -630,6 +695,45 @@ var replaceOneBinary = func(newPath, targetPath string) error {
 		return fmt.Errorf("failed to move new binary into place: %w", err)
 	}
 	_ = os.Remove(oldPath) // best-effort: falha no Windows com o binário em uso
+	return nil
+}
+
+// scheduleAllReplacementsOnReboot agenda a troca de todos os binários
+// presentes para as versões recém-extraídas no próximo boot (Windows:
+// MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT, via PendingFileRenameOperations).
+// É o último recurso quando o rename-aside do próprio daemon falha mesmo após
+// os retries: nada foi trocado ainda (daemon é o primeiro da lista), então a
+// suíte inteira completa a troca atomicamente no boot seguinte.
+//
+// Os estágios usam o prefixo ".<nome>.new" — e NÃO focusguard-daemon-new*
+// (que o CleanupStale varre e removeria antes do reboot) — e ficam no mesmo
+// diretório dos binários, garantindo rename no mesmo volume no boot.
+//
+// Falha parcial é aceita e documentada: se o MoveFileEx falhar no meio do
+// loop, alguns renames já agendados permanecem pendentes enquanto o UpdateToAll
+// reporta erro (rollback não desfaz o agendamento). É um caso exótico (o
+// MoveFileEx com DELAY_UNTIL_REBOOT quase nunca falha) e o pior cenário é uma
+// suíte que completa a troca em dois boots.
+func scheduleAllReplacementsOnReboot(binaries []string, tmpDir string) error {
+	for _, b := range binaries {
+		if _, err := os.Stat(b); os.IsNotExist(err) {
+			continue
+		}
+		extracted, err := findFileByName(tmpDir, filepath.Base(b))
+		if err != nil {
+			return fmt.Errorf("failed to stage %s for reboot: %w", b, err)
+		}
+		staged := filepath.Join(filepath.Dir(b), "."+filepath.Base(b)+".new")
+		if err := copyFile(extracted, staged); err != nil {
+			return fmt.Errorf("failed to stage %s for reboot: %w", b, err)
+		}
+		if err := os.Chmod(staged, 0o755); err != nil {
+			return err
+		}
+		if err := scheduleReplaceOnReboot(b, staged); err != nil {
+			return fmt.Errorf("failed to schedule %s for reboot: %w", b, err)
+		}
+	}
 	return nil
 }
 
