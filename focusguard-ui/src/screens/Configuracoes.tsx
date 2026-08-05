@@ -44,7 +44,6 @@ export function Configuracoes() {
   const [updateError, setUpdateError] = useState<string | null>(null);
 
   const goalNs = status?.goal ?? 0;
-  const goalMin = Math.round(goalNs / 6e10);
 
   const setGoal = async (minutes: number) => {
     setBusy(true);
@@ -145,7 +144,7 @@ export function Configuracoes() {
               <Button
                 key={g.minutes}
                 type="button"
-                variant={g.minutes === goalMin ? "default" : "outline"}
+                variant={goalNs > 0 && goalNs === g.minutes * 6e10 ? "default" : "outline"}
                 onClick={() => void setGoal(g.minutes)}
                 disabled={busy}
                 className="h-7"
