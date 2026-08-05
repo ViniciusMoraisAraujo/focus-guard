@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
@@ -32,6 +33,16 @@ func benchStatusResponse(numDomains int) *ipc.Response {
 	return &ipc.Response{Success: true, Blocks: blocks}
 }
 
+// adminCookieForBench mints an admin session for the benchmark request (the
+// /api/action endpoint requires a valid session cookie since F2).
+func adminCookieForBench(srv *Server) *http.Cookie {
+	token, err := srv.auth.create("admin", true)
+	if err != nil {
+		panic(err)
+	}
+	return &http.Cookie{Name: sessionCookieName, Value: token}
+}
+
 // BenchmarkHTTPActionGzip measures the /api/action round trip with
 // Accept-Encoding: gzip and reports both the per-request cost and the payload
 // compression ratio (compressed bytes vs plain JSON) for the state sizes the
@@ -48,7 +59,7 @@ func BenchmarkHTTPActionGzip(b *testing.B) {
 			stub := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 				return resp, nil
 			}}
-			h := newTestServer(stub, uiFS())
+			srv, h := newTestServer(stub, uiFS())
 			_ = plain
 
 			b.ResetTimer()
@@ -57,6 +68,7 @@ func BenchmarkHTTPActionGzip(b *testing.B) {
 				req.Host = "127.0.0.1:48902"
 				req.Header.Set("Content-Type", "application/json")
 				req.Header.Set("Accept-Encoding", "gzip")
+				req.AddCookie(adminCookieForBench(srv))
 				rec := httptest.NewRecorder()
 				h.ServeHTTP(rec, req)
 				if rec.Header().Get("Content-Encoding") != "gzip" {
@@ -82,12 +94,13 @@ func BenchmarkHTTPActionGzipRatio(b *testing.B) {
 			stub := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 				return resp, nil
 			}}
-			h := newTestServer(stub, uiFS())
+			srv, h := newTestServer(stub, uiFS())
 
 			req := httptest.NewRequest("POST", "/api/action", strings.NewReader(`{"action":"status"}`))
 			req.Host = "127.0.0.1:48902"
 			req.Header.Set("Content-Type", "application/json")
 			req.Header.Set("Accept-Encoding", "gzip")
+			req.AddCookie(adminCookieForBench(srv))
 			rec := httptest.NewRecorder()
 			h.ServeHTTP(rec, req)
 			compressed := rec.Body.Len()

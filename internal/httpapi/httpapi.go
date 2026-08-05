@@ -84,19 +84,31 @@ type DaemonClient interface {
 type Server struct {
 	client DaemonClient
 	assets fs.FS
+	// auth owns the in-memory sessions and login rate limiter (auth.go).
+	auth *authManager
 }
 
 // New builds the web server around the IPC client and the UI assets.
 func New(client DaemonClient, assets fs.FS) *Server {
-	return &Server{client: client, assets: assets}
+	return &Server{
+		client: client,
+		assets: assets,
+		auth:   newAuthManager(sessionTTL, maxLoginFailures, loginLockout),
+	}
 }
 
-// Handler returns the full HTTP handler, including the localhost guards.
+// Handler returns the full HTTP handler, including the localhost guards and
+// the auth gate. /api/action and /api/logout require a valid session cookie;
+// login/auth-status/health/ping and the static UI stay public (the SPA shows
+// the login screen when auth-status says the browser is not authenticated).
 func (s *Server) Handler() http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/api/health", s.handleHealth)
 	mux.HandleFunc("/api/ping", s.handlePing)
-	mux.HandleFunc("/api/action", s.handleAction)
+	mux.HandleFunc("/api/login", s.handleLogin)
+	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
+	mux.HandleFunc("/api/logout", s.requireAuth(s.handleLogout))
+	mux.HandleFunc("/api/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/", s.handleStatic)
 	return s.secure(gzipMiddleware(mux))
 }
@@ -214,6 +226,34 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 	var req ipc.Request
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeJSONError(w, http.StatusBadRequest, "JSON inválido: "+err.Error())
+		return
+	}
+
+	// Gate de permissão por ação (o requireAuth já garantiu a sessão). A
+	// gestão de usuários é do admin; um usuário comum só troca a própria
+	// senha. O daemon não repete esta checagem — ele confia no IPC local
+	// (mesmo nível do CLI/tray), a autorização vive na camada web.
+	sess, ok := sessionFrom(r.Context())
+	if !ok {
+		writeJSONError(w, http.StatusUnauthorized, "não autenticado — faça login")
+		return
+	}
+	switch req.Action {
+	case "user-list", "user-add", "user-remove":
+		if !sess.isAdmin {
+			writeJSONError(w, http.StatusForbidden, "apenas o administrador gerencia usuários")
+			return
+		}
+	case "user-set-password":
+		if !sess.isAdmin && !strings.EqualFold(req.UserName, sess.username) {
+			writeJSONError(w, http.StatusForbidden, "você só pode alterar a própria senha")
+			return
+		}
+	case "user-verify":
+		// user-verify só é legítimo pelo /api/login (que fala direto com o
+		// daemon). Permitir aqui daria a qualquer usuário autenticado um
+		// oráculo de senha SEM o rate limit do login — brute force do admin.
+		writeJSONError(w, http.StatusForbidden, "use /api/login para autenticar")
 		return
 	}
 

@@ -33,8 +33,22 @@ func (s *stubClient) SendWithTimeout(req ipc.Request, timeout time.Duration) (*i
 	return &ipc.Response{Success: true}, nil
 }
 
-func newTestServer(client DaemonClient, assets fs.FS) http.Handler {
-	return New(client, assets).Handler()
+// newTestServer builds the server with a stub daemon client and returns both
+// the *Server (to mint session cookies) and its HTTP handler.
+func newTestServer(client DaemonClient, assets fs.FS) (*Server, http.Handler) {
+	s := New(client, assets)
+	return s, s.Handler()
+}
+
+// adminCookie creates an admin session directly in the auth manager
+// (bypassing the login round-trip) so tests can hit authenticated endpoints.
+func adminCookie(t *testing.T, srv *Server) *http.Cookie {
+	t.Helper()
+	token, err := srv.auth.create("admin", true)
+	if err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+	return &http.Cookie{Name: sessionCookieName, Value: token}
 }
 
 func uiFS() fs.FS {
@@ -45,7 +59,8 @@ func uiFS() fs.FS {
 	}
 }
 
-func doJSON(t *testing.T, h http.Handler, method, path, contentType, body, host string) *httptest.ResponseRecorder {
+// doJSON performs a request; cookie is optional (nil = anonymous request).
+func doJSON(t *testing.T, h http.Handler, cookie *http.Cookie, method, path, contentType, body, host string) *httptest.ResponseRecorder {
 	t.Helper()
 	var rdr *strings.Reader
 	if body == "" {
@@ -54,6 +69,9 @@ func doJSON(t *testing.T, h http.Handler, method, path, contentType, body, host 
 		rdr = strings.NewReader(body)
 	}
 	req := httptest.NewRequest(method, path, rdr)
+	if cookie != nil {
+		req.AddCookie(cookie)
+	}
 	if contentType != "" {
 		req.Header.Set("Content-Type", contentType)
 	}
@@ -75,8 +93,8 @@ func decodeResp(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 }
 
 func TestHealthOK(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "GET", "/api/health", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/api/health", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -86,17 +104,17 @@ func TestHealthOK(t *testing.T) {
 }
 
 func TestHealthRejectsPOST(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "POST", "/api/health", "application/json", "{}", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "POST", "/api/health", "application/json", "{}", "127.0.0.1:48902")
 	if rec.Code != http.StatusMethodNotAllowed {
 		t.Fatalf("status = %d, want 405", rec.Code)
 	}
 }
 
 func TestForeignHostRejected(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
+	_, h := newTestServer(&stubClient{}, uiFS())
 	for _, host := range []string{"evil.example.com:48902", "attacker.com"} {
-		rec := doJSON(t, h, "POST", "/api/action", "application/json", `{"action":"status"}`, host)
+		rec := doJSON(t, h, nil, "POST", "/api/action", "application/json", `{"action":"status"}`, host)
 		if rec.Code != http.StatusForbidden {
 			t.Fatalf("host %q: status = %d, want 403", host, rec.Code)
 		}
@@ -104,9 +122,10 @@ func TestForeignHostRejected(t *testing.T) {
 }
 
 func TestLocalHostVariantsAccepted(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
+	srv, h := newTestServer(&stubClient{}, uiFS())
+	cookie := adminCookie(t, srv)
 	for _, host := range []string{"127.0.0.1:48902", "localhost:48902", "[::1]:48902", "127.0.0.1"} {
-		rec := doJSON(t, h, "POST", "/api/action", "application/json", `{"action":"status"}`, host)
+		rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json", `{"action":"status"}`, host)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("host %q: status = %d, want 200", host, rec.Code)
 		}
@@ -114,9 +133,10 @@ func TestLocalHostVariantsAccepted(t *testing.T) {
 }
 
 func TestActionRejectsNonJSONContentType(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
+	srv, h := newTestServer(&stubClient{}, uiFS())
+	cookie := adminCookie(t, srv)
 	for _, ct := range []string{"text/plain", "application/x-www-form-urlencoded", "application/jsonp", "application/notjson", ""} {
-		rec := doJSON(t, h, "POST", "/api/action", ct, `{"action":"status"}`, "127.0.0.1:48902")
+		rec := doJSON(t, h, cookie, "POST", "/api/action", ct, `{"action":"status"}`, "127.0.0.1:48902")
 		if rec.Code != http.StatusUnsupportedMediaType {
 			t.Fatalf("content-type %q: status = %d, want 415", ct, rec.Code)
 		}
@@ -124,8 +144,9 @@ func TestActionRejectsNonJSONContentType(t *testing.T) {
 }
 
 func TestActionAcceptsJSONWithCharset(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json; charset=utf-8",
+	srv, h := newTestServer(&stubClient{}, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json; charset=utf-8",
 		`{"action":"status"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -133,8 +154,8 @@ func TestActionAcceptsJSONWithCharset(t *testing.T) {
 }
 
 func TestUnknownAPIEndpointReturns404JSON(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "GET", "/api/nonexistent", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/api/nonexistent", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusNotFound {
 		t.Fatalf("status = %d, want 404", rec.Code)
 	}
@@ -146,8 +167,9 @@ func TestUnknownAPIEndpointReturns404JSON(t *testing.T) {
 
 func TestActionForwardsRequestAndReturnsResponse(t *testing.T) {
 	sc := &stubClient{}
-	h := newTestServer(sc, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+	srv, h := newTestServer(sc, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json",
 		`{"action":"block","domain":"youtube.com","duration":"4h"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -169,8 +191,9 @@ func TestActionForwardsRequestAndReturnsResponse(t *testing.T) {
 // o update continua e termina com sucesso.
 func TestActionUpdateUsesLongTimeout(t *testing.T) {
 	sc := &stubClient{}
-	h := newTestServer(sc, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+	srv, h := newTestServer(sc, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json",
 		`{"action":"update","channel":"stable"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -185,8 +208,9 @@ func TestActionUpdateUsesLongTimeout(t *testing.T) {
 
 func TestActionUpdateCheckUsesLongTimeout(t *testing.T) {
 	sc := &stubClient{}
-	h := newTestServer(sc, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+	srv, h := newTestServer(sc, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json",
 		`{"action":"update-check"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -205,8 +229,9 @@ func TestActionUpdateCheckUsesLongTimeout(t *testing.T) {
 // para um daemon simplesmente lento. O status ganhou seu próprio orçamento.
 func TestActionStatusUsesStatusTimeout(t *testing.T) {
 	sc := &stubClient{}
-	h := newTestServer(sc, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+	srv, h := newTestServer(sc, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json",
 		`{"action":"status"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -223,8 +248,9 @@ func TestActionMutationUsesMutationTimeout(t *testing.T) {
 	for _, action := range []string{"block", "block-all", "pomodoro", "pomodoro-stop"} {
 		t.Run(action, func(t *testing.T) {
 			sc := &stubClient{}
-			h := newTestServer(sc, uiFS())
-			rec := doJSON(t, h, "POST", "/api/action", "application/json",
+			srv, h := newTestServer(sc, uiFS())
+			cookie := adminCookie(t, srv)
+			rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json",
 				`{"action":"`+action+`"}`, "127.0.0.1:48902")
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
@@ -240,8 +266,9 @@ func TestActionDaemonDownReturns503(t *testing.T) {
 	sc := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 		return nil, errFake("connection refused")
 	}}
-	h := newTestServer(sc, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json", `{"action":"status"}`, "127.0.0.1:48902")
+	srv, h := newTestServer(sc, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json", `{"action":"status"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
@@ -254,24 +281,25 @@ func TestPingDaemonDownReturns503(t *testing.T) {
 	sc := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 		return nil, errFake("dial error")
 	}}
-	h := newTestServer(sc, uiFS())
-	rec := doJSON(t, h, "GET", "/api/ping", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(sc, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/api/ping", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status = %d, want 503", rec.Code)
 	}
 }
 
 func TestActionInvalidJSON(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json", `{not json`, "127.0.0.1:48902")
+	srv, h := newTestServer(&stubClient{}, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json", `{not json`, "127.0.0.1:48902")
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("status = %d, want 400", rec.Code)
 	}
 }
 
 func TestStaticServesIndexHTML(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "GET", "/", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -284,8 +312,8 @@ func TestStaticServesIndexHTML(t *testing.T) {
 }
 
 func TestStaticSPAFallback(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "GET", "/configuracoes", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/configuracoes", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -295,8 +323,8 @@ func TestStaticSPAFallback(t *testing.T) {
 }
 
 func TestStaticServesAssetWithContentType(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "GET", "/assets/app.js", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/assets/app.js", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -306,8 +334,8 @@ func TestStaticServesAssetWithContentType(t *testing.T) {
 }
 
 func TestStaticStubWhenNoUI(t *testing.T) {
-	h := newTestServer(&stubClient{}, fstest.MapFS{})
-	rec := doJSON(t, h, "GET", "/", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, fstest.MapFS{})
+	rec := doJSON(t, h, nil, "GET", "/", "", "", "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
@@ -317,8 +345,8 @@ func TestStaticStubWhenNoUI(t *testing.T) {
 }
 
 func TestSecurityHeaders(t *testing.T) {
-	h := newTestServer(&stubClient{}, uiFS())
-	rec := doJSON(t, h, "GET", "/", "", "", "127.0.0.1:48902")
+	_, h := newTestServer(&stubClient{}, uiFS())
+	rec := doJSON(t, h, nil, "GET", "/", "", "", "127.0.0.1:48902")
 	for _, hdr := range []string{"X-Content-Type-Options", "X-Frame-Options", "Referrer-Policy", "Content-Security-Policy"} {
 		if rec.Header().Get(hdr) == "" {
 			t.Errorf("header %s ausente", hdr)
@@ -338,12 +366,13 @@ func TestActionGzipWhenAccepted(t *testing.T) {
 	stub := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 		return resp, nil
 	}}
-	h := newTestServer(stub, uiFS())
+	srv, h := newTestServer(stub, uiFS())
 
 	req := httptest.NewRequest("POST", "/api/action", strings.NewReader(`{"action":"status"}`))
 	req.Host = "127.0.0.1:48902"
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept-Encoding", "gzip")
+	req.AddCookie(adminCookie(t, srv))
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
 
@@ -377,8 +406,9 @@ func TestActionGzipOnlyWhenAccepted(t *testing.T) {
 	stub := &stubClient{fn: func(ipc.Request) (*ipc.Response, error) {
 		return &ipc.Response{Success: true, Message: "ok"}, nil
 	}}
-	h := newTestServer(stub, uiFS())
-	rec := doJSON(t, h, "POST", "/api/action", "application/json", `{"action":"status"}`, "127.0.0.1:48902")
+	srv, h := newTestServer(stub, uiFS())
+	cookie := adminCookie(t, srv)
+	rec := doJSON(t, h, cookie, "POST", "/api/action", "application/json", `{"action":"status"}`, "127.0.0.1:48902")
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200", rec.Code)
 	}
