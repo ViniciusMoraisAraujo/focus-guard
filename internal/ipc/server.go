@@ -355,6 +355,35 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: false, Message: "Informe um domínio ou --preset para bloquear."}
 			break
 		}
+		// --extend: soma a duração ao bloqueio ativo (ou cria um novo se não
+		// houver). Não passa pela detecção de conflito.
+		if req.Extend {
+			block, err := s.scheduler.ExtendBlock(req.Domain, d)
+			if err != nil {
+				resp = Response{Success: false, Message: err.Error()}
+			} else {
+				resp = Response{
+					Success: true,
+					Message: fmt.Sprintf("Domain %s extended until %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006")),
+				}
+			}
+			break
+		}
+		// Comportamento padrão (ask-first): um domínio já bloqueado é um
+		// CONFLITO a ser resolvido pelo usuário (somar/substituir), não um
+		// sobrescrita silenciosa. --replace pula o conflito e reinicia a janela.
+		if !req.Replace {
+			if existing := s.scheduler.ActiveBlock(req.Domain); existing != nil {
+				resp = Response{
+					Success:       false,
+					Conflict:      true,
+					ConflictBlock: existing,
+					Message: fmt.Sprintf("Domínio já bloqueado até %s. Use --extend para somar ou --replace para reiniciar.",
+						existing.ExpiresAt.Local().Format("15:04:05 02/01/2006")),
+				}
+				break
+			}
+		}
 		block, err := s.scheduler.Block(req.Domain, d)
 		if err != nil {
 			resp = Response{Success: false, Message: err.Error()}

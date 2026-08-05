@@ -622,6 +622,48 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	return &block, nil
 }
 
+// ActiveBlock returns a copy of the block for domain only when it is still
+// active (expiry in the future); nil when the domain is not blocked or its
+// window already ended. It backs the conflict detection in the user-driven
+// block paths (IPC/CLI/Web): an already-active block is a question to the user
+// (somar/substituir), not a silent overwrite. Schedule windows and pomodoro
+// keep their upsert semantics and never consult it.
+func (s *Scheduler) ActiveBlock(domain string) *policy.Block {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	b, ok := s.blocks[domain]
+	if !ok || !b.IsActive() {
+		return nil
+	}
+	cp := b
+	return &cp
+}
+
+// ExtendBlock prolongs an active block by duration — soma: it adds to the
+// current expiry (for an active block max(now, ExpiresAt) is the same thing),
+// never restarting or shortening the window. The existing block keeps its IPs
+// and firewall rules, so the hot path skips the DNS round-trip and the netsh
+// re-apply entirely. When no active block exists it falls back to a fresh
+// Block, making "extend" idempotent.
+func (s *Scheduler) ExtendBlock(domain string, duration time.Duration) (*policy.Block, error) {
+	s.mu.Lock()
+	existing, ok := s.blocks[domain]
+	if ok && existing.IsActive() {
+		existing.Extend(duration)
+		s.blocks[domain] = existing
+		s.invalidateSnapshot()
+		if err := s.store.Save(s.ramState()); err != nil {
+			s.mu.Unlock()
+			return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
+		}
+		s.setupTimerLocked(existing)
+		s.mu.Unlock()
+		return &existing, nil
+	}
+	s.mu.Unlock()
+	return s.Block(domain, duration)
+}
+
 // BlockDomains blocks several domains at once, resolving all of them in
 // parallel (with a per-domain timeout) and then persisting the whole batch
 // with a single store.Save and applying it with a single enforcer.Sync — one

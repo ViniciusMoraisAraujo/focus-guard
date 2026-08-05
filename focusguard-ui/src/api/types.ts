@@ -105,6 +105,8 @@ export interface ApiRequest {
   schedule_id?: string;
   ics_content?: string;
   ics_preset?: string;
+  extend?: boolean;
+  replace?: boolean;
 }
 
 export interface ApiResponse {
@@ -130,4 +132,6 @@ export interface ApiResponse {
   pomodoro_work?: number;
   pomodoro_rest?: number;
   pomodoro_cycles?: number;
+  conflict?: boolean;
+  conflict_block?: Block;
 }

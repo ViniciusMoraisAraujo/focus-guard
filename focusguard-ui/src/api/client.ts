@@ -77,8 +77,13 @@ export const api = {
   status: () => action({ action: "status" }),
   presets: () => action({ action: "presets" }),
   stats: () => action({ action: "stats" }),
-  block: (p: { domain?: string; preset?: string; duration: string }) =>
-    action({ action: "block", ...p }),
+  block: (p: {
+    domain?: string;
+    preset?: string;
+    duration: string;
+    extend?: boolean;
+    replace?: boolean;
+  }) => action({ action: "block", ...p }),
   blockAll: (duration: string, allowlist: string[]) =>
     action({ action: "block-all", duration, allowlist }),
   goalSet: (goalMinutes: number) => action({ action: "goal-set", goal_minutes: goalMinutes }),

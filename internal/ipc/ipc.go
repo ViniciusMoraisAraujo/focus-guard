@@ -55,6 +55,13 @@ type Request struct {
 	AppName string `json:"app_name,omitempty"`
 	// Name is the focus-session/mission label for the pomodoro action.
 	Name string `json:"name,omitempty"`
+	// Extend/Replace resolve the conflict of the user-driven block action:
+	// by default a block on an already-active domain returns Conflict=true so
+	// the CLI/Web can ask the user; --extend sums the duration to the current
+	// expiry and --replace restarts the window from now. Schedule and pomodoro
+	// keep their silent upsert and never send these.
+	Extend  bool `json:"extend,omitempty"`
+	Replace bool `json:"replace,omitempty"`
 }
 
 type Response struct {
@@ -87,6 +94,13 @@ type Response struct {
 	Apps []string `json:"apps,omitempty"`
 	// TamperLog lists detected tamper attempts (tamper-log).
 	TamperLog []tamper.Event `json:"tamper_log,omitempty"`
+	// Conflict marks a failed "block" request that hit an already-active block
+	// (the default ask-first behavior of user-driven blocking). The client
+	// should surface it as "somar/substituir" instead of a hard error.
+	Conflict bool `json:"conflict,omitempty"`
+	// ConflictBlock carries the existing block that caused the conflict, so the
+	// UI/CLI can show its expiry without an extra round-trip.
+	ConflictBlock *policy.Block `json:"conflict_block,omitempty"`
 }
 
 // UpdateStatus holds the outcome of an auto-update check.

@@ -126,6 +126,10 @@ func TestIntegration_EmptyStatus(t *testing.T) {
 	}
 }
 
+// TestIntegration_DuplicateBlock verifies the ask-first conflict flow: a block
+// on an already-active domain returns Conflict=true (not a silent upsert), and
+// the caller resolves it with extend (soma à duração atual) or replace
+// (reinicia a janela a partir de agora).
 func TestIntegration_DuplicateBlock(t *testing.T) {
 	startIntegrationServer(t)
 	client := NewClient()
@@ -142,6 +146,7 @@ func TestIntegration_DuplicateBlock(t *testing.T) {
 		t.Fatalf("first block should succeed: %s", resp.Message)
 	}
 
+	// Bloqueio sem flag sobre domínio já ativo → CONFLITO, não sobrescrita.
 	resp, err = client.Send(Request{
 		Action:   "block",
 		Domain:   "localhost",
@@ -150,8 +155,25 @@ func TestIntegration_DuplicateBlock(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second block: %v", err)
 	}
+	if resp.Success || !resp.Conflict {
+		t.Fatalf("block on active domain should be a conflict, got success=%v conflict=%v msg=%s", resp.Success, resp.Conflict, resp.Message)
+	}
+	if resp.ConflictBlock == nil || resp.ConflictBlock.Domain != "localhost" {
+		t.Fatalf("ConflictBlock should carry the existing block, got %+v", resp.ConflictBlock)
+	}
+
+	// --extend: soma ao vencimento atual (1h + 30m ≈ 1h30m).
+	resp, err = client.Send(Request{
+		Action:   "block",
+		Domain:   "localhost",
+		Duration: "30m",
+		Extend:   true,
+	})
+	if err != nil {
+		t.Fatalf("extend block: %v", err)
+	}
 	if !resp.Success {
-		t.Fatalf("second block on same domain should also succeed (upsert): %s", resp.Message)
+		t.Fatalf("extend should succeed: %s", resp.Message)
 	}
 
 	resp, err = client.Send(Request{Action: "status"})
@@ -162,8 +184,35 @@ func TestIntegration_DuplicateBlock(t *testing.T) {
 		t.Fatalf("expected 1 block, got %d", len(resp.Blocks))
 	}
 	remaining := time.Until(resp.Blocks[0].ExpiresAt)
-	if remaining < 90*time.Minute {
-		t.Errorf("expected ~2h duration, got remaining: %v", remaining)
+	if remaining < 85*time.Minute || remaining > 95*time.Minute {
+		t.Errorf("extend should sum 30m to the 1h expiry, got remaining: %v", remaining)
+	}
+
+	// --replace: reinicia a janela a partir de agora (≈45m), descartando o
+	// bloqueio anterior.
+	resp, err = client.Send(Request{
+		Action:   "block",
+		Domain:   "localhost",
+		Duration: "45m",
+		Replace:  true,
+	})
+	if err != nil {
+		t.Fatalf("replace block: %v", err)
+	}
+	if !resp.Success {
+		t.Fatalf("replace should succeed: %s", resp.Message)
+	}
+
+	resp, err = client.Send(Request{Action: "status"})
+	if err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if len(resp.Blocks) != 1 {
+		t.Fatalf("expected 1 block, got %d", len(resp.Blocks))
+	}
+	remaining = time.Until(resp.Blocks[0].ExpiresAt)
+	if remaining < 40*time.Minute || remaining > 50*time.Minute {
+		t.Errorf("replace should restart the window (~45m), got remaining: %v", remaining)
 	}
 }
 

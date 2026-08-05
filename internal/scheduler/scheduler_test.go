@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -139,6 +140,116 @@ func TestScheduler_BlockAndList(t *testing.T) {
 
 	if blocks[0].Domain != domain {
 		t.Errorf("Expected domain %s in listing, got %s", domain, blocks[0].Domain)
+	}
+}
+
+// TestScheduler_ActiveBlock_ConflictDetection verifies the query that backs the
+// ask-first conflict flow (IPC/CLI/Web): it only reports ACTIVE blocks.
+func TestScheduler_ActiveBlock_ConflictDetection(t *testing.T) {
+	sched, _, _ := setupTestScheduler(t)
+
+	if b := sched.ActiveBlock("x.com"); b != nil {
+		t.Fatalf("ActiveBlock before any block = %v, want nil", b)
+	}
+
+	block, err := sched.Block("x.com", time.Hour)
+	if err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+
+	got := sched.ActiveBlock("x.com")
+	if got == nil {
+		t.Fatal("ActiveBlock after Block = nil, want the active block")
+	}
+	if got.Domain != "x.com" || !got.ExpiresAt.Equal(block.ExpiresAt) {
+		t.Errorf("ActiveBlock = %+v, want %+v", got, block)
+	}
+
+	// Bloqueio já expirado NÃO é conflito: o caminho user-driven pode
+	// simplesmente re-bloquear.
+	sched.mu.Lock()
+	sched.blocks["expired.com"] = policy.Block{
+		Domain:    "expired.com",
+		StartedAt: time.Now().Add(-2 * time.Hour),
+		ExpiresAt: time.Now().Add(-1 * time.Hour),
+	}
+	sched.mu.Unlock()
+	if b := sched.ActiveBlock("expired.com"); b != nil {
+		t.Errorf("ActiveBlock for expired block = %v, want nil", b)
+	}
+}
+
+// TestScheduler_ExtendBlock_SumsToActiveExpiry verifies the "somar" semantics:
+// ExtendBlock adds duration to the CURRENT expiry (never restarts/shortens),
+// preserves the block's IPs and does not re-apply the enforcer (already
+// blocked — the hot path skips DNS and netsh entirely).
+func TestScheduler_ExtendBlock_SumsToActiveExpiry(t *testing.T) {
+	origResolve := resolveFunc
+	resolveFunc = func(string) ([]string, error) { return []string{"1.2.3.4"}, nil }
+	t.Cleanup(func() { resolveFunc = origResolve })
+
+	sched, enf, _ := setupTestScheduler(t)
+
+	block, err := sched.Block("x.com", time.Hour)
+	if err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+	expBefore := block.ExpiresAt
+
+	ext, err := sched.ExtendBlock("x.com", 30*time.Minute)
+	if err != nil {
+		t.Fatalf("ExtendBlock: %v", err)
+	}
+	if !ext.ExpiresAt.Equal(expBefore.Add(30 * time.Minute)) {
+		t.Errorf("ExpiresAt = %v, want %v (soma sobre o vencimento atual)", ext.ExpiresAt, expBefore.Add(30*time.Minute))
+	}
+
+	// IPs preservados (sem re-resolver).
+	if !slices.Equal(ext.ResolvedIPs, []string{"1.2.3.4"}) {
+		t.Errorf("ResolvedIPs = %v, want [1.2.3.4] preservados", ext.ResolvedIPs)
+	}
+
+	// O enforcer não é re-aplicado: o domínio já está bloqueado.
+	enf.mu.Lock()
+	if len(enf.blockedDomains) != 1 {
+		t.Errorf("BlockDomain chamado %d vezes, want 1 (apenas o Block inicial)", len(enf.blockedDomains))
+	}
+	enf.mu.Unlock()
+
+	// O timer foi re-armado com o novo vencimento.
+	sched.mu.RLock()
+	timer, has := sched.timers["x.com"]
+	sched.mu.RUnlock()
+	if !has || timer == nil {
+		t.Fatal("timer do domínio não foi re-armado após o extend")
+	}
+}
+
+// TestScheduler_ExtendBlock_NoActiveBlockFallsBackToBlock verifies ExtendBlock
+// is idempotent: extending a domain that is not blocked just blocks it.
+func TestScheduler_ExtendBlock_NoActiveBlockFallsBackToBlock(t *testing.T) {
+	origResolve := resolveFunc
+	resolveFunc = func(string) ([]string, error) { return []string{"1.2.3.4"}, nil }
+	t.Cleanup(func() { resolveFunc = origResolve })
+
+	sched, enf, _ := setupTestScheduler(t)
+
+	ext, err := sched.ExtendBlock("novo.com", 45*time.Minute)
+	if err != nil {
+		t.Fatalf("ExtendBlock on a non-blocked domain: %v", err)
+	}
+	if ext.Domain != "novo.com" {
+		t.Errorf("Domain = %s, want novo.com", ext.Domain)
+	}
+	want := time.Until(ext.ExpiresAt)
+	if want > 46*time.Minute || want < 44*time.Minute {
+		t.Errorf("ExpiresAt = %v, want ~45m from now", ext.ExpiresAt)
+	}
+	enf.mu.Lock()
+	_, blocked := enf.blockedDomains["novo.com"]
+	enf.mu.Unlock()
+	if !blocked {
+		t.Error("fallback Block deve ter aplicado o bloqueio no enforcer")
 	}
 }
 

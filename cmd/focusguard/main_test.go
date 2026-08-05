@@ -215,6 +215,67 @@ func TestHandleBlockCommand_FailureResponse(t *testing.T) {
 	}
 }
 
+// TestHandleBlockCommand_ExtendAndReplaceFlags verifies --extend/--replace are
+// forwarded to the daemon (the conflict-resolution flags of the block action).
+func TestHandleBlockCommand_ExtendAndReplaceFlags(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "OK"}
+	})
+
+	client := ipc.NewClient()
+	captureStdout(t, func() {
+		handleBlockCommand(client, []string{"twitter.com", "--extend", "30m"})
+	})
+	if !gotReq.Extend || gotReq.Replace {
+		t.Errorf("--extend should set Extend=true, got %+v", gotReq)
+	}
+
+	captureStdout(t, func() {
+		handleBlockCommand(client, []string{"twitter.com", "--replace", "30m"})
+	})
+	if !gotReq.Replace || gotReq.Extend {
+		t.Errorf("--replace should set Replace=true, got %+v", gotReq)
+	}
+}
+
+// TestHandleBlockCommand_ConflictResponse verifies the ask-first flow in the
+// CLI: a Conflict response explains how to resolve it (somar/substituir)
+// instead of printing a generic "Falha".
+func TestHandleBlockCommand_ConflictResponse(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{
+			Success:       false,
+			Conflict:      true,
+			ConflictBlock: &policy.Block{Domain: "twitter.com", ExpiresAt: time.Now().Add(time.Hour)},
+			Message:       "Domínio já bloqueado até 12:00:00 01/01/2026. Use --extend para somar ou --replace para reiniciar.",
+		}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleBlockCommand(client, []string{"twitter.com", "4h"})
+	})
+
+	if !caught || code != 1 {
+		t.Fatalf("expected exit(1) on conflict, got caught=%v code=%d", caught, code)
+	}
+}
+
+// TestHandleBlockCommand_ConflictFlagsWithPresetRejected verifies --extend and
+// --replace are rejected when combined with --preset/--internet (they only make
+// sense for a specific domain).
+func TestHandleBlockCommand_ConflictFlagsWithPresetRejected(t *testing.T) {
+	client := ipc.NewClient()
+	caught, _ := runWithExitMock(func() {
+		handleBlockCommand(client, []string{"--preset", "social", "--extend", "1h"})
+	})
+	if !caught {
+		t.Fatal("expected osExit when --extend is used with --preset")
+	}
+}
+
 func TestHandleStatusCommand_Empty(t *testing.T) {
 	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
 		return ipc.Response{Success: true, Blocks: []policy.Block{}}
