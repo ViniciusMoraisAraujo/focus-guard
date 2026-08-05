@@ -7,6 +7,43 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-08-05
+
+### ✨ Novas funcionalidades
+
+- **Ação `sessions` e sessões recentes na UI** — nova ação IPC `sessions`
+  (histórico das sessões de foco concluídas) e nova seção "sessões recentes"
+  nas estatísticas do painel web.
+- **`Block.Extend`** — estende a expiração de um bloqueio ativo sem removê-lo.
+- **Logs de arquivo** — watchdog, tray e web agora gravam logs junto ao
+  executável (`internal/filelog`).
+- **Ícone no watchdog** — o binário do watchdog embute o ícone do FocusGuard
+  (ícone próprio na tarefa/atalho).
+- **Endpoint de profiling** — o daemon expõe `/debug/pprof/` via env `FG_PPROF`
+  (loopback, stdlib, com suporte a `seconds=` e `?gc=1`).
+
+### ⚡ Performance (P0/P1 de `docs/perf-2026-08-05.md`)
+
+- **Store** — `Save` marshala o `state.json` fora do lock; só a escrita atômica
+  fica serializada (região crítica menor sob concorrência).
+- **Enforcer (Windows)** — cache da enumeração de regras netsh (TTL 10 s),
+  invalidado nas mutações; tira a enumeração de `FocusGuard-*` (17% do CPU do
+  perfil real) da maioria dos `Sync`.
+- **Scheduler** — `ListBlocks` lê um snapshot atômico invalidado nas mutações
+  (≈2,2× em 1000 blocos; `Status` IPC ≈3×) e cache DNS TTL 60 s para domínios
+  repetidos.
+- **Analytics** — `Sessions` incremental com cache por fingerprint do arquivo
+  (chamadas repetidas de `stats` ≈125× mais baratas a 10k sessões; mudança
+  externa força releitura integral).
+- **httpapi** — respostas gzip quando o cliente envia `Accept-Encoding: gzip`
+  (−98% no payload de status com 1000 bloqueios).
+- **processguard** — intervalo padrão do scan elevado de 5 s para 15 s.
+
+### 🐛 Correções
+
+- **Daemon** — guards contra construtores de watcher nil e erros de bind nil /
+  Windows (panic pré-existente do restart).
+
 ## [0.12.0] - 2026-08-04
 
 ### 🪟 Tray: correções de instalação e robustez
