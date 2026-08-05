@@ -479,6 +479,19 @@ func runDaemon() bool {
 		return true
 	}
 
+	// Endpoint pprof temporário (FG_PPROF=<porta>), loopback, stdlib — para
+	// captura de perfil do processo real. Best-effort: bind falhou não derruba
+	// o daemon.
+	if addr := pprofAddr(); addr != "" {
+		stopPprof, err := startPprof(addr)
+		if err != nil {
+			log.Printf("[FocusGuard Daemon] pprof indisponível em %s: %v", addr, err)
+		} else {
+			defer stopPprof()
+			log.Printf("[FocusGuard Daemon] pprof ativo em http://%s/debug/pprof/ (temporário, loopback)", addr)
+		}
+	}
+
 	statePath := getStateFilePath()
 	st, err := store.NewStore(statePath)
 	if err != nil {
