@@ -128,26 +128,42 @@ func cleanState() *State {
 }
 
 func (s *Store) Save(state *State) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.saveLocked(state)
-}
-
-// saveLocked writes state to disk atomically (temp file + rename) and fires
-// onSave after the rename so watchers can hash the content now on disk. The
-// caller must hold s.mu.
-func (s *Store) saveLocked(state *State) error {
-	dir := filepath.Dir(s.filePath)
-	if err := os.MkdirAll(dir, 0755); err != nil {
-		return fmt.Errorf("failed to create directory: %w", err)
-	}
-
+	// Marshal fora do mutex: é a parte cara do Save (proporcional ao estado) e
+	// só depende do argumento, não do Store — dois Saves concorrentes
+	// marshalam em paralelo e serializam apenas o rename/escrita atômica.
 	if state.Version == 0 {
 		state.Version = 1
 	}
 	data, err := json.MarshalIndent(state, "", "  ")
 	if err != nil {
 		return fmt.Errorf("failed to marshal state: %w", err)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.writeLocked(data)
+}
+
+// saveLocked writes state to disk atomically, used by healCorrupted which
+// already holds the lock and needs the full marshal+write sequence.
+func (s *Store) saveLocked(state *State) error {
+	if state.Version == 0 {
+		state.Version = 1
+	}
+	data, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		return fmt.Errorf("failed to marshal state: %w", err)
+	}
+	return s.writeLocked(data)
+}
+
+// writeLocked persists pre-marshaled state to disk atomically (temp file +
+// rename) and fires onSave after the rename so watchers can hash the content
+// now on disk. The caller must hold s.mu.
+func (s *Store) writeLocked(data []byte) error {
+	dir := filepath.Dir(s.filePath)
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return fmt.Errorf("failed to create directory: %w", err)
 	}
 
 	tmpFile, err := os.CreateTemp(dir, "state-*.tmp")
