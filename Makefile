@@ -43,7 +43,15 @@ build-cli:
 build-daemon:
 	$(GO) build -o $(BIN_DIR)/$(DAEMON) ./cmd/focusguard-daemon
 
+# build-web compila o focusguard-web. Avisa quando os assets estão vazios
+# (sem "make ui" antes): nesse caso o binário embute uma pasta vazia e a UI
+# não abre — o servidor mostra a página "UI não compilada" na raiz em vez
+# da interface.
 build-web:
+	@if [ ! -f cmd/focusguard-web/assets/index.html ]; then \
+		echo "⚠ Aviso: cmd/focusguard-web/assets está vazio — a UI não será embutida no binário."; \
+		echo "  Rode 'make ui' antes (make ui && make build) para incluir a interface web."; \
+	fi
 	$(GO) build -o $(BIN_DIR)/focusguard-web$(EXE) ./cmd/focusguard-web
 
 # ui compila o frontend (React + Vite) e copia o dist para dentro de
