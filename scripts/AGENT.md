@@ -13,12 +13,13 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 
 | Arquivo | Papel |
 |---|---|
-| `build-msi.sh` | Gera `focusguard-<v>-<arch>.msi` via go-msi + WiX (CI job `windows-msi`) |
+| `build-msi.sh` | Gera `focusguard[-server]-<v>-<arch>.msi` via go-msi + WiX (CI job `windows-msi`); perfil `desktop` (padrão) ou `server` escolhe o manifesto |
 | `install-daemon.ps1` | Instalação Windows: copia p/ Program Files, serviço SCM, atalho, tray, watchdog |
 | `install-linux.sh` | Instalação Linux: `/opt/focusguard`, systemd, XDG autostart, atalho desktop |
 | `focusguard.service` | Unit systemd (template; `ExecStart` é reescrito pelo install-linux.sh) |
 | `focusguard-tray.desktop` | Template de autostart do tray (Linux) |
-| `msi/` | `wix.json` (manifesto) + `product.wxs` (template WiX) do go-msi |
+| `msi/` | `wix.json` (desktop) + `wix-server.json` (Server, headless) + `product.wxs` (template WiX) do go-msi |
+| `../server.role` | Marcador vazio da edição Server — o MSI Server instala ao lado do daemon. Em instalação LIMPA (sem `state.json`) o DNS sinkhole nasce habilitado no 1º boot; em conversão de instalação existente, habilite na tela Rede ou com `focusguard dns start` (ver `isServerEdition` no daemon) |
 | `verifyicon/` | Verifica se o ícone embutido no .exe == `focusguard.ico` |
 
 ## Regras específicas
@@ -31,8 +32,17 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 4. **Best-effort**: falha de atalho/tray/watchdog avisa e segue — nunca aborta
    a instalação do daemon.
 5. `build-msi.sh` roda **apenas em ambiente Windows** (go-msi invoca WiX via
-   `cmd.exe`); arquitetura `amd64` (padrão) ou `arm64`.
-6. Caminhos de build no Windows: use `ROOT_WIN` (`pwd -W`) e `cygpath -w` —
+   `cmd.exe`); arquitetura `amd64` (padrão) ou `arm64`; perfil `desktop`
+   (padrão) ou `server`.
+6. **Edições desktop e Server compartilham o UpgradeCode** (sabores do mesmo
+   produto): `product.wxs` usa `AllowSameVersionUpgrades="yes"` para que
+   instalar uma sobre a outra na MESMA versão converta a máquina
+   (RemoveExistingProducts troca a edição). Não criar um UpgradeCode novo por
+   edição — isso criaria produtos independentes com serviços de mesmo nome.
+   Atenção: o DNS liga sozinho no 1º boot apenas em instalação LIMPA (sem
+   `state.json`); converter uma instalação existente mantém o estado e exige
+   `focusguard dns start` (ou a tela Rede) para ativar o sinkhole.
+7. Caminhos de build no Windows: use `ROOT_WIN` (`pwd -W`) e `cygpath -w` —
    ver histórico do fix do cross-drive `filepath.Rel` (commit `d3da75e` +
    `a890d92`): o go-msi resolve os caminhos do `wix.json` como absolutos e os
    torna relativos ao `--out`; se o repo e o `--out` ficarem em drives
@@ -58,12 +68,17 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
   TUI (que exige um terminal)"** (linha ~202, `Terminal=true`). A TUI foi
   removida: a CLI sem argumentos agora **abre a interface web no navegador**.
   Revisar o comentário e avaliar se `Terminal=true` ainda faz sentido (abrir
-  terminal para depois abrir o navegador é indesejável).
+  terminal para depois abrir o navegador é indesejável).- **`build-msi.sh` — versão e paths**: `MSI_NAME` é relativo (`--msi` sem
+   caminho → grava na raiz); se um dia quiserem build fora da raiz, use caminho
+   absoluto Windows. Também vale validar `$VERSION` com um regex de semver
+   antes de chamar o go-msi (erro do WiX com versão inválida é obscuro).
 
-- **`build-msi.sh` — versão e paths**: `MSI_NAME` é relativo (`--msi` sem
-  caminho → grava na raiz); se um dia quiserem build fora da raiz, use caminho
-  absoluto Windows. Também vale validar `$VERSION` com um regex de semver
-  antes de chamar o go-msi (erro do WiX com versão inválida é obscuro).
+- **Conversão desktop→server com o tray rodando**: o `tray.exe` é processo
+  comum iniciado pelo hook da edição desktop; durante o `RemoveExistingProducts`
+  ele pode estar com o arquivo travado → remoção falha ou agenda reboot
+  (exposição já existente nos upgrades normais, só fica mais provável na troca
+  de sabor). Se virar problema real, avaliar fechar o tray antes da troca
+  (padrão do `stopForBinarySwap` do daemon).
 
 ## Testes
 

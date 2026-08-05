@@ -21,7 +21,12 @@
 
       <MediaTemplate EmbedCab="yes" {{if gt (.Compression | len) 0}}CompressionLevel="{{.Compression}}"{{end}}/>
 
-      <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente do software já está instalada."/>
+      <!-- AllowSameVersionUpgrades=yes: as edições desktop e Server compartilham
+           o UpgradeCode (sabores do mesmo produto) — sem isso, instalar o Server
+           sobre o Desktop (ou vice-versa) na MESMA versão seria bloqueado como
+           "mesma versão já instalada". O upgrade remove a edição anterior
+           (RemoveExistingProducts) e instala a nova (desktop↔server). -->
+      <MajorUpgrade DowngradeErrorMessage="Uma versão mais recente do software já está instalada." AllowSameVersionUpgrades="yes"/>
 
       {{if gt (.Banner | len) 0 }} <WixVariable Id="WixUIBannerBmp" Value="{{.Banner}}"/> {{end}}
       {{if gt (.Dialog | len) 0 }} <WixVariable Id="WixUIDialogBmp" Value="{{.Dialog}}"/> {{end}}

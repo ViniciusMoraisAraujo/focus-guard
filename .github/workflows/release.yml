@@ -90,20 +90,30 @@ jobs:
           find ../cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
           cp -r dist/. ../cmd/focusguard-web/assets/
 
-      - name: Build MSI installer
+      # As duas edições compartilham o UpgradeCode (sabores do mesmo produto):
+      # a desktop (tray, atalho, Run) e a Server (headless, server.role).
+      # Instalar uma sobre a outra na mesma versão converte a máquina
+      # (AllowSameVersionUpgrades no product.wxs). O DNS liga sozinho no 1º
+      # boot apenas em instalação LIMPA; numa conversão de instalação
+      # existente, habilitar na tela Rede (ou focusguard dns start).
+      - name: Build MSI installers (desktop + server)
         shell: bash
         env:
           FG_VERSION: ${{ github.ref_name }}
         run: |
           # 'v0.9.0' -> '0.9.0' (o go-msi exige semver sem prefixo 'v')
           VERSION="${FG_VERSION#v}"
-          bash scripts/build-msi.sh "$VERSION" amd64
+          bash scripts/build-msi.sh "$VERSION" amd64 desktop
+          bash scripts/build-msi.sh "$VERSION" amd64 server
 
-      - name: Upload MSI to release
+      - name: Upload MSIs to release
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           VERSION="${GITHUB_REF_NAME#v}"
-          gh release upload "$GITHUB_REF_NAME" "focusguard-${VERSION}-amd64.msi" --clobber
-          echo "::notice::MSI anexado à release: focusguard-${VERSION}-amd64.msi"
+          gh release upload "$GITHUB_REF_NAME" \
+            "focusguard-${VERSION}-amd64.msi" \
+            "focusguard-server-${VERSION}-amd64.msi" \
+            --clobber
+          echo "::notice::MSIs anexados à release: focusguard-${VERSION}-amd64.msi e focusguard-server-${VERSION}-amd64.msi"

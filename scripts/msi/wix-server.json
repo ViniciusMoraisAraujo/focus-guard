@@ -1,0 +1,71 @@
+{
+  "product": "FocusGuard Server",
+  "company": "FocusGuard",
+  "icon": "focusguard.ico",
+  "compression": "high",
+  "upgrade-code": "6a87f38f-249f-437e-a729-4cb5c0734c0b",
+  "info": {
+    "comments": "FocusGuard Server — sinkhole DNS para a rede inteira (edição headless).",
+    "contact": "FocusGuard",
+    "help-link": "https://github.com/focusguard/focusguard",
+    "support-link": "https://github.com/focusguard/focusguard",
+    "update-info-link": "https://github.com/focusguard/focusguard/releases",
+    "readme": "FocusGuard Server — sinkhole DNS para a rede inteira."
+  },
+  "files": [
+    {
+      "path": "bin/focusguard-daemon.exe",
+      "service": {
+        "name": "FocusGuard",
+        "start": "auto",
+        "display-name": "FocusGuard Daemon",
+        "description": "Sinkhole DNS da rede + bloqueio de distrações (edição Server)."
+      }
+    },
+    {
+      "path": "bin/focusguard-watchdog.exe",
+      "service": {
+        "name": "FocusGuardWatchdog",
+        "start": "auto",
+        "display-name": "FocusGuard Watchdog",
+        "description": "Monitora o daemon FocusGuard e o reinicia se não responder."
+      }
+    },
+    {
+      "path": "bin/focusguard-web.exe"
+    },
+    {
+      "path": "bin/focusguard.exe"
+    },
+    {
+      "path": "server.role"
+    }
+  ],
+  "hooks": [
+    {
+      "command": "sc.exe failure FocusGuard reset= 86400 actions= restart/5000/restart/10000/restart/30000",
+      "when": "install",
+      "execute": "deferred",
+      "impersonate": "no",
+      "return": "ignore"
+    },
+    {
+      "command": "sc.exe failure FocusGuardWatchdog reset= 86400 actions= restart/5000/restart/5000/restart/5000",
+      "when": "install",
+      "execute": "deferred",
+      "impersonate": "no",
+      "return": "ignore"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "FocusGuard Server",
+      "description": "Abre a interface web do FocusGuard Server",
+      "location": "program",
+      "target": "[#ApplicationFile4]",
+      "wdir": "INSTALLDIR",
+      "icon": "focusguard.ico"
+    }
+  ],
+  "registries": []
+}
