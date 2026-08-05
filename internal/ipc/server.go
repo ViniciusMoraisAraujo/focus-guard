@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
 	"focusguard/internal/tamper"
+	"focusguard/internal/user"
 )
 
 // updateTimeout bounds the update/update-check IPC actions. Aplicar uma
@@ -46,6 +48,7 @@ type Server struct {
 	goalStore       GoalManager
 	apps            AppsManager
 	tamperLog       TamperProvider
+	users           UserManager
 	dnsCtrl         DNSController
 	onUpdateApplied func()
 	onDNSStarted    func()
@@ -148,14 +151,34 @@ func (s *Server) SetTamper(p TamperProvider) {
 	s.tamperLog = p
 }
 
+// UserManager is the credential store backing the user-* actions (web login
+// and user management). The daemon wires a *user.Store; when no manager is
+// configured the actions fail with a clear message (tests and dev builds).
+type UserManager interface {
+	List() []string
+	Verify(username, password string) (user.User, bool)
+	Add(username, password string) error
+	Remove(username string) error
+	SetPassword(username, password string) error
+}
+
+// SetUsers wires the credential store into the server. Nil makes the user-*
+// actions fail with a clear message.
+func (s *Server) SetUsers(m UserManager) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.users = m
+}
+
 // DNSController drives the DNS sinkhole server lifecycle used by the
-// dns-start/dns-stop/dns-status actions. The daemon wires a
+// dns-start/dns-stop/dns-status/dns-set-upstream actions. The daemon wires a
 // *dnsserver.Controller (bound to the scheduler as the policy checker); tests
-// stub it. The persisted enabled flag lives in the scheduler, not the
-// controller — the actions combine both for status.
+// stub it. The persisted enabled flag and upstream live in the scheduler, not
+// the controller — the actions combine both for status.
 type DNSController interface {
 	Start() error
 	Stop() error
+	SetUpstream(upstream string) error
 	Status() dnsserver.Status
 }
 
@@ -532,6 +555,75 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: true, Message: fmt.Sprintf("Processo %s removido da denylist", req.AppName)}
 		}
 
+	case "user-list":
+		s.mu.RLock()
+		m := s.users
+		s.mu.RUnlock()
+		if m == nil {
+			resp = Response{Success: false, Message: "usuários não configurados"}
+			break
+		}
+		resp = Response{Success: true, Users: m.List()}
+
+	case "user-verify":
+		s.mu.RLock()
+		m := s.users
+		s.mu.RUnlock()
+		if m == nil {
+			resp = Response{Success: false, Message: "usuários não configurados"}
+			break
+		}
+		u, ok := m.Verify(req.UserName, req.UserPassword)
+		if !ok {
+			// Mensagem única para usuário desconhecido e senha errada — não
+			// revela qual dos dois falhou (best-effort; o IPC é local).
+			resp = Response{Success: false, Message: "usuário ou senha inválidos"}
+			break
+		}
+		resp = Response{Success: true, UserIsAdmin: u.IsAdmin}
+
+	case "user-add":
+		s.mu.RLock()
+		m := s.users
+		s.mu.RUnlock()
+		if m == nil {
+			resp = Response{Success: false, Message: "usuários não configurados"}
+			break
+		}
+		if err := m.Add(req.UserName, req.UserPassword); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Usuário %s criado", req.UserName)}
+		}
+
+	case "user-remove":
+		s.mu.RLock()
+		m := s.users
+		s.mu.RUnlock()
+		if m == nil {
+			resp = Response{Success: false, Message: "usuários não configurados"}
+			break
+		}
+		if err := m.Remove(req.UserName); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Usuário %s removido", req.UserName)}
+		}
+
+	case "user-set-password":
+		s.mu.RLock()
+		m := s.users
+		s.mu.RUnlock()
+		if m == nil {
+			resp = Response{Success: false, Message: "usuários não configurados"}
+			break
+		}
+		if err := m.SetPassword(req.UserName, req.UserPassword); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+		} else {
+			resp = Response{Success: true, Message: fmt.Sprintf("Senha de %s atualizada", req.UserName)}
+		}
+
 	case "schedule-list":
 		s.mu.RLock()
 		sm := s.schedules
@@ -781,6 +873,34 @@ func (s *Server) handleConnection(conn net.Conn) {
 		resp = Response{Success: true}
 		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
 
+	case "dns-set-upstream":
+		s.mu.RLock()
+		c := s.dnsCtrl
+		s.mu.RUnlock()
+		if c == nil {
+			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			break
+		}
+		upstream, err := normalizeUpstream(req.Upstream)
+		if err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		// Persiste primeiro (espelho em disco), depois aplica no listener vivo
+		// (restart se estiver ligado). Um restart que falhe deixa o servidor
+		// parado com o erro no dns-status — e o próximo boot usa o valor
+		// persistido (mesmo padrão do dns-start com bind ocupado).
+		if err := s.scheduler.SetDNSUpstream(upstream); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		if err := c.SetUpstream(upstream); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{Success: true, Message: fmt.Sprintf("Upstream DNS alterado para %s", upstream)}
+		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
+
 	case "status":
 		blocks, err := s.scheduler.ListBlocks()
 		if err != nil {
@@ -899,6 +1019,32 @@ func (s *Server) handleConnection(conn net.Conn) {
 			go fn()
 		}
 	}
+}
+
+// normalizeUpstream validates a user-supplied upstream resolver and returns it
+// in host:port form (a bare host gets the DNS default port 53). Empty input is
+// rejected — the caller can always pass a concrete resolver explicitly.
+func normalizeUpstream(in string) (string, error) {
+	in = strings.TrimSpace(in)
+	if in == "" {
+		return "", errors.New("informe um upstream (ex: 1.1.1.2, 9.9.9.9:53)")
+	}
+	host, port, err := net.SplitHostPort(in)
+	if err != nil {
+		// Sem porta explícita (ex: "1.1.1.2", "dns.google") → porta 53.
+		if !strings.Contains(in, ":") {
+			return net.JoinHostPort(in, "53"), nil
+		}
+		return "", fmt.Errorf("upstream inválido %q (use host ou host:porta)", in)
+	}
+	if host == "" || port == "" {
+		return "", fmt.Errorf("upstream inválido %q (use host ou host:porta)", in)
+	}
+	p, err := strconv.Atoi(port)
+	if err != nil || p < 1 || p > 65535 {
+		return "", fmt.Errorf("porta de upstream inválida %q", port)
+	}
+	return net.JoinHostPort(host, port), nil
 }
 
 // blockAllModeSuffix describes the block-all flavor for the success message:

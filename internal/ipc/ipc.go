@@ -55,6 +55,14 @@ type Request struct {
 	AppName string `json:"app_name,omitempty"`
 	// Name is the focus-session/mission label for the pomodoro action.
 	Name string `json:"name,omitempty"`
+	// UserName/UserPassword drive the user-* actions (web login and user
+	// management). The password travels over the local IPC socket only and is
+	// hashed (bcrypt) by the daemon before anything reaches disk.
+	UserName     string `json:"user_name,omitempty"`
+	UserPassword string `json:"user_password,omitempty"`
+	// Upstream drives the dns-set-upstream action: the resolver (host[:port])
+	// the DNS sinkhole forwards allowed queries to.
+	Upstream string `json:"upstream,omitempty"`
 	// Extend/Replace resolve the conflict of the user-driven block action:
 	// by default a block on an already-active domain returns Conflict=true so
 	// the CLI/Web can ask the user; --extend sums the duration to the current
@@ -101,6 +109,11 @@ type Response struct {
 	// ConflictBlock carries the existing block that caused the conflict, so the
 	// UI/CLI can show its expiry without an extra round-trip.
 	ConflictBlock *policy.Block `json:"conflict_block,omitempty"`
+	// Users lists the web UI usernames (user-list) — names only, never hashes.
+	Users []string `json:"users,omitempty"`
+	// UserIsAdmin reports whether the user-verify credentials belong to the
+	// admin account, so the web UI can gate the user-management actions.
+	UserIsAdmin bool `json:"user_is_admin,omitempty"`
 	// UpdatePendingReboot marks an update that could not replace the running
 	// binaries right away (Windows file lock) and was scheduled to complete at
 	// the next system boot (MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT). The
