@@ -35,12 +35,19 @@
 ## Build
 
 ```bash
+# Interface web (React): compila o frontend e o embute no focusguard-web.
+# OBRIGATÓRIO antes de compilar se quiser a UI no binário — sem ele, o
+# focusguard-web abre a página "UI não compilada" em http://127.0.0.1:48902
+# (make build avisa quando os assets estão vazios).
+make ui
+
 # Build tudo (usa Makefile)
 make build
 
 # Ou manualmente
 go build -o bin/focusguard.exe ./cmd/focusguard
 go build -o bin/focusguard-daemon.exe ./cmd/focusguard-daemon
+go build -o bin/focusguard-web ./cmd/focusguard-web
 ```
 
 > No Linux, os binários não terão a extensão `.exe`.
