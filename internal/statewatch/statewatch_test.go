@@ -616,14 +616,25 @@ func TestWatchFsEvents_ExternalChangeAfterSelfWrite_Detected(t *testing.T) {
 		close(doneFs)
 	}()
 
-	// The daemon writes the state file and marks it as its own write.
+	// The daemon writes the state file and marks it as its own write. On
+	// Windows the fsnotify event for an os.WriteFile can arrive before
+	// MarkSelfWrite records the hash (the daemon's real Save → MarkSelfWrite
+	// sequence is slow enough that the mark wins); that makes the very first
+	// event non-deterministic, so the suppression is asserted on the delta
+	// produced by a second, deterministic self-write below.
 	writeStateFile(t, statePath, `{"version":1,"blocks":{"x.com":{"domain":"x.com"}}}`)
 	w.MarkSelfWrite()
 
-	// Let the self-write event be consumed and suppressed.
+	// Let any pre-mark events be consumed and settled.
 	time.Sleep(100 * time.Millisecond)
-	if calls := atomic.LoadInt32(&rec.reconcileCalls); calls != 0 {
-		t.Fatalf("self-write should be suppressed, got %d reconciles", calls)
+	before := atomic.LoadInt32(&rec.reconcileCalls)
+
+	// A rewrite with the exact same content happens after the mark, so its
+	// event is guaranteed to be suppressed.
+	writeStateFile(t, statePath, `{"version":1,"blocks":{"x.com":{"domain":"x.com"}}}`)
+	time.Sleep(100 * time.Millisecond)
+	if calls := atomic.LoadInt32(&rec.reconcileCalls); calls != before {
+		t.Fatalf("self-write should be suppressed, got %d reconciles", calls-before)
 	}
 
 	// External modification right after the self-write (inside what used to be
@@ -637,7 +648,7 @@ func TestWatchFsEvents_ExternalChangeAfterSelfWrite_Detected(t *testing.T) {
 	<-doneFs
 
 	calls := atomic.LoadInt32(&rec.reconcileCalls)
-	if calls != 1 {
-		t.Errorf("expected 1 Reconcile call after external change, got %d", calls)
+	if calls != before+1 {
+		t.Errorf("expected 1 Reconcile call after external change, got %d (baseline %d)", calls, before)
 	}
 }
