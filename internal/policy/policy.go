@@ -24,3 +24,13 @@ func (b *Block) RemainingTime() time.Duration {
 	}
 	return time.Until(b.ExpiresAt)
 }
+
+// Extend pushes ExpiresAt forward by extra time (used by the "extend" IPC
+// action — adds to the current expiry, it never restarts or shortens a
+// block). A non-positive extra is a no-op.
+func (b *Block) Extend(extra time.Duration) {
+	if extra <= 0 {
+		return
+	}
+	b.ExpiresAt = b.ExpiresAt.Add(extra)
+}
