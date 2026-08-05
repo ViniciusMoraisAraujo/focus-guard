@@ -6,6 +6,7 @@ import (
 	"log"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"focusguard/internal/enforcer"
@@ -27,6 +28,46 @@ const maxConcurrentDNSResolutions = 8
 // dnsRefreshTimeout bounds each individual DNS lookup in the periodic refresh,
 // so one stalled resolver cannot hold the worker indefinitely.
 const dnsRefreshTimeout = 3 * time.Second
+
+// dnsCacheTTL bounds how long a resolved domain's IPs are reused by the block
+// paths before the domain is re-resolved. Blocking the same domain twice within
+// the TTL (unblock/re-block, a preset sharing active domains, deep-focus
+// allowlists) skips the DNS round-trip that dominates block latency in the
+// real daemon (2.4-10.2s with a slow resolver). DNS records rarely change
+// faster than this, and the periodic refresh still re-resolves active blocks
+// every 15 minutes — so the cache only smooths the hot path, never the upkeep.
+const dnsCacheTTL = 60 * time.Second
+
+type dnsEntry struct {
+	ips     []string
+	expires time.Time
+}
+
+// dnsCache is a small TTL cache for resolved domain IPs. It has its own mutex
+// because BlockDomains/BlockAllInternet resolve in parallel goroutines.
+type dnsCache struct {
+	mu      sync.Mutex
+	entries map[string]dnsEntry
+}
+
+func (c *dnsCache) get(domain string) ([]string, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	e, ok := c.entries[domain]
+	if !ok || time.Now().After(e.expires) {
+		return nil, false
+	}
+	return e.ips, true
+}
+
+func (c *dnsCache) put(domain string, ips []string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.entries == nil {
+		c.entries = make(map[string]dnsEntry)
+	}
+	c.entries[domain] = dnsEntry{ips: ips, expires: time.Now().Add(dnsCacheTTL)}
+}
 
 // resolveBlockIPs resolves a domain and its www subdomain, merging both into a
 // single de-duplicated list. This keeps the enforcer free of its own DNS
@@ -108,6 +149,37 @@ func dedupeDomains(domains []string) []string {
 	return out
 }
 
+// resolveBlockIPsCached resolves a domain for the single-block path, reusing
+// the DNS cache when a fresh entry exists. Caching the merged result (base +
+// www) keeps repeated Block calls on the same domain from paying the
+// 2.4-10.2s real-DNS round-trip measured on this machine.
+func (s *Scheduler) resolveBlockIPsCached(domain string) ([]string, error) {
+	if ips, ok := s.dns.get(domain); ok {
+		return ips, nil
+	}
+	ips, err := resolveBlockIPs(domain)
+	if err != nil {
+		return nil, err
+	}
+	s.dns.put(domain, ips)
+	return ips, nil
+}
+
+// resolveBlockIPsCachedCtx is the context-aware cached resolver used by the
+// batched block paths, mirroring resolveBlockIPsCtx with the DNS cache in
+// front so a batch sharing domains with a recent block reuses their IPs.
+func (s *Scheduler) resolveBlockIPsCachedCtx(ctx context.Context, domain string) ([]string, error) {
+	if ips, ok := s.dns.get(domain); ok {
+		return ips, nil
+	}
+	ips, err := resolveBlockIPsCtx(ctx, domain)
+	if err != nil {
+		return nil, err
+	}
+	s.dns.put(domain, ips)
+	return ips, nil
+}
+
 // stateStore is the disk persistence contract the scheduler needs. It is an
 // interface so tests can substitute a spy that counts Load calls and prove
 // query methods are served 100% from RAM (no disk I/O under the lock).
@@ -133,16 +205,28 @@ type Scheduler struct {
 	timers       map[string]*time.Timer
 	bootstrapped bool
 	refreshStop  chan struct{}
+	dns          *dnsCache
+	// snapshot is the immutable read cache for ListBlocks, rebuilt on demand so
+	// query paths never iterate the source-of-truth map. Writers only mark it
+	// stale (invalidateSnapshot); the first reader after a mutation rebuilds it
+	// from the map and swaps the atomic pointer — reads stay O(n) slice copies
+	// with minimal lock contention even while a writer is mid-Block.
+	snapshot      atomic.Pointer[[]policy.Block]
+	snapshotDirty atomic.Bool
 }
 
 func NewScheduler(st stateStore, enf enforcer.Enforcer) *Scheduler {
-	return &Scheduler{
+	s := &Scheduler{
 		store:       st,
 		enforcer:    enf,
 		blocks:      make(map[string]policy.Block),
 		timers:      make(map[string]*time.Timer),
 		refreshStop: make(chan struct{}),
+		dns:         &dnsCache{entries: make(map[string]dnsEntry)},
 	}
+	empty := make([]policy.Block, 0)
+	s.snapshot.Store(&empty)
+	return s
 }
 
 func (s *Scheduler) Start() error {
@@ -260,6 +344,14 @@ func (s *Scheduler) ramState() *store.State {
 	return &store.State{Version: 1, Blocks: blocks}
 }
 
+// invalidateSnapshot marks the ListBlocks snapshot stale so the next read
+// rebuilds it from the source-of-truth map. Call after every mutation of
+// s.blocks while holding s.mu (a plain bool is safe here: the readers that
+// clear it run under RLock, which excludes the writer holding s.mu).
+func (s *Scheduler) invalidateSnapshot() {
+	s.snapshotDirty.Store(true)
+}
+
 // Reconcile loads the persisted state into RAM on the first call (bootstrap)
 // and, on every subsequent call, restores any disk tampering from the in-memory
 // state. Expired blocks are cleaned up and the enforcer is re-applied only when
@@ -285,6 +377,7 @@ func (s *Scheduler) Reconcile() error {
 		for domain, block := range state.Blocks {
 			s.blocks[domain] = block
 		}
+		s.invalidateSnapshot()
 		s.bootstrapped = true
 		changed = true
 	} else {
@@ -398,6 +491,7 @@ func (s *Scheduler) Reconcile() error {
 				delete(s.timers, enforcer.AllInternetDomain)
 			}
 		}
+		s.invalidateSnapshot()
 		changed = true
 	}
 	if changed {
@@ -471,6 +565,7 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 			}
 		}
 		if len(toRefresh) > 0 {
+			s.invalidateSnapshot()
 			_ = s.store.Save(s.ramState())
 		}
 		s.mu.Unlock()
@@ -482,7 +577,7 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 }
 
 func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block, error) {
-	ips, err := resolveBlockIPs(domain)
+	ips, err := s.resolveBlockIPsCached(domain)
 	if err != nil {
 		return nil, fmt.Errorf("scheduler: %w", err)
 	}
@@ -498,6 +593,7 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	s.mu.Lock()
 	wasEmpty := len(s.blocks) == 0
 	s.blocks[domain] = block
+	s.invalidateSnapshot()
 	if err := s.store.Save(s.ramState()); err != nil {
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
@@ -509,6 +605,7 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 		// domínio ativo sem timer (estado zumbi).
 		s.mu.Lock()
 		delete(s.blocks, domain)
+		s.invalidateSnapshot()
 		_ = s.store.Save(s.ramState())
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueio: %w", err)
@@ -536,8 +633,9 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 		return nil, fmt.Errorf("scheduler: nenhum domínio para bloquear")
 	}
 
-	// Resolve all domains in parallel with an individual timeout each.
-	resolved := refreshResolvedIPs(resolveEntries(unique), dnsRefreshTimeout, resolveBlockIPsCtx)
+	// Resolve all domains in parallel with an individual timeout each, reusing
+	// the DNS cache for domains resolved within the last dnsCacheTTL.
+	resolved := refreshResolvedIPs(resolveEntries(unique), dnsRefreshTimeout, s.resolveBlockIPsCachedCtx)
 	if len(resolved) != len(unique) {
 		for _, d := range unique {
 			if _, ok := resolved[d]; !ok {
@@ -565,12 +663,14 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 	for _, b := range blocks {
 		s.blocks[b.Domain] = b
 	}
+	s.invalidateSnapshot()
 	if err := s.store.Save(s.ramState()); err != nil {
 		// Reverte a RAM: sem o disco persistido, os domínios não podem ficar
 		// ativos sem timer (estado zumbi) — o lote inteiro é descartado.
 		for _, b := range blocks {
 			delete(s.blocks, b.Domain)
 		}
+		s.invalidateSnapshot()
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
 	}
@@ -588,6 +688,7 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 				delete(s.timers, b.Domain)
 			}
 		}
+		s.invalidateSnapshot()
 		_ = s.store.Save(s.ramState())
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueios: %w", err)
@@ -625,10 +726,11 @@ func resolveEntries(domains []string) []refreshEntry {
 // the same timer machinery, invoking enforcer.UnblockAll on expiry.
 func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Duration) (*policy.Block, error) {
 	// Resolve allowlist domains to IPs (best-effort per domain; failures are
-	// dropped so one bad domain never kills the whole panic block).
+	// dropped so one bad domain never kills the whole panic block). Reuses the
+	// DNS cache like the single/batch block paths.
 	var allowlistIPs []string
 	if len(allowlistDomains) > 0 {
-		resolved := refreshResolvedIPs(resolveEntries(dedupeDomains(allowlistDomains)), dnsRefreshTimeout, resolveBlockIPsCtx)
+		resolved := refreshResolvedIPs(resolveEntries(dedupeDomains(allowlistDomains)), dnsRefreshTimeout, s.resolveBlockIPsCachedCtx)
 		for _, d := range dedupeDomains(allowlistDomains) {
 			if ips, ok := resolved[d]; ok {
 				allowlistIPs = append(allowlistIPs, ips...)
@@ -647,8 +749,10 @@ func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Du
 	s.mu.Lock()
 	wasEmpty := len(s.blocks) == 0
 	s.blocks[enforcer.AllInternetDomain] = block
+	s.invalidateSnapshot()
 	if err := s.store.Save(s.ramState()); err != nil {
 		delete(s.blocks, enforcer.AllInternetDomain)
+		s.invalidateSnapshot()
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
 	}
@@ -659,6 +763,7 @@ func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Du
 		// sentinela ativo sem timer (estado zumbi).
 		s.mu.Lock()
 		delete(s.blocks, enforcer.AllInternetDomain)
+		s.invalidateSnapshot()
 		_ = s.store.Save(s.ramState())
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueio de internet: %w", err)
@@ -686,10 +791,21 @@ func (s *Scheduler) ListBlocks() ([]policy.Block, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
+	// Lê do snapshot imutável quando ele reflete o map (sem mutação pendente
+	// e mesmo tamanho) — cópia O(n) da fatia, sem iterar o map. Se algo
+	// divergiu (mutação não-publicada ou seed direto do map em testes),
+	// reconstrói sob o RLock e publica; writers não intercalam aqui.
+	sp := s.snapshot.Load()
+	if sp != nil && !s.snapshotDirty.Load() && len(*sp) == len(s.blocks) {
+		return append([]policy.Block(nil), (*sp)...), nil
+	}
+
 	list := make([]policy.Block, 0, len(s.blocks))
 	for _, b := range s.blocks {
 		list = append(list, b)
 	}
+	s.snapshot.Store(&list)
+	s.snapshotDirty.Store(false)
 	return list, nil
 }
 
@@ -760,6 +876,7 @@ func (s *Scheduler) onExpire(domain string) {
 		return // outro caminho (Reconcile) já removeu
 	}
 	delete(s.blocks, domain)
+	s.invalidateSnapshot()
 	delete(s.timers, domain)
 	remaining := len(s.blocks)
 	_ = s.store.Save(s.ramState())
