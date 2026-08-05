@@ -737,6 +737,144 @@ func TestPrintUsage_IncludesApps(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
+// Servidor DNS
+// ---------------------------------------------------------------------------
+
+func TestHandleDNSCommand_Start(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Servidor DNS iniciado em 0.0.0.0:53"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleDNSCommand(client, []string{"start"}) })
+
+	if gotReq.Action != "dns-start" {
+		t.Errorf("expected action dns-start, got %q", gotReq.Action)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output should contain checkmark, got: %s", output)
+	}
+}
+
+func TestHandleDNSCommand_StartFailure(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: false, Message: "não foi possível vincular à porta 53"}
+	})
+
+	client := ipc.NewClient()
+	caught, code := runWithExitMock(func() {
+		handleDNSCommand(client, []string{"start"})
+	})
+	if !caught || code != 1 {
+		t.Fatalf("expected exit 1 when dns-start fails, caught=%v code=%d", caught, code)
+	}
+}
+
+func TestHandleDNSCommand_Stop(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true, Message: "Servidor DNS desligado"}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleDNSCommand(client, []string{"stop"}) })
+
+	if gotReq.Action != "dns-stop" {
+		t.Errorf("expected action dns-stop, got %q", gotReq.Action)
+	}
+	if !strings.Contains(output, "✔") {
+		t.Errorf("output should contain checkmark, got: %s", output)
+	}
+}
+
+func TestHandleDNSCommand_Status_Active(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{
+			Success:     true,
+			DNSEnabled:  true,
+			DNSListening: true,
+			DNSAddr:     "0.0.0.0:53",
+			DNSUpstream: "1.1.1.2:53",
+			DNSQueries:  42,
+			DNSBlocked:  7,
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleDNSStatusCommand(client) })
+
+	if gotReq.Action != "dns-status" {
+		t.Errorf("expected action dns-status, got %q", gotReq.Action)
+	}
+	for _, want := range []string{"Ativo", "0.0.0.0:53", "1.1.1.2:53", "42", "7"} {
+		if !strings.Contains(output, want) {
+			t.Errorf("status output should contain %q, got: %s", want, output)
+		}
+	}
+}
+
+func TestHandleDNSCommand_Status_Disabled(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{Success: true}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleDNSStatusCommand(client) })
+
+	if !strings.Contains(output, "Desativado") {
+		t.Errorf("disabled status output should say Desativado, got: %s", output)
+	}
+}
+
+func TestHandleDNSCommand_Status_EnabledButStopped(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{
+			Success:      true,
+			DNSEnabled:   true,
+			DNSListening: false,
+			DNSBindError: "porta 53 ocupada",
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleDNSStatusCommand(client) })
+
+	if !strings.Contains(output, "Habilitado, mas parado") {
+		t.Errorf("output should report enabled but stopped, got: %s", output)
+	}
+	if !strings.Contains(output, "porta 53 ocupada") {
+		t.Errorf("output should surface bind error, got: %s", output)
+	}
+}
+
+func TestHandleDNSCommand_NoArgs_DefaultsToStatus(t *testing.T) {
+	var gotReq ipc.Request
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		gotReq = req
+		return ipc.Response{Success: true}
+	})
+
+	client := ipc.NewClient()
+	handleDNSCommand(client, nil)
+
+	if gotReq.Action != "dns-status" {
+		t.Errorf("expected default action dns-status, got %q", gotReq.Action)
+	}
+}
+
+func TestPrintUsage_IncludesDNS(t *testing.T) {
+	output := captureStdout(t, printUsage)
+	if !strings.Contains(output, "dns start") || !strings.Contains(output, "dns status") {
+		t.Errorf("usage should mention dns subcommands, got: %s", output)
+	}
+}
+
+// ---------------------------------------------------------------------------
 // Relatório HTML & resumo semanal
 // ---------------------------------------------------------------------------
 

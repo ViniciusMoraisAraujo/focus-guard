@@ -44,6 +44,8 @@ func main() {
 		handleScheduleCommand(client, os.Args[2:])
 	case "apps":
 		handleAppsCommand(client, os.Args[2:])
+	case "dns":
+		handleDNSCommand(client, os.Args[2:])
 	case "pomodoro":
 		handlePomodoroCommand(client, os.Args[2:])
 	case "pomodoro-defaults":
@@ -1203,6 +1205,75 @@ func handleStatusCommand(client *ipc.Client) {
 	fmt.Println()
 }
 
+func handleDNSCommand(client *ipc.Client, args []string) {
+	if len(args) > 0 {
+		switch args[0] {
+		case "start":
+			handleDNSStartCommand(client)
+			return
+		case "stop":
+			handleDNSStopCommand(client)
+			return
+		}
+	}
+	handleDNSStatusCommand(client)
+}
+
+func handleDNSStartCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "dns-start"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao iniciar o servidor DNS: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+func handleDNSStopCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "dns-stop"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao desligar o servidor DNS: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
+}
+
+func handleDNSStatusCommand(client *ipc.Client) {
+	resp, err := client.Send(ipc.Request{Action: "dns-status"})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao obter o status do servidor DNS: %s\n", resp.Message)
+		osExit(1)
+	}
+
+	fmt.Println("Servidor DNS:")
+	if !resp.DNSEnabled {
+		fmt.Println("  Estado: Desativado")
+		return
+	}
+	if resp.DNSListening {
+		fmt.Printf("  Estado: Ativo (ouvindo em %s)\n", resp.DNSAddr)
+	} else {
+		fmt.Println("  Estado: Habilitado, mas parado")
+		if resp.DNSBindError != "" {
+			fmt.Printf("  Erro:   %s\n", resp.DNSBindError)
+		}
+	}
+	fmt.Printf("  Upstream: %s\n", resp.DNSUpstream)
+	fmt.Printf("  Consultas: %d\n", resp.DNSQueries)
+	fmt.Printf("  Bloqueios: %d\n", resp.DNSBlocked)
+}
+
 func handleUpdateCommand(client *ipc.Client, args []string) {
 	updateCmd := flag.NewFlagSet("update", flag.ExitOnError)
 	channelFlag := updateCmd.String("channel", "", "Canal de release: stable (padrão) ou beta (prereleases)")
@@ -1283,6 +1354,9 @@ func printUsage() {
 	fmt.Println("  focusguard apps [list]                  Listar processos da denylist")
 	fmt.Println("  focusguard apps add <processo>          Encerrar processo durante sessões de foco")
 	fmt.Println("  focusguard apps remove <processo>       Parar de encerrar um processo")
+	fmt.Println("  focusguard dns start                    Iniciar o servidor DNS sinkhole (porta 53)")
+	fmt.Println("  focusguard dns stop                     Desligar o servidor DNS sinkhole")
+	fmt.Println("  focusguard dns status                   Mostrar o status do servidor DNS")
 	fmt.Println("  focusguard pomodoro --preset <categoria> [--work 25] [--rest 5] [--cycles 4] [--strict] [--save] [--label \"missão\"]")
 	fmt.Println("  focusguard pomodoro-defaults          Mostrar os padrões salvos do pomodoro")
 	fmt.Println("  focusguard mission                    Resumo de foco por missão nomeada")
