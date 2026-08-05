@@ -298,8 +298,25 @@ func (e *windowsEnforcer) addFirewallRulesBatch(ips []string) error {
 // stdin and then verifies the rules actually exist, because netsh can exit 0
 // even when an inner command of the script failed.
 func (e *windowsEnforcer) runNetshAddBatch(ips []string) error {
+	ips = validateIPs(ips)
 	if len(ips) == 0 {
 		return nil
+	}
+
+	// Migração legada tolerante: remove as regras antigas (nome cru com ':'
+	// para IPv6) que ainda existirem ANTES do batch. Um delete de regra
+	// inexistente DENTRO do script faz o netsh sair com exit 1 em modo lote
+	// (cada linha que falha propaga ao exit code do processo — confirmado por
+	// "Nenhuma regra correspondente..." → exit=1), e o add de qualquer domínio
+	// com IPv6 falhava o batch inteiro com "exit status 1". removeFirewallRule
+	// tolera "No rules match" e ainda varre o nome normalizado.
+	existing := e.existingFocusGuardRules()
+	for _, ip := range ips {
+		if strings.Contains(ip, ":") && existing[legacyDomainRuleName(ip)] {
+			if err := e.removeFirewallRule(ip); err != nil {
+				return fmt.Errorf("enforcer: migração da regra legada %s: %w", ip, err)
+			}
+		}
 	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -525,7 +542,7 @@ func (e *windowsEnforcer) BlockAll(allowlistIPs []string) error {
 		return err
 	}
 
-	for _, ip := range dedupeIPs(allowlistIPs) {
+	for _, ip := range validateIPs(allowlistIPs) {
 		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 		args := []string{"advfirewall", "firewall", "add", "rule",
 			"name=" + allowRuleName(ip),

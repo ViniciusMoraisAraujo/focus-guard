@@ -201,6 +201,29 @@ func dedupeIPs(ips []string) []string {
 	return result
 }
 
+// validateIPs returns the canonical form of every valid IP in ips, dropping
+// empty and invalid entries and de-duplicating. A non-IP value (e.g. a FQDN)
+// fed to netsh remoteip is rejected by Windows Firewall with "An IP address or
+// address keyword specified is not valid" and exits the batch with status 1 —
+// this is the last line of defense before any netsh invocation.
+func validateIPs(ips []string) []string {
+	seen := make(map[string]struct{}, len(ips))
+	out := make([]string, 0, len(ips))
+	for _, ip := range ips {
+		p := net.ParseIP(strings.TrimSpace(ip))
+		if p == nil {
+			continue
+		}
+		canon := p.String()
+		if _, ok := seen[canon]; ok {
+			continue
+		}
+		seen[canon] = struct{}{}
+		out = append(out, canon)
+	}
+	return out
+}
+
 // groupIPsByFamily splits IPs into IPv4 and IPv6 lists so each family can be
 // handled by the right firewall binary in a single batched invocation.
 func groupIPsByFamily(ips []string) (v4, v6 []string) {
@@ -298,18 +321,17 @@ func buildRestoreScript(ips []string, mask string) string {
 
 // buildNetshAddScript renders the script fed to a single netsh process via
 // stdin: one full-context add rule line per IP (netsh scripting needs the
-// advfirewall firewall context on every line) followed by exit. Rule names
-// normalize ':' to '_' so IPv6 addresses produce valid names (the same
-// convention DoH and Allow rules use); for IPv6 a delete-before-add of the
-// legacy raw-':' name migrates rules created before the normalization.
+// advfirewall context on every line) followed by exit. Rule names normalize
+// ':' to '_' so IPv6 addresses produce valid names (the same
+// convention DoH and Allow rules use). Input IPs are validated and
+// canonicalized first: a non-IP value would make netsh reject the remoteip
+// and exit the whole batch with status 1. The legacy raw-':' rule migration
+// is handled by runNetshAddBatch with a failure-tolerant delete BEFORE this
+// script runs — an inline delete of a non-existent rule aborts the batch the
+// same way (netsh propagates a failing line to the process exit code).
 func buildNetshAddScript(ips []string) string {
 	var b strings.Builder
-	for _, ip := range ips {
-		if strings.Contains(ip, ":") {
-			b.WriteString("advfirewall firewall delete rule name=FocusGuard_")
-			b.WriteString(ip)
-			b.WriteString("\r\n")
-		}
+	for _, ip := range validateIPs(ips) {
 		b.WriteString("advfirewall firewall add rule name=FocusGuard_")
 		b.WriteString(strings.ReplaceAll(ip, ":", "_"))
 		b.WriteString(" dir=out action=block remoteip=")

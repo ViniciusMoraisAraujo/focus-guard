@@ -492,7 +492,10 @@ func TestSplitHostsLines(t *testing.T) {
 
 // TestBuildNetshAddScript verifies the netsh batch script fed via stdin: one
 // full-context add rule line per IP (netsh needs the advfirewall context on
-// every line when scripting via stdin) followed by exit.
+// every line when scripting via stdin) followed by exit. IPv6 names normalize
+// ':' to '_'; the legacy migration delete is NOT part of the script anymore
+// (a failing line would abort the batch with exit 1 — runNetshAddBatch handles
+// it with a failure-tolerant delete before the batch).
 func TestBuildNetshAddScript(t *testing.T) {
 	tests := []struct {
 		name string
@@ -507,10 +510,15 @@ func TestBuildNetshAddScript(t *testing.T) {
 				"exit\r\n",
 		},
 		{
-			"ipv6 normalizes rule name with migration",
+			"ipv6 normalizes rule name without migration delete",
 			[]string{"2606:4700:4700::1111"},
-			"advfirewall firewall delete rule name=FocusGuard_2606:4700:4700::1111\r\n" +
-				"advfirewall firewall add rule name=FocusGuard_2606_4700_4700__1111 dir=out action=block remoteip=2606:4700:4700::1111\r\n" +
+			"advfirewall firewall add rule name=FocusGuard_2606_4700_4700__1111 dir=out action=block remoteip=2606:4700:4700::1111\r\n" +
+				"exit\r\n",
+		},
+		{
+			"invalid and duplicate entries are dropped",
+			[]string{"example.com", "8.8.8.8", "", "8.8.8.8"},
+			"advfirewall firewall add rule name=FocusGuard_8.8.8.8 dir=out action=block remoteip=8.8.8.8\r\n" +
 				"exit\r\n",
 		},
 		{
@@ -527,6 +535,22 @@ func TestBuildNetshAddScript(t *testing.T) {
 				t.Errorf("buildNetshAddScript(%v) = %q, want %q", tt.ips, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestValidateIPs(t *testing.T) {
+	got := validateIPs([]string{
+		"1.1.1.1",
+		"8.8.8.8",
+		"1.1.1.1",       // duplicata
+		"",              // vazio
+		"example.com",   // FQDN — nunca pode chegar ao remoteip
+		" 9.9.9.9 ",     // espaço — aceito e canonicalizado
+		"2606:4700:4700::1111",
+	})
+	want := []string{"1.1.1.1", "8.8.8.8", "9.9.9.9", "2606:4700:4700::1111"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("validateIPs() = %v, want %v", got, want)
 	}
 }
 

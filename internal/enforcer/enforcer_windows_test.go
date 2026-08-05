@@ -528,6 +528,48 @@ func TestAddFirewallRulesBatch_SingleNetshProcess(t *testing.T) {
 	}
 }
 
+// TestAddFirewallRulesBatch_IPv6_MigratesLegacyRule verifies the IPv6 block
+// path: a legacy raw-':' rule present in the firewall is removed with a
+// failure-tolerant delete BEFORE the batch, so the netsh add script only
+// carries add lines — a delete of a non-existent rule inside the script
+// aborts the whole batch with exit status 1 (netsh propagates a failing line
+// to the process exit code).
+func TestAddFirewallRulesBatch_IPv6_MigratesLegacyRule(t *testing.T) {
+	b := &batchStubWin{
+		showDumps: []string{
+			"Regra:\n    Nome da regra:    FocusGuard_2606:4700:4700::1111\n", // regra legada existe
+			"Regra:\n    Nome da regra:    FocusGuard_2606_4700_4700__1111\n", // pós-add normalizado
+		},
+	}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+	if err := e.addFirewallRulesBatch([]string{"2606:4700:4700::1111"}); err != nil {
+		t.Fatalf("addFirewallRulesBatch: %v", err)
+	}
+
+	// show (existing) + delete legada + delete normalizado + netsh add + verify + flushdns
+	if len(b.calls) != 6 {
+		t.Fatalf("expected 6 invocations, got %d: %v", len(b.calls), b.calls)
+	}
+
+	del := b.calls[2]
+	if del[0] != "netsh" || !slices.Contains(del, "delete") ||
+		!strings.Contains(strings.Join(del, " "), legacyDomainRuleName("2606:4700:4700::1111")) {
+		t.Errorf("expected a failure-tolerant delete of the legacy rule, got %v", del)
+	}
+
+	if len(b.stdins) != 1 {
+		t.Fatalf("expected 1 stdin script, got %d", len(b.stdins))
+	}
+	if strings.Contains(b.stdins[0], "delete rule") {
+		t.Errorf("script must not carry delete lines (netsh exits 1 on a failing line):\n%s", b.stdins[0])
+	}
+	if !strings.Contains(b.stdins[0], "add rule name=FocusGuard_2606_4700_4700__1111") {
+		t.Errorf("script missing the normalized IPv6 rule:\n%s", b.stdins[0])
+	}
+}
+
 // TestAddFirewallRulesBatch_MissingRuleAfterAdd verifies that when netsh exits
 // 0 but a rule is not actually present after the batch, an error is returned
 // (netsh can mask internal failures with exit code 0).
