@@ -1497,6 +1497,43 @@ func TestEnsureInInstallDir_CopiesWhenInstalled(t *testing.T) {
 	}
 }
 
+// TestEnsureInInstallDir_AlreadyInstalledIsNoOp verifies the same-path guard:
+// a binary that already lives in the install directory is NOT copied onto
+// itself (a self-copy via os.Create would truncate the file) — the function
+// just returns the canonical path.
+func TestEnsureInInstallDir_AlreadyInstalledIsNoOp(t *testing.T) {
+	origGoos := goos
+	goos = "windows"
+	defer func() { goos = origGoos }()
+
+	base := t.TempDir()
+	t.Setenv("ProgramFiles", base)
+	installDir := filepath.Join(base, "FocusGuard")
+	if err := os.MkdirAll(installDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+	tray := filepath.Join(installDir, "focusguard-tray.exe")
+	if err := os.WriteFile(tray, []byte("tray-installed"), 0644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, err := EnsureInInstallDir(tray)
+	if err != nil {
+		t.Fatalf("EnsureInInstallDir returned error: %v", err)
+	}
+	if got != tray {
+		t.Errorf("expected the same canonical path %q, got %q", tray, got)
+	}
+	// O binário não pode ser corrompido por um self-copy (os.Create truncaria).
+	data, err := os.ReadFile(tray)
+	if err != nil {
+		t.Fatalf("read tray: %v", err)
+	}
+	if string(data) != "tray-installed" {
+		t.Errorf("tray content = %q, want original (no self-copy)", data)
+	}
+}
+
 func TestEnsureInInstallDir_NotInstalledReturnsSrc(t *testing.T) {
 	origGoos := goos
 	goos = "windows"
