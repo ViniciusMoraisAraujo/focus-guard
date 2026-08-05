@@ -4,6 +4,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -59,5 +60,53 @@ func TestSetupLogging_FallsBackOnExecutableError(t *testing.T) {
 	defer stop()
 	if stop == nil {
 		t.Fatal("setupLogging deve sempre retornar uma func de restore")
+	}
+}
+
+func TestFallbackLogPath_WindowsUsesProgramData(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("comportamento específico do Windows")
+	}
+	orig := os.Getenv("PROGRAMDATA")
+	if orig == "" {
+		os.Setenv("PROGRAMDATA", `C:\ProgramData`)
+		defer os.Unsetenv("PROGRAMDATA")
+	}
+	want := filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard", logFileName)
+	if got := fallbackLogPath(); got != want {
+		t.Errorf("fallbackLogPath() = %q, want %q", got, want)
+	}
+}
+
+func TestSetupLogging_FallsBackToWritableDir(t *testing.T) {
+	// Caminho primário inacessível (diretório inexistente) → o log cai no
+	// fallback e a mensagem chega ao arquivo — sem tocar em ProgramData real.
+	primary := filepath.Join(t.TempDir(), "missing-dir", logFileName)
+	fbDir := t.TempDir()
+	fb := filepath.Join(fbDir, logFileName)
+
+	origPath, origFallback := logPathFn, fallbackLogPathFn
+	logPathFn = func() string { return primary }
+	fallbackLogPathFn = func() string { return fb }
+	defer func() { logPathFn, fallbackLogPathFn = origPath, origFallback }()
+
+	stop := setupLogging()
+	defer stop()
+	if stop == nil {
+		t.Fatal("setupLogging deve retornar uma func de restore mesmo no fallback")
+	}
+
+	msg := "mensagem pós-fallback"
+	log.Println("[focusguard-web] " + msg)
+
+	data, err := os.ReadFile(fb)
+	if err != nil {
+		t.Fatalf("ReadFile(fallback %q): %v", fb, err)
+	}
+	if !strings.Contains(string(data), msg) {
+		t.Errorf("fallback %q não contém %q: %q", fb, msg, data)
+	}
+	if _, err := os.Stat(primary); err == nil {
+		t.Errorf("arquivo primário %q não deveria existir", primary)
 	}
 }

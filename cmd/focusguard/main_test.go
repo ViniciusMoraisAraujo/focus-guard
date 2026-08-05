@@ -604,6 +604,8 @@ func TestMain_NoArgsOpensWeb(t *testing.T) {
 		func(string) error { return nil },
 		func(time.Duration) bool { return true },
 		func(u string) { opened = u },
+		func(time.Duration) bool { return false }, // zumbi não volta
+		func() error { return nil },
 	)
 	fake := filepath.Join(t.TempDir(), "focusguard-web.exe")
 	if err := os.WriteFile(fake, []byte("x"), 0o700); err != nil {
@@ -2013,15 +2015,19 @@ func TestPrintUsage_IncludesStats(t *testing.T) {
 // stubWebCommandVars troca os pontos de injeção do handleWebCommand pelos
 // stubs fornecidos e restaura os originais ao final do teste. webExePathFn
 // fica de fora: os testes que dependem dele o sobrescrevem à parte.
-func stubWebCommandVars(t *testing.T, probe func() bool, spawn func(string) error, wait func(time.Duration) bool, open func(string)) {
+// recheck simula a re-sonda antes de matar instâncias antigas; killStale
+// simula o encerramento de instâncias zumbis.
+func stubWebCommandVars(t *testing.T, probe func() bool, spawn func(string) error, wait func(time.Duration) bool, open func(string), recheck func(time.Duration) bool, killStale func() error) {
 	t.Helper()
-	origProbe, origSpawn, origWait, origOpen := probeWebServerFn, spawnWebServerFn, waitWebServerFn, openBrowserFn
+	origProbe, origSpawn, origWait, origOpen, origRecheck, origKill := probeWebServerFn, spawnWebServerFn, waitWebServerFn, openBrowserFn, webRecheckFn, killStaleWebServerFn
 	probeWebServerFn = probe
 	spawnWebServerFn = spawn
 	waitWebServerFn = wait
 	openBrowserFn = open
+	webRecheckFn = recheck
+	killStaleWebServerFn = killStale
 	t.Cleanup(func() {
-		probeWebServerFn, spawnWebServerFn, waitWebServerFn, openBrowserFn = origProbe, origSpawn, origWait, origOpen
+		probeWebServerFn, spawnWebServerFn, waitWebServerFn, openBrowserFn, webRecheckFn, killStaleWebServerFn = origProbe, origSpawn, origWait, origOpen, origRecheck, origKill
 	})
 }
 
@@ -2032,6 +2038,8 @@ func TestHandleWebCommand_OpensBrowserWhenAlreadyUp(t *testing.T) {
 		func(string) error { t.Fatal("não deveria spawnar"); return nil },
 		func(time.Duration) bool { return true },
 		func(u string) { opened = u },
+		func(time.Duration) bool { return false },
+		func() error { return nil },
 	)
 
 	output := captureStdout(t, handleWebCommand)
@@ -2063,6 +2071,8 @@ func TestHandleWebCommand_SpawnsServerWhenDown(t *testing.T) {
 		func(p string) error { spawned = p; return nil },
 		func(time.Duration) bool { return true }, // sobe rápido
 		func(u string) { opened = u },
+		func(time.Duration) bool { return false }, // zumbi não volta
+		func() error { return nil },
 	)
 	webExePathFn = func() string { return fakeWeb }
 	t.Cleanup(func() { webExePathFn = webExePath })
@@ -2086,6 +2096,8 @@ func TestHandleWebCommand_ReportsMissingBinary(t *testing.T) {
 		func(string) error { t.Fatal("não deveria spawnar"); return nil },
 		func(time.Duration) bool { return true },
 		func(string) {},
+		func(time.Duration) bool { return false },
+		func() error { return nil },
 	)
 	webExePathFn = func() string { return filepath.Join(t.TempDir(), "nao-existe") }
 	t.Cleanup(func() { webExePathFn = webExePath })
@@ -2113,6 +2125,8 @@ func TestHandleWebCommand_ReportsSpawnError(t *testing.T) {
 		func(string) error { return fmt.Errorf("spawn falhou") },
 		func(time.Duration) bool { return true },
 		func(string) {},
+		func(time.Duration) bool { return false },
+		func() error { return nil },
 	)
 	webExePathFn = func() string { return fakeWeb }
 	t.Cleanup(func() { webExePathFn = webExePath })
@@ -2123,6 +2137,105 @@ func TestHandleWebCommand_ReportsSpawnError(t *testing.T) {
 	}
 	if code != 1 {
 		t.Errorf("exit code = %d, want 1", code)
+	}
+}
+
+// TestHandleWebCommand_KillsStaleInstanceBeforeSpawning verifica o "loop" da
+// edição Server: quando o health falha e a re-sonda não recupera o servidor,
+// o CLI encerra as instâncias antigas (zumbi segurando a porta 48902) ANTES
+// de subir uma nova — o bind não pode esbarrar num processo travado.
+func TestHandleWebCommand_KillsStaleInstanceBeforeSpawning(t *testing.T) {
+	spawned := ""
+	killed := false
+	opened := ""
+	stubWebCommandVars(t,
+		func() bool { return false }, // health fora do ar
+		func(p string) error { spawned = p; return nil },
+		func(time.Duration) bool { return false }, // nem pós-spawn
+		func(u string) { opened = u },
+		func(time.Duration) bool { return false }, // zumbi não volta na re-sonda
+		func() error { killed = true; return nil },
+	)
+	fakeWeb := filepath.Join(t.TempDir(), "focusguard-web.exe")
+	if err := os.WriteFile(fakeWeb, []byte("x"), 0o700); err != nil {
+		t.Fatalf("write fake web exe: %v", err)
+	}
+	webExePathFn = func() string { return fakeWeb }
+	t.Cleanup(func() { webExePathFn = webExePath })
+
+	captureStdout(t, handleWebCommand)
+
+	if !killed {
+		t.Error("instância antiga deveria ser encerrada antes do spawn")
+	}
+	if spawned != fakeWeb {
+		t.Errorf("spawned = %q, want %q", spawned, fakeWeb)
+	}
+	if opened != webURL {
+		t.Errorf("navegador não aberto com a URL certa: %q", opened)
+	}
+}
+
+// TestHandleWebCommand_WarnsWhenKillFails verifica que a falha ao encerrar a
+// instância antiga é apenas um aviso: o fluxo segue (spawn + navegador).
+func TestHandleWebCommand_WarnsWhenKillFails(t *testing.T) {
+	spawned := ""
+	stubWebCommandVars(t,
+		func() bool { return false },
+		func(p string) error { spawned = p; return nil },
+		func(time.Duration) bool { return false },
+		func(string) {},
+		func(time.Duration) bool { return false },
+		func() error { return fmt.Errorf("taskkill falhou") },
+	)
+	fakeWeb := filepath.Join(t.TempDir(), "focusguard-web.exe")
+	if err := os.WriteFile(fakeWeb, []byte("x"), 0o700); err != nil {
+		t.Fatalf("write fake web exe: %v", err)
+	}
+	webExePathFn = func() string { return fakeWeb }
+	t.Cleanup(func() { webExePathFn = webExePath })
+
+	output := captureStdout(t, handleWebCommand)
+
+	if !strings.Contains(output, "⚠ Aviso: não foi possível encerrar instâncias antigas") {
+		t.Errorf("esperava aviso de falha no kill, got: %s", output)
+	}
+	if spawned != fakeWeb {
+		t.Errorf("o fluxo deveria continuar mesmo com kill falho, spawned = %q", spawned)
+	}
+}
+
+// TestHandleWebCommand_ReusesServerWhenStaleRecovers verifica que um servidor
+// apenas lento (a re-sonda responde) NÃO é morto nem duplicado: o CLI reabre o
+// navegador e reutiliza a instância existente.
+func TestHandleWebCommand_ReusesServerWhenStaleRecovers(t *testing.T) {
+	spawned := ""
+	killed := false
+	opened := ""
+	stubWebCommandVars(t,
+		func() bool { return false }, // 1º health falha (lentidão)
+		func(p string) error { spawned = p; return nil },
+		func(time.Duration) bool { return true },
+		func(u string) { opened = u },
+		func(time.Duration) bool { return true }, // re-sonda: servidor voltou
+		func() error { killed = true; return nil },
+	)
+	webExePathFn = func() string { return filepath.Join(t.TempDir(), "nao-usado") }
+	t.Cleanup(func() { webExePathFn = webExePath })
+
+	output := captureStdout(t, handleWebCommand)
+
+	if killed {
+		t.Error("não deveria encerrar instâncias quando o servidor voltou na re-sonda")
+	}
+	if spawned != "" {
+		t.Errorf("não deveria spawnar quando o servidor voltou, spawned = %q", spawned)
+	}
+	if opened != webURL {
+		t.Errorf("navegador não aberto com a URL certa: %q", opened)
+	}
+	if !strings.Contains(output, "já está no ar") {
+		t.Errorf("output deveria dizer que já está no ar, got: %s", output)
 	}
 }
 
