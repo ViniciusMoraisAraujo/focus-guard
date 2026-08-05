@@ -8,19 +8,19 @@
     "#1": {
       "0000": {
         "fixed": {
-          "file_version": "0.12.1.0",
-          "product_version": "0.12.1.0"
+          "file_version": "0.13.0.0",
+          "product_version": "0.13.0.0"
         },
         "info": {
           "0409": {
             "CompanyName": "FocusGuard",
             "FileDescription": "FocusGuard CLI — controle de bloqueio focado",
-            "FileVersion": "0.12.1",
+            "FileVersion": "0.13.0",
             "InternalName": "focusguard",
             "LegalCopyright": "© FocusGuard",
             "OriginalFilename": "focusguard.exe",
             "ProductName": "FocusGuard",
-            "ProductVersion": "0.12.1"
+            "ProductVersion": "0.13.0"
           }
         }
       }
