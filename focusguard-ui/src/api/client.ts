@@ -19,6 +19,40 @@ export class DaemonError extends Error {
   }
 }
 
+/**
+ * SessionExpiredError marca um 401 do /api/action (sessão inválida/expirada
+ * — o endpoint exige sessão). Estende DaemonError para as telas continuarem
+ * mostrando e.message; o AppProvider também é avisado (evento) para devolver
+ * o gate à tela de login.
+ */
+export class SessionExpiredError extends DaemonError {
+  constructor(message: string) {
+    super(message);
+    this.name = "SessionExpiredError";
+  }
+}
+
+// SESSION_EXPIRED_EVENT é o evento de janela que informa o AppProvider que a
+// sessão morreu (após o re-check em /api/auth/status confirmar). Exportado
+// para o context.tsx escutar sem duplicar a string.
+export const SESSION_EXPIRED_EVENT = "focusguard:session-expired";
+
+// confirmSessionExpired re-consulta /api/auth/status depois de um 401 do
+// /api/action: só quando o servidor confirma que não há sessão o evento é
+// disparado (o gate troca o splash/login na hora). Best-effort — sem rede,
+// o próximo /api/action ou poll re-tenta.
+async function confirmSessionExpired(): Promise<void> {
+  try {
+    const res = await fetch("/api/auth/status");
+    if (!res.ok) return;
+    const st = (await res.json()) as AuthStatus;
+    if (st.authenticated) return; // sessão ainda válida (401 transitório) — nada a fazer
+    window.dispatchEvent(new Event(SESSION_EXPIRED_EVENT));
+  } catch {
+    /* sem rede: o gate segue; a próxima chamada re-verifica */
+  }
+}
+
 // action envia uma ação ao servidor web. timeoutMs opcional protege contra
 // respostas que nunca chegam (ex.: o proxy IPC travou); o padrão deixa o
 // servidor web decidir (proxyTimeout/updateTimeout do lado Go).
@@ -45,6 +79,13 @@ async function action(req: ApiRequest, timeoutMs?: number): Promise<ApiResponse>
   }
   if (res.status === 503) {
     throw new DaemonError("O daemon FocusGuard está desligado.");
+  }
+  if (res.status === 401) {
+    // Sessão inválida/expirada: confirma no /api/auth/status (o re-check) e
+    // avisa o AppProvider para voltar o gate à tela de login. A exceção
+    // especial ainda deixa a tela que disparou a ação mostrar o motivo.
+    void confirmSessionExpired();
+    throw new SessionExpiredError("Sua sessão expirou. Entre novamente.");
   }
   if (!res.ok) {
     throw new DaemonError(`Erro do servidor (HTTP ${res.status}).`);

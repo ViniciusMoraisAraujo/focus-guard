@@ -7,7 +7,14 @@ import {
   type ReactNode,
 } from "react";
 import { toast as sonnerToast } from "sonner";
-import { api, authStatus, login as apiLogin, logout as apiLogout, pingDaemon } from "./api/client";
+import {
+  SESSION_EXPIRED_EVENT,
+  api,
+  authStatus,
+  login as apiLogin,
+  logout as apiLogout,
+  pingDaemon,
+} from "./api/client";
 import type { ApiResponse, Preset } from "./api/types";
 
 export type Screen =
@@ -156,6 +163,21 @@ export function AppProvider({ children }: { children: ReactNode }) {
     return () => {
       cancelled = true;
     };
+  }, []);
+
+  // Sessão expirada: o client.ts re-checa /api/auth/status após um 401 do
+  // /api/action e só então dispara este evento. Devolve o gate à tela de
+  // login e limpa os dados do usuário anterior — vale para ações manuais E
+  // para os polls de fundo (refresh 10s / stats 60s), que não exibem toast.
+  useEffect(() => {
+    const onSessionExpired = () => {
+      setAuthBoth(NOT_AUTHENTICATED);
+      setStatus(null);
+      setPresets([]);
+      setStats(null);
+    };
+    window.addEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
+    return () => window.removeEventListener(SESSION_EXPIRED_EVENT, onSessionExpired);
   }, []);
 
   // Status em polling leve (10s). O countdown é client-side, então não precisa
