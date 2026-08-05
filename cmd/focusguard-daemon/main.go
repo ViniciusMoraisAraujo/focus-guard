@@ -274,6 +274,29 @@ func getStateFilePath() string {
 	return "/var/lib/focusguard/state.json"
 }
 
+// serverRoleFileName is the empty marker the server MSI drops next to the
+// daemon to flag the headless "Server" edition. The desktop edition never
+// ships it.
+const serverRoleFileName = "server.role"
+
+// isServerEdition reports whether the daemon runs in the headless "Server"
+// edition (network-wide DNS sinkhole machine). It is the pure check on a
+// directory, exposed for tests via isServerEditionFor.
+func isServerEdition() bool {
+	exe, err := osExecutable()
+	if err != nil {
+		return false
+	}
+	return isServerEditionFor(filepath.Dir(exe))
+}
+
+// isServerEditionFor is the pure, testable directory check behind
+// isServerEdition.
+func isServerEditionFor(dir string) bool {
+	_, err := os.Stat(filepath.Join(dir, serverRoleFileName))
+	return err == nil
+}
+
 func startHostswatch(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hostswatch.HostsWatcher {
 	hw := newHostswatch(enf, sched)
 	if hw == nil {
@@ -574,6 +597,17 @@ func runDaemon() bool {
 	}
 
 	statePath := getStateFilePath()
+
+	// Edição Server: o MSI server instala um marcador vazio "server.role" ao
+	// lado do daemon. No PRIMEIRO boot (sem state.json ainda) o DNS sinkhole
+	// nasce habilitado — a máquina é o "Rei da Rede" desde a instalação.
+	// Depois disso o flag persistido manda; a edição desktop nunca tem o
+	// marcador e segue com o DNS desligado por padrão.
+	firstBoot := false
+	if _, err := os.Stat(statePath); os.IsNotExist(err) {
+		firstBoot = true
+	}
+
 	st, err := store.NewStore(statePath)
 	if err != nil {
 		log.Printf("[FocusGuard Daemon] Erro ao criar store: %v", err)
@@ -598,6 +632,14 @@ func runDaemon() bool {
 		return false
 	}
 	log.Println("[FocusGuard Daemon] Estado reconciliado com sucesso.")
+
+	if firstBoot && isServerEdition() {
+		if err := sched.SetDNSEnabled(true); err != nil {
+			log.Printf("[FocusGuard Daemon] Edição Server: falha ao habilitar DNS no primeiro boot: %v", err)
+		} else {
+			log.Println("[FocusGuard Daemon] Edição Server detectada — DNS habilitado no primeiro boot.")
+		}
+	}
 
 	watchdogSec := getWatchdogSec()
 	wd := watchdog.New(sched, watchdogSec)

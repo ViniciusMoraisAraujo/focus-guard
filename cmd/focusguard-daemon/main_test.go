@@ -464,9 +464,31 @@ func TestGetStateFilePath_Linux(t *testing.T) {
 	defer func() { goos = orig }()
 
 	path := getStateFilePath()
-	expected := "/var/lib/focusguard/state.json"
-	if path != expected {
-		t.Errorf("expected %q, got %q", expected, path)
+	if path != "/var/lib/focusguard/state.json" {
+		t.Errorf("expected /var/lib/focusguard/state.json, got %q", path)
+	}
+}
+
+func TestIsServerEditionFor_NoMarker(t *testing.T) {
+	dir := t.TempDir()
+	if isServerEditionFor(dir) {
+		t.Errorf("expected server edition to be false without marker file")
+	}
+}
+
+func TestIsServerEditionFor_MarkerPresent(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, serverRoleFileName), nil, 0644); err != nil {
+		t.Fatalf("failed to write marker: %v", err)
+	}
+	if !isServerEditionFor(dir) {
+		t.Errorf("expected server edition to be true with marker file")
+	}
+}
+
+func TestIsServerEditionFor_NonExistentDir(t *testing.T) {
+	if isServerEditionFor(filepath.Join(t.TempDir(), "missing")) {
+		t.Errorf("expected server edition to be false for missing directory")
 	}
 }
 
