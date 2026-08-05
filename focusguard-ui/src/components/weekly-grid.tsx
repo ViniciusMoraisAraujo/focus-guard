@@ -29,20 +29,26 @@ function toMin(hhmm: string): number {
   return h * 60 + m;
 }
 
-/** Janelas de uma regra: preferem `windows`; senão usam start/end. */
+/** Janelas de uma regra: preferem `windows`; senão usam start/end. Janelas
+ * overnight (fim após a meia-noite, ex: 22:00-06:00) são válidas no daemon e
+ * viram dois segmentos: até 24:00 e depois 00:00. */
 function ruleSegments(r: ScheduleRule): Seg[] {
+  const split = (start: number, end: number): Seg[] => {
+    if (end <= start) {
+      return [
+        { start, end: 24 * 60 },
+        { start: 0, end },
+      ];
+    }
+    return [{ start, end }];
+  };
   if (r.windows && r.windows.length > 0) {
-    return r.windows
-      .map((w) => {
-        const [s, e] = w.split("-").map(toMin);
-        return { start: s, end: e };
-      })
-      .filter((s) => s.end > s.start);
+    return r.windows.flatMap((w) => {
+      const [s, e] = w.split("-").map(toMin);
+      return split(s, e);
+    });
   }
-  const start = toMin(r.start);
-  const end = toMin(r.end);
-  if (end <= start) return [];
-  return [{ start, end }];
+  return split(toMin(r.start), toMin(r.end));
 }
 
 function hm(min: number): string {
