@@ -6,6 +6,7 @@ import {
   Folder,
   History,
   Lock,
+  LogOut,
   Menu,
   Network,
   Settings,
@@ -14,6 +15,7 @@ import {
   Siren,
   Timer,
   TriangleAlert,
+  UserRound,
 } from "lucide-react";
 import { Agenda } from "./screens/Agenda";
 import { Apps } from "./screens/Apps";
@@ -26,6 +28,7 @@ import { Pomodoro } from "./screens/Pomodoro";
 import { Presets } from "./screens/Presets";
 import { Rede } from "./screens/Rede";
 import { Seguranca } from "./screens/Seguranca";
+import { LoginScreen } from "./screens/Login";
 import { Badge } from "./components/ui/badge";
 import { Button } from "./components/ui/button";
 import { Separator } from "./components/ui/separator";
@@ -66,7 +69,35 @@ export function App() {
   );
 }
 
+/**
+ * Gate de autenticação: splash enquanto o cookie fg_session é checado, a tela
+ * de login quando não há sessão, e a aplicação completa quando autenticado.
+ * O focusguard-web serve a SPA sem exigir sessão — quem decide é este gate.
+ */
 function Shell() {
+  const { auth } = useApp();
+
+  if (auth === null) {
+    return <SessionCheck />;
+  }
+  if (!auth.authenticated) {
+    return <LoginScreen />;
+  }
+  return <MainShell />;
+}
+
+/** Splash curto: verifica se o browser já tem sessão válida. */
+function SessionCheck() {
+  return (
+    <div className="flex min-h-screen items-center justify-center bg-background">
+      <div className="grid size-12 animate-pulse place-items-center rounded-xl bg-primary text-primary-foreground">
+        <ShieldCheck className="size-6" />
+      </div>
+    </div>
+  );
+}
+
+function MainShell() {
   const [screen, setScreen] = useState<Screen>("dashboard");
   const { daemonUp } = useApp();
 
@@ -121,7 +152,8 @@ function SidebarContent({
   screen: Screen;
   onNavigate: (s: Screen) => void;
 }) {
-  const { status } = useApp();
+  const { status, auth } = useApp();
+  const username = auth?.username;
 
   return (
     <>
@@ -174,6 +206,15 @@ function SidebarContent({
       </nav>
 
       <div className="border-t border-sidebar-border px-5 py-4">
+        {username && (
+          <div className="mb-2 flex items-center gap-2 text-xs">
+            <span className="flex min-w-0 items-center gap-1.5 font-medium text-sidebar-foreground">
+              <UserRound className="size-3.5 shrink-0 text-muted-foreground" />
+              <span className="truncate">{username}</span>
+            </span>
+            <LogoutButton className="ml-auto" />
+          </div>
+        )}
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           <Badge variant="secondary" className="font-mono">
             {status?.current_version ? `v${status.current_version}` : "—"}
@@ -233,8 +274,33 @@ function MobileHeader({
       <div className="ml-auto flex items-center gap-1">
         <ThemeToggle />
         <DaemonStatus pill />
+        <LogoutButton />
       </div>
     </header>
+  );
+}
+
+/** Botão de sair: invalida a sessão e devolve o usuário à tela de login. */
+function LogoutButton({ className }: { className?: string }) {
+  const { logout } = useApp();
+  const [busy, setBusy] = useState(false);
+
+  return (
+    <Button
+      variant="ghost"
+      size="icon-sm"
+      type="button"
+      aria-label="Sair"
+      title="Sair"
+      disabled={busy}
+      onClick={() => {
+        setBusy(true);
+        void logout().finally(() => setBusy(false));
+      }}
+      className={cn("text-muted-foreground", busy && "opacity-60", className)}
+    >
+      <LogOut className={cn(busy && "animate-pulse")} />
+    </Button>
   );
 }
 

@@ -77,6 +77,86 @@ export async function execAction(
   };
 }
 
+// ---------------------------------------------------------------------------
+// Autenticação (Fase 4): /api/login, /api/logout e /api/auth/status são
+// endpoints públicos (o gate vive no React). Erros chegam como
+// { success:false, message } — 401 = credencial inválida, 429 = rate limit.
+// ---------------------------------------------------------------------------
+
+/** AuthStatus espelha o JSON de GET /api/auth/status (sempre 200). */
+export interface AuthStatus {
+  authenticated: boolean;
+  username?: string;
+  is_admin?: boolean;
+}
+
+/** authStatus pergunta ao servidor se o browser tem uma sessão válida. */
+export async function authStatus(): Promise<AuthStatus> {
+  try {
+    const res = await fetch("/api/auth/status");
+    if (!res.ok) return { authenticated: false };
+    return (await res.json()) as AuthStatus;
+  } catch {
+    return { authenticated: false };
+  }
+}
+
+/**
+ * login autentica no focusguard-web. Devolve ok=false com uma mensagem
+ * amigável para credencial errada (401), rate limit (429), daemon fora (503)
+ * ou falha de rede — nunca lança.
+ */
+export async function login(
+  username: string,
+  password: string,
+): Promise<{
+  ok: boolean;
+  message: string;
+  username?: string;
+  isAdmin?: boolean;
+}> {
+  let res: Response;
+  try {
+    res = await fetch("/api/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ username, password }),
+    });
+  } catch {
+    return {
+      ok: false,
+      message: "Não foi possível falar com o servidor web. Ele está rodando?",
+    };
+  }
+  const data = (await res.json().catch(() => null)) as {
+    success?: boolean;
+    message?: string;
+    username?: string;
+    is_admin?: boolean;
+  } | null;
+  if (!res.ok) {
+    return {
+      ok: false,
+      message: data?.message ?? `Erro do servidor (HTTP ${res.status}).`,
+    };
+  }
+  return {
+    ok: true,
+    message: data?.message ?? "",
+    username: data?.username,
+    isAdmin: data?.is_admin,
+  };
+}
+
+/** logout invalida a sessão no servidor (best-effort: falha de rede não importa). */
+export async function logout(): Promise<void> {
+  try {
+    await fetch("/api/logout", { method: "POST" });
+  } catch {
+    /* a sessão local morre de qualquer forma */
+  }
+}
+
 export const api = {
   status: () => action({ action: "status" }),
   presets: () => action({ action: "presets" }),
@@ -133,6 +213,16 @@ export const api = {
   dnsStart: () => action({ action: "dns-start" }),
   dnsStop: () => action({ action: "dns-stop" }),
   dnsStatus: () => action({ action: "dns-status" }),
+  dnsSetUpstream: (upstream: string) =>
+    action({ action: "dns-set-upstream", upstream }),
+
+  // Usuários da interface web (só admin gerencia; senha própria para o resto)
+  usersList: () => action({ action: "user-list" }),
+  userAdd: (name: string, password: string) =>
+    action({ action: "user-add", user_name: name, user_password: password }),
+  userRemove: (name: string) => action({ action: "user-remove", user_name: name }),
+  userSetPassword: (name: string, password: string) =>
+    action({ action: "user-set-password", user_name: name, user_password: password }),
 
   // Atualização
   update: (channel?: string) =>
