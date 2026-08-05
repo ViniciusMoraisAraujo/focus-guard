@@ -18,7 +18,7 @@ Changelog**, with dated sections and emoji categories (e.g. `### 🛡 ...`).
 4. **CI produces the release** — pushing a `v*` tag triggers
    `.github/workflows/release.yml`, which runs GoReleaser (hooks: `go mod
    tidy`, regenerates the icon via `go run ./cmd/focusguard-icon`, runs
-   `go-winres make` for daemon/CLI/tray, and builds the **web UI** with
+   `go-winres make` for daemon/CLI/tray/watchdog, and builds the **web UI** with
    `npm ci && npm run build` — requires Node.js on the runner). The release
    is published **automatically** on GitHub with the per-platform archives.
 

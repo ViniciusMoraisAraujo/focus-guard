@@ -145,7 +145,7 @@ Web (focusguard-web) ────┘                                        │
 | `focusguard` | CLI (commands; no args opens the web UI) | `cmd/focusguard/versioninfo.json` (icon only, no manifest) |
 | `focusguard-daemon` | Background service | root `versioninfo.json` + `focusguard-daemon.exe.manifest` (**`requireAdministrator`**) |
 | `focusguard-tray` | System tray | `cmd/focusguard-tray/versioninfo.json` (**icon only — NEVER manifest/admin**) |
-| `focusguard-watchdog` | Health-check / Smart Recovery | No resources (console app) |
+| `focusguard-watchdog` | Health-check / Smart Recovery | `cmd/focusguard-watchdog/versioninfo.json` (icon + version, no manifest) |
 | `focusguard-web` | Serves the web UI + proxies IPC actions (user-space, on demand) | No manifest — **never** add admin |
 | `focusguard-icon` | Generates icons (build-time) | — |
 
@@ -165,6 +165,7 @@ implementation details belong in code comments, not here.
 | `apps` | Process denylist for the process guard |
 | `autostart` | Installs/removes the service + tray autostart + desktop shortcut |
 | `enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
+| `filelog` | Shared file logging (append + rotation) next to the executable |
 | `fsutil` | Filesystem helpers shared by the watchers |
 | `goal` | Daily focus goal |
 | `hostswatch` | Detects/reverts tampering of `hosts` |
@@ -290,8 +291,8 @@ go test ./... -count=1 -timeout=60s   # make test
 │   ├── focusguard-daemon/      # service (+ rsrc_windows_*.syso)
 │   ├── focusguard-icon/        # icon generator (build-time)
 │   ├── focusguard-tray/        # systray (+ icon-only versioninfo.json)
-│   └── focusguard-watchdog/    # health-check / Smart Recovery
-├── internal/                   # 23 packages (see the map in section 3)
+│   └── focusguard-watchdog/    # health-check / Smart Recovery (+ versioninfo.json with icon)
+├── internal/                   # 24 packages (see the map in section 3)
 └── scripts/
     ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
     ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart)

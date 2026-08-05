@@ -15,7 +15,7 @@ renderiza a resposta. A lógica real vive em `internal/`.
 | `focusguard/` | CLI (sem args → abre a web via `focusguard-web`) | `versioninfo.json` próprio (ícone, sem manifest) |
 | `focusguard-daemon/` | Serviço em background (privilegiado) | `versioninfo.json` da raiz + manifest `requireAdministrator` |
 | `focusguard-tray/` | Bandeja do sistema | `versioninfo.json` **só ícone — nunca manifest** |
-| `focusguard-watchdog/` | Health-check / Smart Recovery | sem recursos (console app) |
+| `focusguard-watchdog/` | Health-check / Smart Recovery | `versioninfo.json` próprio (ícone + versão, sem manifest) |
 | `focusguard-web/` | Serve a UI + proxy das ações IPC (user-space) | **sem manifest** — nunca adicionar admin |
 | `focusguard-icon/` | Gera `focusguard.ico`/`.png` (build-time, stdlib pura) | — |
 
@@ -33,6 +33,12 @@ renderiza a resposta. A lógica real vive em `internal/`.
 5. `focusguard` localiza os irmãos (`focusguard-web`, `-daemon`, `-tray`,
    `-watchdog`) **ao lado do próprio executável** (`os.Executable()` +
    `filepath.Dir`) — mudar esse contrato quebra install/update.
+6. **Logs em arquivo** — todo binário grava `<nome>.log` na **mesma pasta do
+   daemon** (ao lado do executável), via `internal/filelog` (append + rotação
+   de 1 MiB, best-effort: falha cai para stderr sem abortar). O padrão é um
+   `logging.go` com `logFileName`, `maxLogSizeBeforeRotate`,
+   `setupLoggingAt`/`setupLogging` e `var osExecutable = os.Executable`
+   (stubbable nos testes).
 
 ## Bugs e correções potenciais
 
