@@ -797,12 +797,13 @@ func TestGetWatchdog_Invalid(t *testing.T) {
 }
 
 type fakeUpdaterAPI struct {
-	result     *update.UpdateResult
-	checkErr   error
-	applyErr   error
-	applyCalls int32
-	appliedTo  []string
-	channel    string
+	result       *update.UpdateResult
+	checkErr     error
+	applyErr     error
+	applyCalls   int32
+	appliedTo    []string
+	channel      string
+	cleanupCalls int32
 }
 
 func (f *fakeUpdaterAPI) CheckForUpdate(_ context.Context) (*update.UpdateResult, error) {
@@ -810,6 +811,8 @@ func (f *fakeUpdaterAPI) CheckForUpdate(_ context.Context) (*update.UpdateResult
 }
 
 func (f *fakeUpdaterAPI) SetChannel(channel string) { f.channel = channel }
+
+func (f *fakeUpdaterAPI) CleanupStale(_ string) { atomic.AddInt32(&f.cleanupCalls, 1) }
 
 func (f *fakeUpdaterAPI) UpdateToAll(_ context.Context, _ *update.UpdateResult, binaries []string) ([]string, error) {
 	atomic.AddInt32(&f.applyCalls, 1)
@@ -822,6 +825,26 @@ func (f *fakeUpdaterAPI) UpdateToAll(_ context.Context, _ *update.UpdateResult, 
 		backups = append(backups, b+".bak")
 	}
 	return backups, nil
+}
+
+// TestUpdateInProgressFlag_Lifecycle verifies the Bug 2 flag helpers: the flag
+// is written before the update, must survive the daemon restart (so it is NOT
+// removed on success — only the healthy boot does that) and is removed on the
+// error path.
+func TestUpdateInProgressFlag_Lifecycle(t *testing.T) {
+	dir := t.TempDir()
+
+	markUpdateInProgress(dir)
+	if _, err := os.Stat(filepath.Join(dir, updateInProgressFile)); err != nil {
+		t.Fatalf("flag deve existir após markUpdateInProgress: %v", err)
+	}
+
+	// remover flag inexistente é no-op, sem erro
+	clearUpdateInProgress(dir)
+	clearUpdateInProgress(dir)
+	if _, err := os.Stat(filepath.Join(dir, updateInProgressFile)); !os.IsNotExist(err) {
+		t.Error("flag deve ser removida por clearUpdateInProgress")
+	}
 }
 
 func TestDaemonUpdater_Check_NoUpdate(t *testing.T) {
@@ -873,8 +896,10 @@ func TestDaemonUpdater_Check_Error(t *testing.T) {
 }
 
 func TestDaemonUpdater_Check_Apply(t *testing.T) {
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "focusguard-daemon")
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
-	d := &daemonUpdater{u: fake, binaries: []string{"/tmp/focusguard-daemon"}}
+	d := &daemonUpdater{u: fake, binaries: []string{daemon}}
 
 	st, err := d.Check(context.Background(), true, "")
 	if err != nil {
@@ -886,17 +911,37 @@ func TestDaemonUpdater_Check_Apply(t *testing.T) {
 	if atomic.LoadInt32(&fake.applyCalls) != 1 {
 		t.Errorf("expected 1 UpdateToAll call, got %d", fake.applyCalls)
 	}
+	// Bug 1: após o update com sucesso, os backups precisam ser varridos —
+	// sem isso os .bak.<timestamp> se acumulam para sempre.
+	if atomic.LoadInt32(&fake.cleanupCalls) != 1 {
+		t.Errorf("expected 1 CleanupStale call after successful apply, got %d", fake.cleanupCalls)
+	}
+	// Bug 2: a flag de update permanece até o boot saudável da nova versão —
+	// ela precisa sobreviver ao restart para manter o watchdog de fora.
+	if _, err := os.Stat(filepath.Join(dir, updateInProgressFile)); err != nil {
+		t.Error("update.inprogress deve existir após aplicar o update (só o boot saudável a remove)")
+	}
 }
 
 func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
-	d := &daemonUpdater{
-		u:        &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("file locked")},
-		binaries: []string{"/tmp/focusguard-daemon"},
-	}
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "focusguard-daemon")
+	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("file locked")}
+	d := &daemonUpdater{u: fake, binaries: []string{daemon}}
 
 	_, err := d.Check(context.Background(), true, "")
 	if err == nil || !strings.Contains(err.Error(), "file locked") {
 		t.Fatalf("expected apply error, got %v", err)
+	}
+	// Sem aplicação → sem varredura: o update falhou e o rollback manteve os
+	// backups para o smart recovery decidir.
+	if atomic.LoadInt32(&fake.cleanupCalls) != 0 {
+		t.Errorf("expected no CleanupStale on failed apply, got %d", fake.cleanupCalls)
+	}
+	// Update falhou → o daemon segue rodando e a flag não pode ficar para
+	// trás (senão o watchdog ficaria mudo à toa).
+	if _, err := os.Stat(filepath.Join(dir, updateInProgressFile)); !os.IsNotExist(err) {
+		t.Error("update.inprogress deve ser removida quando o apply falha")
 	}
 }
 
@@ -954,14 +999,15 @@ func TestSiblingBinaries_WindowsExt(t *testing.T) {
 // TestDaemonUpdater_Check_Apply_AllBinaries verifies the updater applies to
 // every sibling binary (daemon + CLI + tray + watchdog), not just the daemon.
 func TestDaemonUpdater_Check_Apply_AllBinaries(t *testing.T) {
+	dir := t.TempDir()
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
 	d := &daemonUpdater{
 		u: fake,
 		binaries: []string{
-			"/usr/local/bin/focusguard",
-			"/usr/local/bin/focusguard-daemon",
-			"/usr/local/bin/focusguard-tray",
-			"/usr/local/bin/focusguard-watchdog",
+			filepath.Join(dir, "focusguard"),
+			filepath.Join(dir, "focusguard-daemon"),
+			filepath.Join(dir, "focusguard-tray"),
+			filepath.Join(dir, "focusguard-watchdog"),
 		},
 	}
 
@@ -981,9 +1027,13 @@ func TestDaemonUpdater_Check_Apply_AllBinaries(t *testing.T) {
 // partial failure must abort the update (Applied=false) — the daemon must not
 // restart into a half-updated state.
 func TestDaemonUpdater_Check_Apply_PartialFailureNoRestart(t *testing.T) {
+	dir := t.TempDir()
 	d := &daemonUpdater{
-		u:        &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("access denied")},
-		binaries: []string{"/usr/local/bin/focusguard", "/usr/local/bin/focusguard-daemon"},
+		u: &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("access denied")},
+		binaries: []string{
+			filepath.Join(dir, "focusguard"),
+			filepath.Join(dir, "focusguard-daemon"),
+		},
 	}
 
 	st, err := d.Check(context.Background(), true, "")

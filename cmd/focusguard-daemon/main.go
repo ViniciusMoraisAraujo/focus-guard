@@ -42,6 +42,29 @@ const (
 
 var updateCheckInterval = 24 * time.Hour
 
+// updateInProgressFile é a flag do Bug 2: escrita ANTES do UpdateToAll e
+// removida apenas quando a NOVA versão do daemon conclui um boot saudável.
+// Ela precisa sobreviver ao restart do próprio daemon, então não pode ser
+// removida logo após o update — é o sinal que mantém o watchdog de fora
+// durante a troca dos binários e o restart via SCM.
+const updateInProgressFile = "update.inprogress"
+
+// markUpdateInProgress sinaliza ao watchdog que um update está em andamento e
+// que a ausência do daemon é intencional. Best-effort: se a escrita falhar o
+// update ainda prossegue (o watchdog apenas volta a interferir).
+func markUpdateInProgress(installDir string) {
+	p := filepath.Join(installDir, updateInProgressFile)
+	if err := os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644); err != nil {
+		log.Printf("[FocusGuard Daemon] Aviso: não foi possível criar %s: %v", p, err)
+	}
+}
+
+// clearUpdateInProgress remove a flag do Bug 2. Chamada no boot saudável da
+// nova versão e no caminho de erro (update falhou → daemon segue rodando).
+func clearUpdateInProgress(installDir string) {
+	_ = os.Remove(filepath.Join(installDir, updateInProgressFile))
+}
+
 // scheduleCheckInterval is how often the daemon re-evaluates recurring rules:
 // fine enough to start a block within a minute of its window opening, cheap
 // enough to never matter (a no-op ListBlocks when no rule is due).
@@ -280,6 +303,10 @@ type updaterAPI interface {
 	CheckForUpdate(ctx context.Context) (*update.UpdateResult, error)
 	UpdateToAll(ctx context.Context, result *update.UpdateResult, binaries []string) ([]string, error)
 	SetChannel(channel string)
+	// CleanupStale varre a pasta de instalação de artefatos de updates
+	// passados (.old/.trash órfãos e .bak antigos), mantendo só o .bak mais
+	// novo por binário (o watchdog ainda precisa dele para o smart recovery).
+	CleanupStale(installDir string)
 }
 
 type daemonUpdater struct {
@@ -316,10 +343,33 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool, channel string) (
 		// IPC (daemon novo ↔ CLI antiga). O rollback é atômico dentro do
 		// UpdateToAll; qualquer falha aqui mantém Applied=false — e portanto
 		// o daemon NÃO reinicia para um estado meio-atualizado.
+		//
+		// Bug 2: a flag de update é escrita ANTES de trocar os binários e só a
+		// nova versão a remove após um boot saudável. Sem ela, o watchdog
+		// vê o daemon fora do ar durante a troca/restart e o mata (ou desfaz
+		// o update pelo smart recovery) no meio da operação.
+		var installDir string
+		if len(d.binaries) > 0 {
+			installDir = filepath.Dir(d.binaries[0])
+			markUpdateInProgress(installDir)
+		}
 		if _, err := d.u.UpdateToAll(ctx, res, d.binaries); err != nil {
+			// Update falhou: o daemon segue rodando a versão antiga — a flag
+			// não pode ficar para trás, senão o watchdog ficaria mudo à toa.
+			if installDir != "" {
+				clearUpdateInProgress(installDir)
+			}
 			return st, fmt.Errorf("falha ao aplicar atualização: %w", err)
 		}
 		st.Applied = true
+		// Bug 1: o UpdateToAll devolve os backups criados, mas sem esta
+		// varredura os .bak.<timestamp> se acumulavam para sempre (um .bak
+		// por binário a cada update). CleanupStale mantém só o mais novo por
+		// binário — o watchdog ainda precisa dele caso a nova versão
+		// crash-loope antes de confirmar saúde.
+		if installDir != "" {
+			d.u.CleanupStale(installDir)
+		}
 	}
 	return st, nil
 }
@@ -356,14 +406,20 @@ func newDaemonUpdater(daemonPath string, mk updaterAPI) *daemonUpdater {
 var osExecutable = os.Executable
 
 func setupUpdateIntegration(server *ipc.Server) func() {
-	if daemonVersion == "" || strings.HasSuffix(daemonVersion, "-dev") {
-		log.Println("[FocusGuard Daemon] Auto-update desativado (versão de desenvolvimento).")
-		return nil
-	}
-
 	binaryPath, err := osExecutable()
 	if err != nil {
 		log.Printf("[FocusGuard Daemon] Auto-update desativado: %v", err)
+		return nil
+	}
+
+	// Bug 1: varre artigos de updates passados em TODO boot (inclusive dev) —
+	// sujeira de um update de produção (.bak antigos, .old/.trash órfãos) não
+	// pode esperar o próximo update para ser limpa. Mantém só o .bak mais novo
+	// por binário para o smart recovery do watchdog.
+	newUpdater(updateOwner, updateRepo).CleanupStale(filepath.Dir(binaryPath))
+
+	if daemonVersion == "" || strings.HasSuffix(daemonVersion, "-dev") {
+		log.Println("[FocusGuard Daemon] Auto-update desativado (versão de desenvolvimento).")
 		return nil
 	}
 
@@ -652,6 +708,14 @@ func runDaemon() bool {
 
 	serverErr := make(chan error, 1)
 	go func() {
+		// Bug 2: ponto do boot saudável. A flag de update sobrevive ao restart
+		// pós-update (escrita antes do UpdateToAll, mantida enquanto o daemon
+		// está fora) e é removida aqui — quando a nova versão já reconciliou o
+		// estado e está pronta para servir IPC. A partir daqui o watchdog volta
+		// a monitorar normalmente; até lá, ele não mata nem desfaz o update.
+		if exe, err := osExecutable(); err == nil {
+			clearUpdateInProgress(filepath.Dir(exe))
+		}
 		log.Println("[FocusGuard Daemon] Servidor IPC ativo e aguardando requisições...")
 		serverErr <- server.Start()
 	}()

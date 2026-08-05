@@ -29,6 +29,20 @@ const (
 	minDowntime  = 2 * checkInterval // 60s — restart pós-update legítimo
 	crashWindow  = 30 * time.Second
 	backupMaxAge = 24 * time.Hour
+
+	// updateInProgressFile é a flag que o daemon escreve ANTES de aplicar um
+	// update (Bug 2) e que a NOVA versão remove quando conclui um boot
+	// saudável. Enquanto ela existir e for "fresca", o daemon pode estar fora
+	// do ar de propósito (troca dos binários + restart) — o watchdog não pode
+	// tratar isso como crash e matar/desfazer o update no meio.
+	updateInProgressFile = "update.inprogress"
+
+	// updateGrace é o teto do silêncio do watchdog: uma flag com mais de
+	// updateGrace de idade significa que o update travou (a nova versão não
+	// subiu) — o watchdog volta a matar/fazer rollback. O SCM reinicia o daemon
+	// em segundos; 3 minutos é folga generosa para máquinas lentas sem deixar
+	// uma release quebrada reiniciando em loop para sempre.
+	updateGrace = 3 * time.Minute
 )
 
 func main() {
@@ -90,6 +104,19 @@ func checkDaemon(tracker *daemonTracker) {
 		return
 	}
 
+	// Bug 2: update em andamento — o daemon saiu do ar de propósito (troca dos
+	// binários + restart via SCM). NÃO matar nem desfazer o update dentro da
+	// janela de graça; a flag é removida quando a nova versão faz boot
+	// saudável. Se a flag envelhecer além do teto, o update travou e o
+	// watchdog volta a agir normalmente.
+	if active, age := updateInProgress(); active {
+		if age < updateGrace {
+			log.Printf("[FocusGuard Watchdog] Update em andamento (flag há %v) — aguardando o daemon voltar...", age.Round(time.Second))
+			return
+		}
+		log.Printf("[FocusGuard Watchdog] Flag de update presente há %v (limite %v) — tratando como falha real.", age.Round(time.Second), updateGrace)
+	}
+
 	log.Println("[FocusGuard Watchdog] Daemon não respondeu — forçando reinicialização...")
 
 	// Smart Recovery: se o daemon caiu logo após o último start e há um .bak
@@ -112,6 +139,20 @@ var daemonBinaryPath = func() string {
 		return filepath.Join(".", daemonProc)
 	}
 	return filepath.Join(filepath.Dir(exe), "focusguard-daemon"+filepath.Ext(exe))
+}
+
+// updateInProgress reports whether the daemon is applying an update right now
+// and how long ago the flag was written. A "fresh" flag (younger than
+// updateGrace) means the daemon's downtime is intentional: the watchdog must
+// stay hands-off. A stale flag means the update stalled — normal crash handling
+// resumes.
+func updateInProgress() (active bool, age time.Duration) {
+	flag := filepath.Join(filepath.Dir(daemonBinaryPath()), updateInProgressFile)
+	info, err := os.Stat(flag)
+	if err != nil {
+		return false, 0
+	}
+	return true, time.Since(info.ModTime())
 }
 
 // maybeRollback aplica o Smart Recovery: restaura o backup recente do daemon

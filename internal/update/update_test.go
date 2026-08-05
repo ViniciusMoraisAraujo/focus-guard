@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 
@@ -782,6 +783,80 @@ func TestRestoreBackup_MissingBackup(t *testing.T) {
 	u := NewUpdater("o", "r")
 	if err := u.RestoreBackup("/nonexistent.bak", "/whatever"); err == nil {
 		t.Fatal("expected error for missing backup")
+	}
+}
+
+// TestCleanupStale_KeepsOnlyNewestBackupPerBinary verifies the core of Bug 1:
+// each update leaves one .bak per binary and, without a sweep, they accumulate
+// forever. CleanupStale must keep ONLY the newest .bak per binary.
+func TestCleanupStale_KeepsOnlyNewestBackupPerBinary(t *testing.T) {
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "focusguard-daemon.exe")
+	for _, ts := range []string{"20260801100000", "20260802090000", "20260802100000"} {
+		if err := os.WriteFile(daemon+".bak."+ts, []byte("backup "+ts), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	cli := filepath.Join(dir, "focusguard.exe")
+	if err := os.WriteFile(cli+".bak.20260801100000", []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	u := NewUpdater("o", "r")
+	u.CleanupStale(dir)
+
+	remaining, _ := filepath.Glob(daemon + ".bak.*")
+	if len(remaining) != 1 || !strings.Contains(remaining[0], "20260802100000") {
+		t.Errorf("expected only the newest daemon backup, got %v", remaining)
+	}
+	cliBaks, _ := filepath.Glob(cli + ".bak.*")
+	if len(cliBaks) != 1 {
+		t.Errorf("expected the single cli backup kept, got %v", cliBaks)
+	}
+}
+
+// TestCleanupStale_RemovesOrphans verifies the .old/.trash/stale-download
+// cleanup: artifacts of crashed updates or failed restores must not linger.
+func TestCleanupStale_RemovesOrphans(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{
+		".focusguard-daemon.exe.old",  // replaceOneBinary move-aside
+		"focusguard-daemon.exe.trash", // RestoreBackup move-aside
+		"focusguard-daemon-new.exe",   // download antigo nunca trocado
+	} {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	u := NewUpdater("o", "r")
+	u.CleanupStale(dir)
+
+	for _, name := range []string{
+		".focusguard-daemon.exe.old",
+		"focusguard-daemon.exe.trash",
+		"focusguard-daemon-new.exe",
+	} {
+		if _, err := os.Stat(filepath.Join(dir, name)); !os.IsNotExist(err) {
+			t.Errorf("%s deveria ter sido removido", name)
+		}
+	}
+}
+
+// TestCleanupStale_KeepsRealBinaries verifies the sweep never touches the
+// actual installed binaries — only their backup/artifact suffixes.
+func TestCleanupStale_KeepsRealBinaries(t *testing.T) {
+	dir := t.TempDir()
+	binary := filepath.Join(dir, "focusguard-daemon.exe")
+	if err := os.WriteFile(binary, []byte("real"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	u := NewUpdater("o", "r")
+	u.CleanupStale(dir)
+
+	if _, err := os.Stat(binary); err != nil {
+		t.Error("binário real não pode ser removido pela varredura")
 	}
 }
 

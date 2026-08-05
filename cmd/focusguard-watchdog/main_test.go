@@ -129,6 +129,104 @@ func TestMaybeRollback_NoDecisionWithoutHealthyHistory(t *testing.T) {
 	}
 }
 
+// TestCheckDaemon_SkipsKillWhileUpdateInProgress is the Bug 2 regression guard:
+// with a FRESH update.inprogress flag the daemon is down on purpose (binary
+// swap + restart). The watchdog must neither kill it nor roll the update back.
+func TestCheckDaemon_SkipsKillWhileUpdateInProgress(t *testing.T) {
+	origResponds := daemonResponds
+	daemonResponds = func() bool { return false }
+	defer func() { daemonResponds = origResponds }()
+
+	killed := false
+	origKill := killDaemon
+	killDaemon = func() { killed = true }
+	defer func() { killDaemon = origKill }()
+
+	origRollback := maybeRollback
+	rolled := false
+	maybeRollback = func(time.Time) (bool, error) { rolled = true; return false, nil }
+	defer func() { maybeRollback = origRollback }()
+
+	dir := t.TempDir()
+	origPath := daemonBinaryPath
+	daemonBinaryPath = func() string { return filepath.Join(dir, "focusguard-daemon") }
+	defer func() { daemonBinaryPath = origPath }()
+
+	flag := filepath.Join(dir, updateInProgressFile)
+	if err := os.WriteFile(flag, []byte(time.Now().Format(time.RFC3339)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	checkDaemon(&daemonTracker{})
+
+	if killed {
+		t.Error("watchdog NÃO deve matar o daemon durante um update em andamento")
+	}
+	if rolled {
+		t.Error("watchdog NÃO deve fazer rollback durante um update em andamento")
+	}
+}
+
+// TestCheckDaemon_ActsAfterUpdateStalls verifies the mute window is bounded:
+// a stale flag (older than updateGrace) means the update stalled and normal
+// crash handling (kill/rollback) must resume.
+func TestCheckDaemon_ActsAfterUpdateStalls(t *testing.T) {
+	origResponds := daemonResponds
+	daemonResponds = func() bool { return false }
+	defer func() { daemonResponds = origResponds }()
+
+	killed := false
+	origKill := killDaemon
+	killDaemon = func() { killed = true }
+	defer func() { killDaemon = origKill }()
+
+	origRollback := maybeRollback
+	maybeRollback = func(time.Time) (bool, error) { return false, nil }
+	defer func() { maybeRollback = origRollback }()
+
+	dir := t.TempDir()
+	origPath := daemonBinaryPath
+	daemonBinaryPath = func() string { return filepath.Join(dir, "focusguard-daemon") }
+	defer func() { daemonBinaryPath = origPath }()
+
+	flag := filepath.Join(dir, updateInProgressFile)
+	if err := os.WriteFile(flag, []byte("stale"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-(updateGrace + time.Minute))
+	_ = os.Chtimes(flag, old, old)
+
+	checkDaemon(&daemonTracker{})
+
+	if !killed {
+		t.Error("watchdog deve voltar a matar o daemon quando o update trava além da graça")
+	}
+}
+
+// TestUpdateInProgress_ReportsFlagAge verifies the flag helper: no flag → not
+// active; fresh flag → active with a small age.
+func TestUpdateInProgress_ReportsFlagAge(t *testing.T) {
+	dir := t.TempDir()
+	origPath := daemonBinaryPath
+	daemonBinaryPath = func() string { return filepath.Join(dir, "focusguard-daemon") }
+	defer func() { daemonBinaryPath = origPath }()
+
+	if active, _ := updateInProgress(); active {
+		t.Error("no flag → updateInProgress deve ser false")
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, updateInProgressFile), []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	active, age := updateInProgress()
+	if !active {
+		t.Error("flag presente → updateInProgress deve ser true")
+	}
+	if age < 0 || age > time.Minute {
+		t.Errorf("age %v inesperado para uma flag recém-escrita", age)
+	}
+}
+
 // TestVersionInfo_GoWinresFormat verifies cmd/focusguard-watchdog/versioninfo.json
 // follows the go-winres schema: an application icon (RT_GROUP_ICON referencing
 // the generated .ico) and version metadata (RT_VERSION) — and NO manifest, since

@@ -344,6 +344,69 @@ func (u *Updater) CleanupBackup(backupPath string) error {
 	return os.Remove(backupPath)
 }
 
+// CleanupStale sweeps leftover artifacts of past updates from the install
+// directory: orphaned .old/.trash files (move-asides of replaceOneBinary and
+// RestoreBackup that failed to self-clean), stale focusguard-daemon-new*
+// downloads and every .bak.<timestamp> EXCEPT the newest per binary. Without
+// this sweep, each update of the suite piles up one backup per binary forever.
+//
+// The newest .bak per binary is deliberately kept: the watchdog's smart
+// recovery (internal/recovery) still needs it if the freshly updated daemon
+// crash-loops before confirming health. Best-effort: failures are ignored
+// (they are cosmetic — a locked .old/.trash on Windows is simply retried next
+// boot).
+func (u *Updater) CleanupStale(installDir string) {
+	if installDir == "" {
+		return
+	}
+	entries, err := os.ReadDir(installDir)
+	if err != nil {
+		return
+	}
+
+	// prefixo do binário (parte antes do ".bak.") → caminho do .bak mais novo.
+	newest := make(map[string]string)
+	for _, e := range entries {
+		name := e.Name()
+		path := filepath.Join(installDir, name)
+
+		if strings.HasSuffix(name, ".old") || strings.HasSuffix(name, ".trash") {
+			_ = os.Remove(path)
+			continue
+		}
+		if strings.HasPrefix(name, "focusguard-daemon-new") {
+			_ = os.Remove(path)
+			continue
+		}
+		idx := strings.Index(name, ".bak.")
+		if idx < 0 {
+			continue // binário real ou arquivo sem relação — nunca tocar
+		}
+		prefix := name[:idx]
+		if prev, ok := newest[prefix]; ok {
+			if newerFile(path, prev) {
+				_ = os.Remove(prev)
+				newest[prefix] = path
+			} else {
+				_ = os.Remove(path)
+			}
+		} else {
+			newest[prefix] = path
+		}
+	}
+}
+
+// newerFile reports whether a has a more recent ModTime than b (stat failures
+// resolve to false, so a file that just vanished is treated as not-newer).
+func newerFile(a, b string) bool {
+	ai, aerr := os.Stat(a)
+	bi, berr := os.Stat(b)
+	if aerr != nil || berr != nil {
+		return false
+	}
+	return ai.ModTime().After(bi.ModTime())
+}
+
 // NewVersionDownloadedPath returns the path where the new version binary is expected.
 func (u *Updater) NewVersionDownloadedPath(originalPath string) string {
 	dir := filepath.Dir(originalPath)
