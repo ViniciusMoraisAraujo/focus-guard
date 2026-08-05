@@ -1,6 +1,6 @@
 # Release — FocusGuard
 
-**SemVer** versioning (current: **v0.8.0**). The changelog follows **Keep a
+**SemVer** versioning (current: **v0.15.0**). The changelog follows **Keep a
 Changelog**, with dated sections and emoji categories (e.g. `### 🛡 ...`).
 
 ## Release checklist
@@ -21,12 +21,19 @@ Changelog**, with dated sections and emoji categories (e.g. `### 🛡 ...`).
    `go-winres make` for daemon/CLI/tray/watchdog, and builds the **web UI** with
    `npm ci && npm run build` — requires Node.js on the runner). The release
    is published **automatically** on GitHub with the per-platform archives.
+   The `windows-msi` job then builds **both installers** (desktop + Server)
+   and attaches them to the release.
 
 ## What the release contains
 
 - **Windows** (`focusguard_<v>_windows_<arch>.zip`): `focusguard.exe`,
   `focusguard-daemon.exe`, `focusguard-watchdog.exe`, `focusguard-tray.exe`,
   `focusguard-web.exe` + `install-daemon.ps1` + `install.txt`.
+- **Instaladores MSI** (anexados à release pelo job `windows-msi`):
+  `focusguard-<v>-amd64.msi` (edição desktop) e
+  `focusguard-server-<v>-amd64.msi` (edição Server, headless). Gerados via
+  `make msi VERSION=<v> && make msi-server VERSION=<v>` — ver
+  `scripts/build-msi.sh`.
 - **Linux** (`focusguard_<v>_linux_<arch>.tar.gz`): binaries (incl.
   `focusguard-web`) + `focusguard.service` + `install-linux.sh` +
   `focusguard-tray.desktop` + README/CHANGELOG + `focusguard.ico`/`.png` +

@@ -7,10 +7,12 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.15.0] - 2026-08-05
+
 ### ✨ Novas funcionalidades
 
-- **DNS Sinkhole — "Rei da Rede" (v0.15.0)** — o FocusGuard passa a atuar
-  como servidor DNS da rede inteira: o daemon escuta na porta 53 e responde
+- **DNS Sinkhole — "Rei da Rede"** — o FocusGuard passa a atuar como
+  servidor DNS da rede inteira: o daemon escuta na porta 53 e responde
   `0.0.0.0` para domínios bloqueados, encaminhando as demais consultas ao
   upstream Cloudflare Security (`1.1.1.2`). Não depende de sessão de foco
   ativa nem do arquivo `hosts` — qualquer dispositivo que use o DNS do
@@ -18,6 +20,36 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 - **Bloqueio de DNS-over-HTTPS ao ligar o sinkhole** — ao subir o servidor
   DNS, o daemon também bloqueia a porta 853 (TCP/UDP) para navegadores não
   contornarem o bloqueio. QUIC/DoH3 (UDP 443) não é bloqueado nesta versão.
+- **Edição Server (headless) com instalador próprio** — a release passa a
+  publicar **dois instaladores Windows**: `focusguard-<v>-amd64.msi`
+  (desktop) e `focusguard-server-<v>-amd64.msi` (Server). A edição Server é
+  um "aparelho" para rodar o sinkhole 24/7: instala apenas daemon + watchdog
+  + interface web + CLI (sem tray, sem atalho no desktop e sem chave Run) e
+  grava o marcador `server.role` ao lado do daemon — em **instalação limpa**
+  o DNS já nasce habilitado no primeiro boot. As duas edições compartilham o
+  UpgradeCode: instalar uma sobre a outra converte a máquina (numa
+  instalação existente, o DNS é habilitado na tela Rede ou com
+  `focusguard dns start`).
+- **Upstream DNS configurável** — o resolver do sinkhole deixa de ser fixo:
+  `focusguard dns upstream <host[:porta]>` ou o painel web (tela Rede)
+  escolhem entre Cloudflare, Google, Quad9, AdGuard ou um servidor custom,
+  com validação de host/porta, persistência no `state.json` e troca em tempo
+  real (restart instantâneo quando o sinkhole está ligado).
+- **Usuários da interface web** — novo `user.json` ao lado do `state.json`
+  com senhas em **bcrypt** (nunca texto puro no disco). O admin (`admin`) é
+  garantido no primeiro boot e não pode ser removido; o admin cria/remove
+  usuários e troca senhas de qualquer conta (ações IPC `user-list`/`user-add`/
+  `user-remove`/`user-set-password`).
+- **Login e sessões na interface web** — a UI agora exige autenticação: tela
+  de login, sessões em memória com cookie HttpOnly SameSite=Strict (12h),
+  rate limit de login (5 falhas → 30s) contra brute force e permissão por
+  usuário (gestão de usuários só para o admin; usuário comum troca a própria
+  senha). Todas as ações do painel (`/api/action`) passaram a exigir sessão.
+- **Painel web: tela Rede com upstream + card Usuários** — a tela Rede ganhou
+  o seletor de upstream (chips Cloudflare/Google/Quad9/AdGuard + campo
+  custom, com aviso de que trocar reinicia o servidor e zera os contadores);
+  o Configurações ganhou o card Usuários (listar, adicionar, remover, trocar
+  senha) para o admin e o card "Minha conta" para usuários comuns.
 
 ## [0.14.0] - 2026-08-05
 
