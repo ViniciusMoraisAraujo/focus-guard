@@ -155,8 +155,8 @@ func TestActionForwardsRequestAndReturnsResponse(t *testing.T) {
 	if sc.lastReq.Action != "block" || sc.lastReq.Domain != "youtube.com" || sc.lastReq.Duration != "4h" {
 		t.Fatalf("request não repassado: %+v", sc.lastReq)
 	}
-	if sc.withTimeout != proxyTimeout {
-		t.Fatalf("timeout = %v, want %v", sc.withTimeout, proxyTimeout)
+	if sc.withTimeout != mutationTimeout {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, mutationTimeout)
 	}
 	if m := decodeResp(t, rec); m["success"] != true {
 		t.Fatalf("resposta = %v, want success", m)
@@ -196,6 +196,43 @@ func TestActionUpdateCheckUsesLongTimeout(t *testing.T) {
 	}
 	if sc.withTimeout != updateTimeout {
 		t.Fatalf("timeout = %v, want %v", sc.withTimeout, updateTimeout)
+	}
+}
+
+// TestActionStatusUsesStatusTimeout garante que a ação "status" NÃO usa o
+// timeout curto do proxy: status pode enumerar o firewall (netsh show rule
+// name=all) com o cache frio e, com 5s, a UI reportaria "daemon indisponível"
+// para um daemon simplesmente lento. O status ganhou seu próprio orçamento.
+func TestActionStatusUsesStatusTimeout(t *testing.T) {
+	sc := &stubClient{}
+	h := newTestServer(sc, uiFS())
+	rec := doJSON(t, h, "POST", "/api/action", "application/json",
+		`{"action":"status"}`, "127.0.0.1:48902")
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+	}
+	if sc.withTimeout != statusTimeout {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, statusTimeout)
+	}
+}
+
+// TestActionMutationUsesMutationTimeout cobre as ações que resolvem DNS e
+// aplicam hosts + firewall antes de responder (block/block-all/pomodoro):
+// o orçamento precisa acomodar o DNS (2-10s) e o batch do netsh.
+func TestActionMutationUsesMutationTimeout(t *testing.T) {
+	for _, action := range []string{"block", "block-all", "pomodoro", "pomodoro-stop"} {
+		t.Run(action, func(t *testing.T) {
+			sc := &stubClient{}
+			h := newTestServer(sc, uiFS())
+			rec := doJSON(t, h, "POST", "/api/action", "application/json",
+				`{"action":"`+action+`"}`, "127.0.0.1:48902")
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
+			}
+			if sc.withTimeout != mutationTimeout {
+				t.Fatalf("timeout = %v, want %v", sc.withTimeout, mutationTimeout)
+			}
+		})
 	}
 }
 

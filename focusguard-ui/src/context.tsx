@@ -55,6 +55,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   };
 
   const refresh = async () => {
+    // O indicador de conectividade é decidido SOMENTE pelo pingDaemon (probe
+    // real de conectividade, 5s de orçamento). Uma ação lenta (status pode
+    // enumerar o firewall, 15s de orçamento no httpapi) NÃO significa daemon
+    // desligado: com um daemon saudável ela apenas omite o dado neste ciclo.
     const up = await pingDaemon();
     setDaemonUp(up);
     if (!up) {
@@ -65,7 +69,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const st = await api.status();
       if (st.success) setStatus(st);
     } catch {
-      setDaemonUp(false);
       setStatus(null);
     }
     try {
