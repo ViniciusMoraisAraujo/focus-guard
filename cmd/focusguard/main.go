@@ -1214,9 +1214,32 @@ func handleDNSCommand(client *ipc.Client, args []string) {
 		case "stop":
 			handleDNSStopCommand(client)
 			return
+		case "upstream":
+			handleDNSUpstreamCommand(client, args[1:])
+			return
 		}
 	}
 	handleDNSStatusCommand(client)
+}
+
+// handleDNSUpstreamCommand changes the upstream resolver the sinkhole forwards
+// allowed queries to: focusguard dns upstream <host[:porta]>.
+func handleDNSUpstreamCommand(client *ipc.Client, args []string) {
+	if len(args) < 1 {
+		fmt.Println("Erro: Informe o upstream (ex: focusguard dns upstream 9.9.9.9).")
+		fmt.Println("Uso: focusguard dns upstream <host[:porta]>  (ex: 1.1.1.2, 9.9.9.9:53, dns.google)")
+		osExit(1)
+	}
+	resp, err := client.Send(ipc.Request{Action: "dns-set-upstream", Upstream: args[0]})
+	if err != nil {
+		fmt.Printf("Erro de comunicação: %v\n", err)
+		osExit(1)
+	}
+	if !resp.Success {
+		fmt.Printf("Falha ao alterar o upstream: %s\n", resp.Message)
+		osExit(1)
+	}
+	fmt.Printf("✔ %s\n", resp.Message)
 }
 
 func handleDNSStartCommand(client *ipc.Client) {
@@ -1357,6 +1380,7 @@ func printUsage() {
 	fmt.Println("  focusguard dns start                    Iniciar o servidor DNS sinkhole (porta 53)")
 	fmt.Println("  focusguard dns stop                     Desligar o servidor DNS sinkhole")
 	fmt.Println("  focusguard dns status                   Mostrar o status do servidor DNS")
+	fmt.Println("  focusguard dns upstream <host[:porta]>  Alterar o upstream DNS (ex: 9.9.9.9)")
 	fmt.Println("  focusguard pomodoro --preset <categoria> [--work 25] [--rest 5] [--cycles 4] [--strict] [--save] [--label \"missão\"]")
 	fmt.Println("  focusguard pomodoro-defaults          Mostrar os padrões salvos do pomodoro")
 	fmt.Println("  focusguard mission                    Resumo de foco por missão nomeada")

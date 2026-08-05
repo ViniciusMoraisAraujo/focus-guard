@@ -31,6 +31,7 @@ import (
 	"focusguard/internal/store"
 	"focusguard/internal/tamper"
 	"focusguard/internal/update"
+	"focusguard/internal/user"
 	"focusguard/internal/watchdog"
 )
 
@@ -688,7 +689,14 @@ func runDaemon() bool {
 	// arquivo hosts — cobre a rede inteira. Se o flag persistido estiver ativo,
 	// o servidor sobe junto com o daemon. Bind é best-effort: porta 53 ocupada
 	// não derruba o daemon (fica reportado no dns-status).
-	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsserver.DefaultUpstream)
+	// Upstream persistido via dns-set-upstream (web/CLI) ou o padrão
+	// Cloudflare Security 1.1.1.2 — o daemon constrói o controller com o
+	// valor em disco para o boot usar o upstream que o usuário escolheu.
+	dnsUpstream := sched.DNSUpstream()
+	if dnsUpstream == "" {
+		dnsUpstream = dnsserver.DefaultUpstream
+	}
+	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsUpstream)
 	server.SetDNS(dnsSrv)
 	server.SetOnDNSStarted(func() {
 		// Browsers com DoH embutido ignorariam o sinkhole pela porta 853; o
@@ -702,7 +710,7 @@ func runDaemon() bool {
 		if err := dnsSrv.Start(); err != nil {
 			log.Printf("[FocusGuard Daemon] DNS habilitado, mas não subiu: %v", err)
 		} else {
-			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsserver.DefaultBindAddr, dnsserver.DefaultUpstream)
+			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsserver.DefaultBindAddr, dnsUpstream)
 		}
 	}
 	defer dnsSrv.Stop()
@@ -731,6 +739,16 @@ func runDaemon() bool {
 	// ao lado do state.json — "focusguard preset add/remove".
 	presetStore := preset.NewStore(filepath.Join(filepath.Dir(statePath), "presets.json"))
 	server.SetPresets(presetStore)
+
+	// Usuários da interface web: credenciais persistidas em user.json ao lado
+	// do state.json (apenas hashes bcrypt, nunca senha em texto puro). O admin
+	// é garantido no boot — o sistema sempre mantém a conta de recuperação — e
+	// os demais usuários são criados pelo admin (web/CLI).
+	userStore := user.NewStore(filepath.Join(filepath.Dir(statePath), "user.json"))
+	if err := userStore.EnsureAdmin(); err != nil {
+		log.Printf("[FocusGuard Daemon] Aviso: falha ao garantir o usuário admin: %v", err)
+	}
+	server.SetUsers(userStore)
 
 	// Agendamento recorrente: regras "bloquear social seg-sex 08:00-12:00"
 	// persistidas em schedules.json. O worker de background aplica as janelas
