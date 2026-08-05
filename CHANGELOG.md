@@ -45,6 +45,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   rate limit de login (5 falhas → 30s) contra brute force e permissão por
   usuário (gestão de usuários só para o admin; usuário comum troca a própria
   senha). Todas as ações do painel (`/api/action`) passaram a exigir sessão.
+  O primeiro acesso usa o usuário `admin` com a senha padrão definida na
+  instalação — troque-a logo após o login (Configurações → Usuários).
 - **Painel web: tela Rede com upstream + card Usuários** — a tela Rede ganhou
   o seletor de upstream (chips Cloudflare/Google/Quad9/AdGuard + campo
   custom, com aviso de que trocar reinicia o servidor e zera os contadores);
