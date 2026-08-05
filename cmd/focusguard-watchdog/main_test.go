@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -125,6 +126,53 @@ func TestMaybeRollback_NoDecisionWithoutHealthyHistory(t *testing.T) {
 	}
 	if restored {
 		t.Error("no rollback should happen without healthy history")
+	}
+}
+
+// TestVersionInfo_GoWinresFormat verifies cmd/focusguard-watchdog/versioninfo.json
+// follows the go-winres schema: an application icon (RT_GROUP_ICON referencing
+// the generated .ico) and version metadata (RT_VERSION) — and NO manifest, since
+// the watchdog runs as a regular user / LocalSystem service and must never
+// require admin (only the daemon has requireAdministrator). This is what
+// go-winres make consumes to emit rsrc_windows_*.syso for the watchdog.
+func TestVersionInfo_GoWinresFormat(t *testing.T) {
+	data, err := os.ReadFile("versioninfo.json")
+	if err != nil {
+		t.Fatalf("leitura do versioninfo.json: %v", err)
+	}
+
+	// Os .syso são committed (o CI precisa deles): sem eles o go build no
+	// Windows gera um .exe SEM ícone silenciosamente.
+	for _, syso := range []string{"rsrc_windows_amd64.syso", "rsrc_windows_arm64.syso"} {
+		if _, err := os.Stat(syso); err != nil {
+			t.Errorf("resource %s ausente — rode `make winres` e commite-o: %v", syso, err)
+		}
+	}
+
+	var v struct {
+		GroupIcon map[string]map[string]json.RawMessage `json:"RT_GROUP_ICON"`
+		Manifest  map[string]map[string]string          `json:"RT_MANIFEST"`
+		Version   map[string]map[string]struct {
+			Info map[string]map[string]string `json:"info"`
+		} `json:"RT_VERSION"`
+	}
+	if err := json.Unmarshal(data, &v); err != nil {
+		t.Fatalf("versioninfo.json não é JSON válido: %v", err)
+	}
+
+	if len(v.GroupIcon) == 0 {
+		t.Error("RT_GROUP_ICON ausente — o .exe não terá ícone")
+	}
+	if len(v.Manifest) != 0 {
+		t.Error("RT_MANIFEST presente — o watchdog não deve exigir admin")
+	}
+
+	info := v.Version["#1"]["0000"].Info["0409"]
+	if info["ProductName"] == "" || info["OriginalFilename"] == "" {
+		t.Errorf("RT_VERSION.info.0409 incompleto: %+v", info)
+	}
+	if info["FileDescription"] == "" {
+		t.Error("FileDescription vazio — aba de detalhes do Explorer sem descrição")
 	}
 }
 
