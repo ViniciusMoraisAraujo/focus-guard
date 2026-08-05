@@ -7,6 +7,26 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.15.1] - 2026-08-05
+
+### 🐛 Correções
+
+- **UI presa no splash de carregamento (tela de login inalcançável)** — o gate
+  de autenticação da v0.15.0 usava `null` tanto para "ainda checando a sessão"
+  quanto para "não autenticado": sem cookie de sessão, a UI ficava para sempre
+  no ícone pulsando (o ping continuava respondendo ok) e a tela de login nunca
+  aparecia — o logout tinha o mesmo defeito. O estado "não autenticado" agora é
+  um objeto real (`authenticated: false`), distinto de `null` ("checando"), e o
+  logout devolve à tela de login como previsto.
+
+### 🛠️ Build
+
+- **Aviso de assets vazios no `make build-web`** — compilar o `focusguard-web`
+  sem `make ui` antes embutia uma pasta de assets vazia e a UI não abria
+  (página "UI não compilada" na raiz). O alvo agora imprime um aviso claro
+  quando `cmd/focusguard-web/assets` não contém `index.html`, e o README
+  documenta `make ui` antes de `make build`.
+
 ## [0.15.0] - 2026-08-05
 
 ### ✨ Novas funcionalidades
