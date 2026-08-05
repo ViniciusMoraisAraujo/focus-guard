@@ -292,6 +292,13 @@ func (c *Controller) checkUpdate() {
 		c.systray.SetTooltip(errorTooltip("Falha ao verificar atualização", resp))
 		return
 	}
+	// PendingReboot vem ANTES de UpdateAvailable: o daemon mantém Available=true
+	// no fallback move-on-reboot (o update existe, só será aplicado no boot) —
+	// se invertesse a ordem, diria "aplicada" indevidamente.
+	if resp.UpdatePendingReboot {
+		c.systray.SetTooltip(fmt.Sprintf("🔄 Atualização preparada: v%s → v%s (conclui no próximo reinício)", resp.CurrentVersion, resp.UpdateVersion))
+		return
+	}
 	if resp.UpdateAvailable {
 		c.systray.SetTooltip(fmt.Sprintf("🔄 Atualização aplicada: v%s → v%s", resp.CurrentVersion, resp.UpdateVersion))
 		return

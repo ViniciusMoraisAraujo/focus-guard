@@ -101,6 +101,11 @@ type Response struct {
 	// ConflictBlock carries the existing block that caused the conflict, so the
 	// UI/CLI can show its expiry without an extra round-trip.
 	ConflictBlock *policy.Block `json:"conflict_block,omitempty"`
+	// UpdatePendingReboot marks an update that could not replace the running
+	// binaries right away (Windows file lock) and was scheduled to complete at
+	// the next system boot (MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT). The
+	// daemon keeps running the old version until then.
+	UpdatePendingReboot bool `json:"update_pending_reboot,omitempty"`
 }
 
 // UpdateStatus holds the outcome of an auto-update check.
@@ -109,6 +114,9 @@ type UpdateStatus struct {
 	NewVersion     string
 	Available      bool
 	Applied        bool
+	// PendingReboot marca o fallback move-on-reboot: a troca dos binários foi
+	// agendada para o próximo boot (Windows) e o daemon segue na versão antiga.
+	PendingReboot bool
 }
 
 // UpdateChecker performs an auto-update check. When apply is true the checker

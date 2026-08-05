@@ -105,8 +105,12 @@ export function Configuracoes() {
     try {
       const res = await execAction({ action: "update", channel });
       if (res.ok) {
+        // Fallback move-on-reboot: o daemon segue rodando a versão antiga e a
+        // troca dos binários acontece no próximo reinício (binário travado).
         setUpdateInfo(
-          res.message || "Atualização aplicada — o daemon reinicia ao final.",
+          res.updatePendingReboot
+            ? "Atualização preparada — os binários em uso serão substituídos no próximo reinício do computador."
+            : res.message || "Atualização aplicada — o daemon reinicia ao final.",
         );
       } else {
         setUpdateError(res.message || "Falha ao atualizar.");

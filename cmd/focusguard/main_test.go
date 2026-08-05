@@ -506,6 +506,33 @@ func TestHandleUpdateCommand_UpToDate(t *testing.T) {
 	}
 }
 
+// TestHandleUpdateCommand_PendingReboot verifies o fallback move-on-reboot
+// (binário travado no Windows): o CLI renderiza "preparada para o próximo
+// reinício" em vez de afirmar que o update foi aplicado.
+func TestHandleUpdateCommand_PendingReboot(t *testing.T) {
+	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
+		return ipc.Response{
+			Success:             true,
+			CurrentVersion:      "1.0.0",
+			UpdateVersion:       "1.1.0",
+			UpdatePendingReboot: true,
+		}
+	})
+
+	client := ipc.NewClient()
+	output := captureStdout(t, func() { handleUpdateCommand(client, nil) })
+
+	if !strings.Contains(output, "próximo reinício") {
+		t.Errorf("esperava mensagem de próximo reinício, got: %s", output)
+	}
+	if strings.Contains(output, "aplicada") {
+		t.Errorf("update pending reboot não deve dizer que foi aplicado, got: %s", output)
+	}
+	if !strings.Contains(output, "1.1.0") {
+		t.Errorf("output deveria mencionar a nova versão, got: %s", output)
+	}
+}
+
 func TestHandleUpdateCommand_FailureResponse(t *testing.T) {
 	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
 		return ipc.Response{Success: false, Message: "auto-update não configurado"}

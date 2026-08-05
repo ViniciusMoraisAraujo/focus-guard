@@ -427,6 +427,33 @@ func TestController_UpdateFailureDoesNotClaimUpToDate(t *testing.T) {
 	})
 }
 
+// TestController_UpdatePendingReboot verifies o fallback move-on-reboot: o
+// daemon mantém Available=true no PendingReboot, então o tray precisa checar
+// UpdatePendingReboot ANTES de UpdateAvailable para não dizer "aplicada" —
+// mostra "preparada (conclui no próximo reinício)" e nunca "✔ atualizado".
+func TestController_UpdatePendingReboot(t *testing.T) {
+	s := newMockSystray()
+	d := &mockDaemon{resp: &ipc.Response{
+		Success:             true,
+		CurrentVersion:      "1.0.0",
+		UpdateVersion:       "1.1.0",
+		UpdateAvailable:     true, // o daemon mantém Available=true neste caminho
+		UpdatePendingReboot: true,
+	}}
+	c := NewController(s, d, nil)
+	c.Run()
+
+	s.itemByTitle("🔄 Verificar atualização").click()
+
+	waitFor(t, func() bool {
+		tt := s.getTooltip()
+		return strings.Contains(tt, "Atualização preparada") &&
+			strings.Contains(tt, "próximo reinício") &&
+			!strings.Contains(tt, "aplicada") &&
+			!strings.Contains(tt, "✔ Você está atualizado")
+	})
+}
+
 func TestController_StatusFailureShowsError(t *testing.T) {
 	s := newMockSystray()
 	d := &mockDaemon{resp: &ipc.Response{Success: false, Message: "erro ao consultar firewall"}}

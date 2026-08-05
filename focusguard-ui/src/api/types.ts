@@ -119,6 +119,10 @@ export interface ApiResponse {
   current_version?: string;
   update_available?: boolean;
   update_version?: string;
+  // Fallback move-on-reboot: a troca dos binários foi agendada para o próximo
+  // reinício (binário em uso travado no Windows) — o daemon segue na versão
+  // antiga até lá.
+  update_pending_reboot?: boolean;
   stats?: Stats;
   apps?: string[];
   doh_active?: boolean;

@@ -729,14 +729,19 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 		resp = Response{
-			Success:         true,
-			UpdateAvailable: st.Available,
-			UpdateVersion:   st.NewVersion,
-			CurrentVersion:  st.CurrentVersion,
+			Success:             true,
+			UpdateAvailable:     st.Available,
+			UpdateVersion:       st.NewVersion,
+			CurrentVersion:      st.CurrentVersion,
+			UpdatePendingReboot: st.PendingReboot,
 		}
 		if st.Applied {
 			updateApplied = true
 			resp.Message = fmt.Sprintf("Atualização aplicada: %s → %s. O daemon será reiniciado automaticamente.", st.CurrentVersion, st.NewVersion)
+		} else if st.PendingReboot {
+			// Fallback move-on-reboot: a troca completa no próximo boot — o
+			// daemon NÃO reinicia (updateApplied fica false) e segue servindo.
+			resp.Message = fmt.Sprintf("Atualização será concluída no próximo reinício do computador: %s → %s", st.CurrentVersion, st.NewVersion)
 		} else if st.Available {
 			resp.Message = fmt.Sprintf("Atualização disponível: %s → %s", st.CurrentVersion, st.NewVersion)
 		} else {

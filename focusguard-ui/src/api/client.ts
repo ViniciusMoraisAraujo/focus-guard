@@ -65,12 +65,16 @@ export async function pingDaemon(): Promise<boolean> {
 /** execAction roda uma ação e devolve um erro amigável quando o daemon rejeita. */
 export async function execAction(
   req: ApiRequest,
-): Promise<{ ok: boolean; message: string }> {
+): Promise<{ ok: boolean; message: string; updatePendingReboot?: boolean }> {
   const resp = await action(req);
   if (!resp.success) {
     return { ok: false, message: resp.message ?? "Falha ao executar a ação." };
   }
-  return { ok: true, message: resp.message ?? "" };
+  return {
+    ok: true,
+    message: resp.message ?? "",
+    updatePendingReboot: resp.update_pending_reboot,
+  };
 }
 
 export const api = {

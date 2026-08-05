@@ -1224,6 +1224,16 @@ func handleUpdateCommand(client *ipc.Client, args []string) {
 		osExit(1)
 	}
 
+	// PendingReboot vem ANTES de UpdateAvailable: o server mantém Available=true
+	// no fallback move-on-reboot (o update existe, só será aplicado no boot) —
+	// se invertesse a ordem, diria "aplicada" indevidamente.
+	if resp.UpdatePendingReboot {
+		// Fallback move-on-reboot: um binário em execução estava travado e a
+		// troca da suíte foi agendada para o próximo boot (MoveFileEx).
+		fmt.Printf("✔ Atualização preparada: %s → %s\n", resp.CurrentVersion, resp.UpdateVersion)
+		fmt.Println("  Os binários em uso serão substituídos no próximo reinício do computador.")
+		return
+	}
 	if resp.UpdateAvailable {
 		fmt.Printf("✔ Atualização aplicada: %s → %s\n", resp.CurrentVersion, resp.UpdateVersion)
 		fmt.Println("  A nova versão será usada na próxima reinicialização do daemon.")
