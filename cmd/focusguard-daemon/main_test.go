@@ -895,7 +895,24 @@ func TestDaemonUpdater_Check_Error(t *testing.T) {
 	}
 }
 
+// stubStopForBinarySwap troca stopForBinarySwap por um no-op que registra a
+// chamada — os testes de Check nunca tocam em serviços/processos reais (o
+// default Windows mataria o tray de verdade durante a suíte). Devolve um
+// ponteiro para o contador de chamadas.
+func stubStopForBinarySwap(t *testing.T) *int32 {
+	t.Helper()
+	var calls int32
+	orig := stopForBinarySwap
+	stopForBinarySwap = func(_ []string) func() {
+		atomic.AddInt32(&calls, 1)
+		return func() {}
+	}
+	t.Cleanup(func() { stopForBinarySwap = orig })
+	return &calls
+}
+
 func TestDaemonUpdater_Check_Apply(t *testing.T) {
+	stubStopForBinarySwap(t)
 	dir := t.TempDir()
 	daemon := filepath.Join(dir, "focusguard-daemon")
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
@@ -924,6 +941,7 @@ func TestDaemonUpdater_Check_Apply(t *testing.T) {
 }
 
 func TestDaemonUpdater_Check_ApplyError(t *testing.T) {
+	stubStopForBinarySwap(t)
 	dir := t.TempDir()
 	daemon := filepath.Join(dir, "focusguard-daemon")
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("file locked")}
@@ -967,8 +985,11 @@ func TestDaemonUpdater_Check_NilUpdater(t *testing.T) {
 func TestSiblingBinaries_ReturnsAllFocusGuardBinaries(t *testing.T) {
 	got := siblingBinaries("/usr/local/bin/focusguard-daemon")
 	want := []string{
-		"/usr/local/bin/focusguard",
+		// O daemon vem primeiro de propósito: é o binário decisivo do update
+		// (o único que não pode ser parado antes do swap) — se a troca dele
+		// falhar, nada mais foi trocado e o fallback move-on-reboot dispara.
 		"/usr/local/bin/focusguard-daemon",
+		"/usr/local/bin/focusguard",
 		"/usr/local/bin/focusguard-tray",
 		"/usr/local/bin/focusguard-watchdog",
 		"/usr/local/bin/focusguard-web",
@@ -999,6 +1020,7 @@ func TestSiblingBinaries_WindowsExt(t *testing.T) {
 // TestDaemonUpdater_Check_Apply_AllBinaries verifies the updater applies to
 // every sibling binary (daemon + CLI + tray + watchdog), not just the daemon.
 func TestDaemonUpdater_Check_Apply_AllBinaries(t *testing.T) {
+	stubStopForBinarySwap(t)
 	dir := t.TempDir()
 	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
 	d := &daemonUpdater{
@@ -1027,6 +1049,7 @@ func TestDaemonUpdater_Check_Apply_AllBinaries(t *testing.T) {
 // partial failure must abort the update (Applied=false) — the daemon must not
 // restart into a half-updated state.
 func TestDaemonUpdater_Check_Apply_PartialFailureNoRestart(t *testing.T) {
+	stubStopForBinarySwap(t)
 	dir := t.TempDir()
 	d := &daemonUpdater{
 		u: &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}, applyErr: errors.New("access denied")},
@@ -1042,6 +1065,68 @@ func TestDaemonUpdater_Check_Apply_PartialFailureNoRestart(t *testing.T) {
 	}
 	if st.Applied {
 		t.Error("expected Applied=false on failure — no restart into partial state")
+	}
+}
+
+// TestDaemonUpdater_Check_Apply_PendingReboot verifica o fallback
+// move-on-reboot: quando o UpdateToAll retorna ErrScheduledOnReboot (o exe do
+// próprio daemon ficou travado para rename), o Check NÃO marca Applied, NÃO
+// deixa a flag de update para trás (o daemon segue rodando a versão antiga) e
+// reporta PendingReboot para o CLI/UI.
+func TestDaemonUpdater_Check_Apply_PendingReboot(t *testing.T) {
+	calls := stubStopForBinarySwap(t)
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "focusguard-daemon")
+	fake := &fakeUpdaterAPI{
+		result:   &update.UpdateResult{Version: "1.1.0"},
+		applyErr: update.ErrScheduledOnReboot,
+	}
+	d := &daemonUpdater{u: fake, binaries: []string{daemon}}
+
+	st, err := d.Check(context.Background(), true, "")
+	if err != nil {
+		t.Fatalf("ErrScheduledOnReboot não é erro para o caller: %v", err)
+	}
+	if st.Applied {
+		t.Error("Applied deve ser false no fallback move-on-reboot (daemon não reinicia)")
+	}
+	if !st.PendingReboot {
+		t.Error("PendingReboot deve ser true quando a troca foi agendada para o boot")
+	}
+	// A flag não pode ficar: o daemon segue rodando e o watchdog voltaria mudo.
+	if _, err := os.Stat(filepath.Join(dir, updateInProgressFile)); !os.IsNotExist(err) {
+		t.Error("update.inprogress deve ser removida no caminho PendingReboot")
+	}
+	// Sem aplicação → sem varredura de backups.
+	if atomic.LoadInt32(&fake.cleanupCalls) != 0 {
+		t.Errorf("CleanupStale não deve rodar no caminho PendingReboot, got %d", fake.cleanupCalls)
+	}
+	// O prepare (parar watchdog + tray) ainda roda antes do swap.
+	if atomic.LoadInt32(calls) != 1 {
+		t.Errorf("stopForBinarySwap deveria ser chamado, got %d", atomic.LoadInt32(calls))
+	}
+}
+
+// TestDaemonUpdater_Check_Apply_StopsGuards verifica que o apply chama o
+// stopForBinarySwap (parar serviço do watchdog + processo do tray) antes de
+// trocar os binários — o fix do "Acesso negado" da task.md: sem isso o exe do
+// tray (GUI em execução) fica travado para rename.
+func TestDaemonUpdater_Check_Apply_StopsGuards(t *testing.T) {
+	calls := stubStopForBinarySwap(t)
+	dir := t.TempDir()
+	daemon := filepath.Join(dir, "focusguard-daemon")
+	fake := &fakeUpdaterAPI{result: &update.UpdateResult{Version: "1.1.0"}}
+	d := &daemonUpdater{u: fake, binaries: []string{daemon}}
+
+	st, err := d.Check(context.Background(), true, "")
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !st.Applied {
+		t.Error("expected Applied=true")
+	}
+	if atomic.LoadInt32(calls) != 1 {
+		t.Errorf("stopForBinarySwap deveria rodar antes do swap, got %d chamadas", atomic.LoadInt32(calls))
 	}
 }
 
@@ -1066,8 +1151,9 @@ func TestNewDaemonUpdater_WiresExistingSiblings(t *testing.T) {
 	d := newDaemonUpdater(filepath.Join(dir, "focusguard-daemon"+ext), fake)
 
 	expected := []string{
-		filepath.Join(dir, "focusguard"+ext),
+		// Ordem do siblingBinaries: daemon primeiro (binário decisivo do swap).
 		filepath.Join(dir, "focusguard-daemon"+ext),
+		filepath.Join(dir, "focusguard"+ext),
 		filepath.Join(dir, "focusguard-watchdog"+ext),
 	}
 	if len(d.binaries) != len(expected) {

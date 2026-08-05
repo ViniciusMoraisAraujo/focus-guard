@@ -353,7 +353,25 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool, channel string) (
 			installDir = filepath.Dir(d.binaries[0])
 			markUpdateInProgress(installDir)
 		}
+		// Bug 3 (task.md): no Windows, para o watchdog e o tray ANTES da troca
+		// para liberar os .exe — um binário em execução fica travado para
+		// rename (o erro "Acesso negado" da task.md). O restore religa o
+		// watchdog se ele estava rodando. No Linux é um no-op.
+		restoreGuards := stopForBinarySwap(d.binaries)
+		defer restoreGuards()
+
 		if _, err := d.u.UpdateToAll(ctx, res, d.binaries); err != nil {
+			if errors.Is(err, update.ErrScheduledOnReboot) {
+				// Fallback move-on-reboot: o daemon segue rodando a versão
+				// antiga e a troca completa no próximo boot — a flag não pode
+				// ficar (senão o watchdog ficaria mudo à toa) e o daemon NÃO
+				// reinicia. O watchdog é religado pelo defer do restoreGuards.
+				if installDir != "" {
+					clearUpdateInProgress(installDir)
+				}
+				st.PendingReboot = true
+				return st, nil
+			}
 			// Update falhou: o daemon segue rodando a versão antiga — a flag
 			// não pode ficar para trás, senão o watchdog ficaria mudo à toa.
 			if installDir != "" {
@@ -375,11 +393,17 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool, channel string) (
 }
 
 // siblingBinaries returns the paths of every FocusGuard binary expected next
-// to the daemon (CLI, tray, watchdog) — same directory, same extension.
+// to the daemon (CLI, tray, watchdog, web) — same directory, same extension.
+//
+// O daemon vem PRIMEIRO de propósito (Bug da task.md): é o único binário que
+// não pode ser parado antes do swap (é ele quem aplica o update), então a
+// troca do próprio exe é o ponto decisivo — se ela falhar mesmo com retry,
+// nada mais foi trocado e o UpdateToAll agenda toda a suíte para o próximo
+// boot (fallback move-on-reboot) em vez de deixar uma meia-atualização.
 func siblingBinaries(daemonPath string) []string {
 	dir := filepath.Dir(daemonPath)
 	ext := filepath.Ext(daemonPath) // ".exe" no Windows, "" no Linux
-	names := []string{"focusguard", "focusguard-daemon", "focusguard-tray", "focusguard-watchdog", "focusguard-web"}
+	names := []string{"focusguard-daemon", "focusguard", "focusguard-tray", "focusguard-watchdog", "focusguard-web"}
 	out := make([]string, 0, len(names))
 	for _, n := range names {
 		out = append(out, filepath.Join(dir, n+ext))
