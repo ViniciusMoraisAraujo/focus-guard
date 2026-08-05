@@ -46,7 +46,7 @@ export function Presets() {
       const res = await execAction({
         action: "preset-add",
         preset_name: n,
-        preset_label: label.trim() || n,
+        preset_label: label.trim() || name.trim(),
         preset_domains: doms,
       });
       toast(res.message || (res.ok ? "Preset criado!" : "Falha ao criar."), res.ok ? "ok" : "err");
