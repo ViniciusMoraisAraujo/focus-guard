@@ -106,6 +106,18 @@ type Response struct {
 	// the next system boot (MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT). The
 	// daemon keeps running the old version until then.
 	UpdatePendingReboot bool `json:"update_pending_reboot,omitempty"`
+	// DNSEnabled reports whether the DNS sinkhole server should be running
+	// (persisted setting). DNSListening/DNSAddr/DNSUpstream/DNSQueries/
+	// DNSBlocked describe its live state and counters (dns-status/status);
+	// DNSBindError surfaces a port-53 bind failure so the UI/CLI can guide the
+	// user to disable ICS/dnscache.
+	DNSEnabled   bool   `json:"dns_enabled,omitempty"`
+	DNSListening bool   `json:"dns_listening,omitempty"`
+	DNSAddr      string `json:"dns_addr,omitempty"`
+	DNSUpstream  string `json:"dns_upstream,omitempty"`
+	DNSQueries   uint64 `json:"dns_queries,omitempty"`
+	DNSBlocked   uint64 `json:"dns_blocked,omitempty"`
+	DNSBindError string `json:"dns_bind_error,omitempty"`
 }
 
 // UpdateStatus holds the outcome of an auto-update check.

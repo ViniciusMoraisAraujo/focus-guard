@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"focusguard/internal/analytics"
+	"focusguard/internal/dnsserver"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
 	"focusguard/internal/schedule"
@@ -45,6 +46,7 @@ type Server struct {
 	goalStore       GoalManager
 	apps            AppsManager
 	tamperLog       TamperProvider
+	dnsCtrl         DNSController
 	onUpdateApplied func()
 	currentVersion  string
 
@@ -143,6 +145,37 @@ func (s *Server) SetTamper(p TamperProvider) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tamperLog = p
+}
+
+// DNSController drives the DNS sinkhole server lifecycle used by the
+// dns-start/dns-stop/dns-status actions. The daemon wires a
+// *dnsserver.Controller (bound to the scheduler as the policy checker); tests
+// stub it. The persisted enabled flag lives in the scheduler, not the
+// controller — the actions combine both for status.
+type DNSController interface {
+	Start() error
+	Stop() error
+	Status() dnsserver.Status
+}
+
+// SetDNS wires the DNS sinkhole controller into the server. Nil makes the
+// dns-* actions fail with a clear message.
+func (s *Server) SetDNS(c DNSController) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dnsCtrl = c
+}
+
+// mergeDNS copies the live DNS controller state into an IPC response together
+// with the persisted enabled flag (which lives in the scheduler).
+func mergeDNS(resp *Response, st dnsserver.Status, enabled bool) {
+	resp.DNSEnabled = enabled
+	resp.DNSListening = st.Listening
+	resp.DNSAddr = st.Addr
+	resp.DNSUpstream = st.Upstream
+	resp.DNSQueries = st.Queries
+	resp.DNSBlocked = st.Blocked
+	resp.DNSBindError = st.BindError
 }
 
 // catalog returns the configured PresetManager or the built-in fallback.
@@ -679,6 +712,59 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		resp = Response{Success: true, Sessions: analytics.RecentSessions(sessions, maxSessionsReturned)}
 
+	case "dns-start":
+		s.mu.RLock()
+		c := s.dnsCtrl
+		s.mu.RUnlock()
+		if c == nil {
+			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			break
+		}
+		if err := c.Start(); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		// Persiste o flag só depois de o listener subir; se a gravação falhar,
+		// desliga o servidor para o estado nunca ficar "ligado mas não
+		// persistido" (no próximo boot voltaria desligado).
+		if err := s.scheduler.SetDNSEnabled(true); err != nil {
+			_ = c.Stop()
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{Success: true, Message: "Servidor DNS iniciado em " + c.Status().Addr}
+		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
+
+	case "dns-stop":
+		s.mu.RLock()
+		c := s.dnsCtrl
+		s.mu.RUnlock()
+		if c == nil {
+			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			break
+		}
+		if err := c.Stop(); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		if err := s.scheduler.SetDNSEnabled(false); err != nil {
+			resp = Response{Success: false, Message: err.Error()}
+			break
+		}
+		resp = Response{Success: true, Message: "Servidor DNS desligado"}
+		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
+
+	case "dns-status":
+		s.mu.RLock()
+		c := s.dnsCtrl
+		s.mu.RUnlock()
+		if c == nil {
+			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			break
+		}
+		resp = Response{Success: true}
+		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
+
 	case "status":
 		blocks, err := s.scheduler.ListBlocks()
 		if err != nil {
@@ -698,6 +784,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		pg := s.pomodoro
 		gs := s.goalStore
 		cur := s.currentVersion
+		c := s.dnsCtrl
 		s.mu.RUnlock()
 		resp.UpdateAvailable = us.Available
 		resp.UpdateVersion = us.NewVersion
@@ -711,6 +798,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 		if resp.CurrentVersion == "" {
 			resp.CurrentVersion = cur
+		}
+		// DNS sinkhole: enabled vem do scheduler (persistido); o restante vem
+		// do controller (estado vivo + contadores). Sem controller (dev), o
+		// status ainda informa o flag persistido.
+		if c != nil {
+			mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
+		} else {
+			resp.DNSEnabled = s.scheduler.DNSEnabled()
 		}
 
 	case "ping":
