@@ -17,6 +17,7 @@ import (
 
 	"focusguard/internal/analytics"
 	"focusguard/internal/apps"
+	"focusguard/internal/dnsserver"
 	"focusguard/internal/enforcer"
 	"focusguard/internal/goal"
 	"focusguard/internal/hostswatch"
@@ -638,6 +639,31 @@ func runDaemon() bool {
 		server.SetApps(&guardApps{store: appsStore, guard: pg})
 	}
 	server.SetTamper(tamperRec)
+
+	// DNS Sinkhole ("Rei da Rede"): servidor DNS local (porta 53) que responde
+	// 0.0.0.0 para domínios bloqueados e encaminha o resto ao upstream
+	// (Cloudflare Security 1.1.1.2). Não depende de sessão de foco nem do
+	// arquivo hosts — cobre a rede inteira. Se o flag persistido estiver ativo,
+	// o servidor sobe junto com o daemon. Bind é best-effort: porta 53 ocupada
+	// não derruba o daemon (fica reportado no dns-status).
+	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsserver.DefaultUpstream)
+	server.SetDNS(dnsSrv)
+	server.SetOnDNSStarted(func() {
+		// Browsers com DoH embutido ignorariam o sinkhole pela porta 853; o
+		// BlockDoH fecha essa rota. Idempotente — o scheduler também o aplica
+		// enquanto houver blocos ativos.
+		if err := enf.BlockDoH(); err != nil {
+			log.Printf("[FocusGuard Daemon] Falha ao bloquear DoH (porta 853): %v", err)
+		}
+	})
+	if sched.DNSEnabled() {
+		if err := dnsSrv.Start(); err != nil {
+			log.Printf("[FocusGuard Daemon] DNS habilitado, mas não subiu: %v", err)
+		} else {
+			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsserver.DefaultBindAddr, dnsserver.DefaultUpstream)
+		}
+	}
+	defer dnsSrv.Stop()
 
 	// Modo Pomodoro & Presets: ciclos de trabalho/descanso sobre as categorias
 	// (--preset social, video, news, games). O controller bloqueia via o

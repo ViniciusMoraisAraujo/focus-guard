@@ -171,6 +171,24 @@ func TestStatusAction_DNSEnabledPersistedWithoutController(t *testing.T) {
 	}
 }
 
+func TestDNSStart_CallsOnDNSStartedHookAfterPersist(t *testing.T) {
+	server := setupTestServer(t)
+	server.SetDNS(newFakeDNS())
+	var hookCalled bool
+	server.SetOnDNSStarted(func() { hookCalled = true })
+
+	resp := executeRequest(t, server, Request{Action: "dns-start"})
+	if !resp.Success {
+		t.Fatalf("dns-start falhou: %v", resp.Message)
+	}
+	if !hookCalled {
+		t.Error("SetOnDNSStarted hook não foi chamado após dns-start bem-sucedido")
+	}
+	if !server.scheduler.DNSEnabled() {
+		t.Error("hook foi chamado antes de persistir DNSEnabled")
+	}
+}
+
 func TestDNSStart_BindFailureSurfacesError(t *testing.T) {
 	server := setupTestServer(t)
 	server.SetDNS(&fakeDNSController{startErr: &bindErr{}})

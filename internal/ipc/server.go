@@ -48,6 +48,7 @@ type Server struct {
 	tamperLog       TamperProvider
 	dnsCtrl         DNSController
 	onUpdateApplied func()
+	onDNSStarted    func()
 	currentVersion  string
 
 	mu           sync.RWMutex
@@ -257,6 +258,15 @@ func (s *Server) SetOnUpdateApplied(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onUpdateApplied = fn
+}
+
+// SetOnDNSStarted registers a hook invoked after the DNS sinkhole server
+// started and its enabled flag was persisted. The daemon uses it to apply the
+// DoH firewall block (so browsers cannot bypass the sinkhole over port 853).
+func (s *Server) SetOnDNSStarted(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onDNSStarted = fn
 }
 
 // SetCurrentVersion registra a versão do sistema, permitindo que o status a
@@ -731,6 +741,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 			_ = c.Stop()
 			resp = Response{Success: false, Message: err.Error()}
 			break
+		}
+		s.mu.RLock()
+		fn := s.onDNSStarted
+		s.mu.RUnlock()
+		if fn != nil {
+			fn()
 		}
 		resp = Response{Success: true, Message: "Servidor DNS iniciado em " + c.Status().Addr}
 		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
