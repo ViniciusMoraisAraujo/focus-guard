@@ -37,7 +37,11 @@ var errUpdateNotConfigured = errors.New("auto-update não configurado")
 const maxSessionsReturned = 50
 
 type Server struct {
-	scheduler       *scheduler.Scheduler
+	scheduler *scheduler.Scheduler
+	// registry holds the action handlers (Fase 3): o roteador despacha por
+	// registry.Get → Validate → Handle; as ações ainda não migradas caem no
+	// dispatchLegacy (switch legado) até a Fase 4 eliminá-lo.
+	registry        *Registry
 	listener        net.Listener
 	updateChecker   UpdateChecker
 	pomodoro        PomodoroRunner
@@ -264,7 +268,10 @@ func (s *Server) HasActiveSession() bool {
 }
 
 func NewServer(sched *scheduler.Scheduler) *Server {
-	return &Server{scheduler: sched}
+	s := &Server{scheduler: sched}
+	s.registry = NewRegistry()
+	s.registerHandlers()
+	return s
 }
 
 func (s *Server) SetUpdateChecker(c UpdateChecker) {
@@ -383,9 +390,46 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	var resp Response
+	// Roteador fino (Fase 3): ações migradas para o registry passam por
+	// registry.Get → Validate → Handle; as demais caem no switch legado até a
+	// Fase 4 migrá-las para handlers (strangler). Wire protocol inalterado.
 	updateApplied := false
+	if h, ok := s.registry.Get(req.Action); ok {
+		if err := h.Validate(&req); err != nil {
+			writeError(conn, err)
+			return
+		}
+		resp, err := h.Handle(context.Background(), &req)
+		if err != nil {
+			writeError(conn, err)
+			return
+		}
+		_ = json.NewEncoder(conn).Encode(resp)
+	} else {
+		var legacy Response
+		legacy, updateApplied = s.dispatchLegacy(req)
+		_ = json.NewEncoder(conn).Encode(&legacy)
+	}
 
+	// Notifica o hook de restart APÓS a resposta já ter sido escrita no socket
+	// (o CLI foca no fflush antes do daemon sair do processo). O hook faz o
+	// daemon encerrar para o systemd/watchdog subirem o binário novo — sem
+	// isso ficaria o "daemon zumbi" rodando a versão antiga em RAM.
+	if updateApplied {
+		s.mu.RLock()
+		fn := s.onUpdateApplied
+		s.mu.RUnlock()
+		if fn != nil {
+			go fn()
+		}
+	}
+}
+
+// dispatchLegacy executa as ações ainda não migradas para o registry
+// (strangler: o switch encolhe a cada migração e a Fase 4 o elimina).
+// Devolve a resposta e se um update foi aplicado — o roteador dispara o hook
+// de restart só depois de a resposta ser escrita no socket.
+func (s *Server) dispatchLegacy(req Request) (resp Response, updateApplied bool) {
 	switch req.Action {
 	case "block":
 		d, err := time.ParseDuration(req.Duration)
@@ -463,30 +507,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 		}
 
-	case "presets":
-		resp = Response{Success: true, Presets: s.catalog().List()}
-
-	case "preset-add":
-		c := s.catalog()
-		err := c.Add(preset.Preset{
-			Name:    req.PresetName,
-			Label:   req.PresetLabel,
-			Domains: req.PresetDomains,
-		})
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Preset %s criado (%d domínios)", req.PresetName, len(req.PresetDomains))}
-		}
-
-	case "preset-remove":
-		c := s.catalog()
-		if err := c.Remove(req.PresetName); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Preset %s removido", req.PresetName)}
-		}
-
 	case "block-all":
 		d, err := time.ParseDuration(req.Duration)
 		if err != nil || d <= 0 {
@@ -504,59 +524,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 				Success: true,
 				Message: fmt.Sprintf("Internet bloqueada até %s%s", block.ExpiresAt.Local().Format("15:04:05 02/01/2006"), blockAllModeSuffix(req.Allowlist)),
 			}
-		}
-
-	case "tamper-log":
-		s.mu.RLock()
-		p := s.tamperLog
-		s.mu.RUnlock()
-		if p == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "tamper-log não configurado"}
-			break
-		}
-		events, err := p.Events()
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		resp = Response{Success: true, TamperLog: events}
-
-	case "apps-list":
-		s.mu.RLock()
-		am := s.apps
-		s.mu.RUnlock()
-		if am == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "denylist de apps não configurada"}
-			break
-		}
-		resp = Response{Success: true, Apps: am.List()}
-
-	case "apps-add":
-		s.mu.RLock()
-		am := s.apps
-		s.mu.RUnlock()
-		if am == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "denylist de apps não configurada"}
-			break
-		}
-		if err := am.Add(req.AppName); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Processo %s adicionado à denylist", req.AppName)}
-		}
-
-	case "apps-remove":
-		s.mu.RLock()
-		am := s.apps
-		s.mu.RUnlock()
-		if am == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "denylist de apps não configurada"}
-			break
-		}
-		if err := am.Remove(req.AppName); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Processo %s removido da denylist", req.AppName)}
 		}
 
 	case "user-list":
@@ -737,34 +704,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp = Response{Success: false, Message: err.Error()}
 		} else {
 			resp = Response{Success: true, Message: "Pomodoro encerrado", Pomodoro: &st}
-		}
-
-	case "goal-get":
-		s.mu.RLock()
-		g := s.goalStore
-		s.mu.RUnlock()
-		if g == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "meta diária não configurada"}
-			break
-		}
-		resp = Response{Success: true, Goal: g.Get()}
-
-	case "goal-set":
-		s.mu.RLock()
-		g := s.goalStore
-		s.mu.RUnlock()
-		if g == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "meta diária não configurada"}
-			break
-		}
-		if req.GoalMinutes <= 0 || req.GoalMinutes > 24*60 {
-			resp = Response{Success: false, Code: CodeInvalid, Message: "meta inválida (entre 1 e 1440 minutos)"}
-			break
-		}
-		if err := g.Set(time.Duration(req.GoalMinutes) * time.Minute); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Goal: g.Get(), Message: fmt.Sprintf("Meta diária definida: %s", (time.Duration(req.GoalMinutes) * time.Minute).Round(time.Minute))}
 		}
 
 	case "stats":
@@ -948,13 +887,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp.DNSEnabled = s.scheduler.DNSEnabled()
 		}
 
-	case "ping":
-		if err := s.scheduler.Ping(); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: "pong"}
-		}
-
 	case "update":
 		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
 		st, err := s.runUpdateCheck(ctx, true, req.Channel)
@@ -1011,21 +943,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	default:
 		resp = Response{Success: false, Code: CodeUnknownAction, Message: "Not suported action: " + req.Action}
 	}
-
-	_ = json.NewEncoder(conn).Encode(resp)
-
-	// Notifica o hook de restart APÓS a resposta já ter sido escrita no socket
-	// (o CLI foca no fflush antes do daemon sair do processo). O hook faz o
-	// daemon encerrar para o systemd/watchdog subirem o binário novo — sem
-	// isso ficaria o "daemon zumbi" rodando a versão antiga em RAM.
-	if updateApplied {
-		s.mu.RLock()
-		fn := s.onUpdateApplied
-		s.mu.RUnlock()
-		if fn != nil {
-			go fn()
-		}
-	}
+	return resp, updateApplied
 }
 
 // normalizeUpstream validates a user-supplied upstream resolver and returns it
