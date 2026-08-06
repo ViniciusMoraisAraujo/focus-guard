@@ -1,8 +1,8 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1, 2, 3, 4, 5, 6 e 7 concluídas** (Fase 7 em 2026-08-06:
-> eventos em tempo real — event hub + SSE; Fase 6: CLI por comando — B5) — ver
-> seção 5; próxima: Fase 8 (observabilidade, opcional).
+> **Status:** **Fases 0 a 8 concluídas** (Fase 8 em 2026-08-06: observabilidade —
+> métricas de latência por ação IPC/HTTP + logs estruturados leves, C3; Fase 7:
+> eventos em tempo real; Fase 6: CLI por comando — B5) — ver seção 5.
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -230,7 +230,7 @@ func runDaemon(ctx context.Context) error {
 | **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP); lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em `internal/update` (B4/B10) | Alto | médio | G |
 | **6. CLI por comando** ✅ | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
 | **7. Eventos em tempo real** ✅ | Event hub no daemon + long-poll `event-subscribe` (IPC) + SSE no `httpapi` (`/api/events`) + EventSource no frontend com fallback de polling (F5/F3) | Médio (F5) | médio | G |
-| **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
+| **8. Observabilidade** ✅ | Métricas de latência por ação IPC/HTTP + logs estruturados leves (C3) — `internal/metrics` + ação `metrics` + `focusguard metrics` + `GET /api/metrics` | Médio (C3) | baixo | P |
 
 **Ordem sugerida de execução:** ~~0 → 1 → 2 → 3~~ (concluídas) → 4 (começando
 pelas ações de menor risco: `user-*`, `dns-*`, depois
@@ -1066,9 +1066,41 @@ verdes (o `TestWatchFsEvents_*` do statewatch é flake pré-existente de timing
 do fsnotify — passa isolado). Commits:
 - `feat(eventhub): add daemon event hub with long-poll event-subscribe (Fase 7)`
 
+### Fase 8 — Observabilidade (✅ concluída em 2026-08-06)
+
+Fechou o C3 — antes só log de arquivo + pprof opt-in (`FG_PPROF`); agora há
+métricas de latência por ação para detectar regressões das refatorações:
+
+1. **`internal/metrics`** (novo, stdlib-only): `Registry` com um ring por ação
+   (Record/Snapshot/Reset). `ActionStat{action, count, total, avg, max, p50,
+   p95, p99, last}`: count/total/avg/max acumulam por lifetime; p50/p95/p99
+   são computados sobre a janela recente (ring, 256 amostras) — percentis
+   baratos e refletem o comportamento atual.
+2. **IPC**: `ipc.Server.Dispatch` mede TODA ação (inclusive desconhecida) e
+   loga linha estruturada de ação lenta (`[Metrics] action=… duration_ms=…`
+   para > 1s, excluindo `event-subscribe` — long-poll de 20s por design; o
+   update/update-check são incluídos de propósito: raros e a latência de
+   download é exatamente o sinal desejado). Nova ação `metrics` (spec
+   `PermAuthenticated`, 5s) devolve `Response.Metrics`; `Request.Reset` zera
+   antes do snapshot (`metrics --reset`). `Response.Metrics` entrou no
+   contrato (codegen regenerou o `types.ts` com `ActionStat`).
+3. **httpapi**: registry próprio mede a latência do proxy HTTP por ação no
+   `handleAction` (exclui `event-subscribe`; loga proxies lentos > 1s) e o
+   novo `GET /api/metrics` (auth) devolve `{ ipc: <snapshot do daemon via
+   ação metrics>, http: <proxy local> }` — o mesmo lugar mostra onde está a
+   latência (daemon vs round-trip do proxy).
+4. **CLI**: `focusguard metrics [--reset]` — tabela (ação, chamadas, média,
+   p50, p95, máximo) via a ação IPC direta (sem web).
+
+Validação: suíte Go completa, `contract-check`, `tsc --noEmit`, vitest —
+verdes. Commits:
+- `feat(metrics): per-action latency registry (Fase 8)`
+- `feat(ipc): measure dispatch latency and log slow actions (Fase 8)`
+
 ### Próximo passo
 
-1. **Fase 8 — Observabilidade** (opcional): métricas de latência por ação
-   IPC/HTTP, logs estruturados leves (C3).
-2. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
-   cortar release entre fases.
+O plano de refatoração está **completo** (Fases 0–8). Próximos movimentos são
+de produto, não de arquitetura: release conjunta (daemon + tray + web),
+polimento do F4/F5 do ui-plan e a superfície de métricas na UI web se
+houver demanda (hoje o `focusguard metrics` e o `GET /api/metrics` já
+entregam o dado).

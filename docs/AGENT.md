@@ -177,6 +177,7 @@ implementation details belong in code comments, not here.
 | `httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
 | `icon` | Generates `.ico`/`.png` from the canonical artwork |
 | `ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
+| `metrics` | Per-action latency registry (ring + percentiles) — daemon IPC and web proxy |
 | `policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
 | `pomodoro` | Work/rest/cycle sessions |
 | `preset` | Catalog of block categories (builtin + custom) |
@@ -412,6 +413,12 @@ confirm the version/tag with the person before pushing the tag
   (`GET /api/events`) and the UI refreshes the affected data. New event type =
   `ipc.Event*` constant + publish point + frontend listener (regenerate
   `types.ts` via `make contract` if the wire type changes).
+- **Observability** — the daemon measures every IPC dispatch into
+  `internal/metrics` and logs structured slow-action lines (> 1s;
+  `event-subscribe` excluded — it is a 20s long-poll by design); the web
+  proxy measures its own per-action latency and exposes both via
+  `GET /api/metrics`; read the daemon side with `focusguard metrics
+  [--reset]`. New actions are measured automatically.
 - **Port 48902** — `httpapi.DefaultAddr` is the single source of truth
   (server + CLI probe); don't scatter the port across literals.
 - **`git status` before committing** — `.syso`, `focusguard.ico/.png`, and
