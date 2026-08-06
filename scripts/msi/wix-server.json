@@ -65,6 +65,14 @@
       "target": "[#ApplicationFile4]",
       "wdir": "INSTALLDIR",
       "icon": "focusguard.ico"
+    },
+    {
+      "name": "FocusGuard Server",
+      "description": "Abre a interface web do FocusGuard Server",
+      "location": "desktop",
+      "target": "[#ApplicationFile4]",
+      "wdir": "INSTALLDIR",
+      "icon": "focusguard.ico"
     }
   ],
   "registries": []
