@@ -5,7 +5,24 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Unreleased]
+## [0.15.2] - 2026-08-05
+
+### 🐛 Correções
+
+- **Sessão expirada agora devolve à tela de login** — com o TTL de 12h, uma
+  sessão vencida deixava o painel aberto com toda ação falhando com 401. Agora,
+  quando `/api/action` responde 401, a UI re-consulta `/api/auth/status` e, se
+  o servidor confirma que a sessão não existe mais, volta para a tela de login
+  (limpando os dados do usuário anterior). Vale para ações manuais e para os
+  polls de fundo; o re-check é silencioso (sem toast duplicado).
+
+### 🧪 Testes
+
+- **`TestWebExePath` tolera o sufixo `.test` do binário de teste** — sob
+  `go test`, `os.Executable()` aponta para `focusguard.test`, então o nome
+  derivado ganhava `.test` (`focusguard-web.test`) e a assertiva falhava no
+  Linux (no Windows passava, pois o binário de teste é `focusguard.test.exe`).
+  O teste agora ignora o sufixo `.test` antes de validar o nome do irmão.
 
 ## [0.15.1] - 2026-08-05
 
