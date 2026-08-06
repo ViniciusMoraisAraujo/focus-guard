@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"focusguard/internal/autostart"
+	"focusguard/internal/infrastructure/autostart"
 	"focusguard/internal/ipc"
 	"focusguard/internal/tray"
 )

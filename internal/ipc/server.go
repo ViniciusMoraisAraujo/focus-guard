@@ -11,14 +11,14 @@ import (
 	"time"
 
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/dnsserver"
+	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/eventhub"
 	"focusguard/internal/metrics"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/scheduler"
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/tamper"
 	"focusguard/internal/domain/user"
 )
 

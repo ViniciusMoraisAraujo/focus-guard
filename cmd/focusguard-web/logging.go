@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"focusguard/internal/filelog"
+	"focusguard/internal/infrastructure/filelog"
 )
 
 // logFileName is the web server's log file, written next to the executable

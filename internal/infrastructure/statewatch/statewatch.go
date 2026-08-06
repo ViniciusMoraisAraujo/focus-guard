@@ -9,8 +9,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"focusguard/internal/fsutil"
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/fsutil"
+	"focusguard/internal/infrastructure/tamper"
 )
 
 const (

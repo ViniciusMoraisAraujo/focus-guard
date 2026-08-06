@@ -9,7 +9,7 @@ import (
 
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/scheduler"
-	"focusguard/internal/store"
+	"focusguard/internal/infrastructure/store"
 )
 
 // setBenchEndpoint points the package Listen/Dial endpoints at a test-only

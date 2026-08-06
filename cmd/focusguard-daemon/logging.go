@@ -3,7 +3,7 @@ package main
 import (
 	"log"
 
-	"focusguard/internal/filelog"
+	"focusguard/internal/infrastructure/filelog"
 )
 
 // logFileName is the daemon's log file, written next to the executable in the

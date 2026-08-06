@@ -5,7 +5,7 @@ import (
 	"errors"
 	"testing"
 
-	"focusguard/internal/dnsserver"
+	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/ipc"
 )
 

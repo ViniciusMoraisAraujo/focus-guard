@@ -6,7 +6,7 @@ import (
 	"path/filepath"
 	"runtime"
 
-	"focusguard/internal/autostart"
+	"focusguard/internal/infrastructure/autostart"
 )
 
 func daemonExePath() string {

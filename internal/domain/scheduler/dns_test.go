@@ -4,9 +4,9 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/enforcer"
+	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/policy"
-	"focusguard/internal/store"
+	"focusguard/internal/infrastructure/store"
 )
 
 // seedBlock inserts a block directly into the RAM map (the established test

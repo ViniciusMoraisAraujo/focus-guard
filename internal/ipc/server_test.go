@@ -12,14 +12,14 @@ import (
 	"time"
 
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/enforcer"
+	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/pomodoro"
 
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/scheduler"
-	"focusguard/internal/store"
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/store"
+	"focusguard/internal/infrastructure/tamper"
 )
 
 type fakeUpdateChecker struct {

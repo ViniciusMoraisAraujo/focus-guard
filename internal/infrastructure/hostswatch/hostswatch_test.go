@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"focusguard/internal/domain/policy"
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/tamper"
 )
 
 type mockEnforcer struct {

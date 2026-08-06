@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"focusguard/internal/domain/policy"
-	"focusguard/internal/store"
+	"focusguard/internal/infrastructure/store"
 )
 
 func slowResolve(domain string) ([]string, error) {

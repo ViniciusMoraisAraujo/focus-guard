@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/fsutil"
+	"focusguard/internal/infrastructure/fsutil"
 	"focusguard/internal/domain/policy"
 )
 

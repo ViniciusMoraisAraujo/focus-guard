@@ -6,7 +6,7 @@ import (
 	"log"
 	"os"
 
-	"focusguard/internal/filelog"
+	"focusguard/internal/infrastructure/filelog"
 )
 
 // logFileName is the tray's log file, written next to the executable in the

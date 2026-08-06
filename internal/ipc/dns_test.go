@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"focusguard/internal/dnsserver"
+	"focusguard/internal/infrastructure/dnsserver"
 )
 
 // fakeDNSController is a scriptable stand-in for *dnsserver.Controller.

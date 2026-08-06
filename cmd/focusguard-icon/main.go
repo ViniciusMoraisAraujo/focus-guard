@@ -21,7 +21,7 @@ import (
 	"strconv"
 	"strings"
 
-	"focusguard/internal/icon"
+	"focusguard/internal/infrastructure/icon"
 )
 
 var osExit = os.Exit

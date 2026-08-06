@@ -10,7 +10,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/tamper"
 )
 
 type mockReconciler struct {

@@ -18,8 +18,8 @@ import (
 
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
-	"focusguard/internal/dns"
-	"focusguard/internal/dnsserver"
+	"focusguard/internal/infrastructure/dns"
+	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/domain/goal"
 	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"

@@ -3,7 +3,7 @@ package ipc
 import (
 	"context"
 
-	"focusguard/internal/update"
+	"focusguard/internal/infrastructure/update"
 )
 
 // updateCheckerBridge adapta o ipc.UpdateChecker do wire (devolve

@@ -4,7 +4,7 @@ import (
 	"log"
 	"os"
 
-	"focusguard/internal/filelog"
+	"focusguard/internal/infrastructure/filelog"
 )
 
 // logFileName is the watchdog's log file, written next to the executable in

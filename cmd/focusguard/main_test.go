@@ -19,7 +19,7 @@ import (
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/tamper"
 )
 
 type exitPanic struct {

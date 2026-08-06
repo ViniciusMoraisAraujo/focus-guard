@@ -10,7 +10,7 @@ import (
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"
-	"focusguard/internal/tamper"
+	"focusguard/internal/infrastructure/tamper"
 )
 
 var (

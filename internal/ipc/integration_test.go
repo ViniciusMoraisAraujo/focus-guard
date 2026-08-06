@@ -8,9 +8,9 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/enforcer"
+	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/scheduler"
-	"focusguard/internal/store"
+	"focusguard/internal/infrastructure/store"
 )
 
 type integrationMockEnforcer struct {

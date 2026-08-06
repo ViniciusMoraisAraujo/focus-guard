@@ -52,7 +52,7 @@ var targets = []target{
 	{"internal/domain/analytics/analytics.go", "analytics", "LabelStat", "LabelStat"},
 	{"internal/domain/analytics/analytics.go", "analytics", "Session", "FocusSession"},
 	{"internal/domain/schedule/schedule.go", "schedule", "Rule", "ScheduleRule"},
-	{"internal/tamper/tamper.go", "tamper", "Event", "TamperEvent"},
+	{"internal/infrastructure/tamper/tamper.go", "tamper", "Event", "TamperEvent"},
 	{"internal/metrics/metrics.go", "metrics", "ActionStat", "ActionStat"},
 	{"internal/ipc/ipc.go", "ipc", "Request", "ApiRequest"},
 	{"internal/ipc/ipc.go", "ipc", "Response", "ApiResponse"},
