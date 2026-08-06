@@ -24,6 +24,7 @@ import (
 	"focusguard/internal/goal"
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
+	"focusguard/internal/metrics"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
 	"focusguard/internal/presets"
@@ -671,6 +672,10 @@ func runDaemon() bool {
 	server.SetCurrentVersion(daemonVersion)
 	server.SetTamper(tamperRec)
 	server.SetEventHub(hub)
+	// Métricas de latência por ação (Fase 8 — C3): o ipc.Server mede cada
+	// dispatch e loga ações lentas; o snapshot é lido via `focusguard metrics`
+	// (CLI) ou GET /api/metrics (web).
+	server.SetMetrics(metrics.New(256))
 
 	// DNS Sinkhole ("Rei da Rede"): servidor DNS local (porta 53) que responde
 	// 0.0.0.0 para domínios bloqueados e encaminha o resto ao upstream

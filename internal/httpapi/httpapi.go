@@ -14,6 +14,7 @@ import (
 	"encoding/json"
 	"io"
 	"io/fs"
+	"log"
 	"mime"
 	"net"
 	"net/http"
@@ -22,6 +23,7 @@ import (
 	"time"
 
 	"focusguard/internal/ipc"
+	"focusguard/internal/metrics"
 )
 
 // DefaultAddr is where focusguard-web listens (loopback only). The CLI probes
@@ -60,14 +62,19 @@ type Server struct {
 	assets fs.FS
 	// auth owns the in-memory sessions and login rate limiter (auth.go).
 	auth *authManager
+	// metrics records the HTTP proxy latency per action (Fase 8 — C3), so
+	// /api/metrics shows the browser→web→daemon round-trip alongside the
+	// daemon's own IPC stats.
+	metrics *metrics.Registry
 }
 
 // New builds the web server around the IPC client and the UI assets.
 func New(client DaemonClient, assets fs.FS) *Server {
 	return &Server{
-		client: client,
-		assets: assets,
-		auth:   newAuthManager(sessionTTL, maxLoginFailures, loginLockout),
+		client:  client,
+		assets:  assets,
+		auth:    newAuthManager(sessionTTL, maxLoginFailures, loginLockout),
+		metrics: metrics.New(256),
 	}
 }
 
@@ -84,6 +91,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("/api/action", s.requireAuth(s.handleAction))
 	mux.HandleFunc("/api/events", s.requireAuth(s.handleEvents))
+	mux.HandleFunc("/api/metrics", s.requireAuth(s.handleMetrics))
 	mux.HandleFunc("/", s.handleStatic)
 	return s.secure(gzipMiddleware(mux))
 }
@@ -243,13 +251,35 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 
 	// Timeout por ação vem do spec (B7): o mesmo orçamento que o daemon
 	// conhece, sem tabela duplicada (antes: actionTimeoutFor).
+	start := time.Now()
 	resp, err := s.client.SendWithTimeout(req, spec.Timeout)
+	s.recordProxy(req.Action, start, resp, err)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable,
 			"daemon indisponível — verifique se o serviço FocusGuard está rodando")
 		return
 	}
 	writeJSON(w, http.StatusOK, resp)
+}
+
+// recordProxy mede a latência do proxy HTTP por ação (Fase 8 — C3) e loga os
+// proxies lentos. event-subscribe é excluído: o loop SSE usa a própria rota
+// (não passa por aqui), e um long-poll de 20s não é sinal de regressão.
+func (s *Server) recordProxy(action string, start time.Time, resp *ipc.Response, err error) {
+	if action == "event-subscribe" {
+		return
+	}
+	d := time.Since(start)
+	s.metrics.Record(action, d)
+	if d < slowProxyThreshold {
+		return
+	}
+	if err != nil {
+		log.Printf("[Metrics] http action=%s duration_ms=%d error=%v", action, d.Milliseconds(), err)
+	} else {
+		log.Printf("[Metrics] http action=%s duration_ms=%d ok=%t code=%s",
+			action, d.Milliseconds(), resp.Success, resp.Code)
+	}
 }
 
 // handleStatic serves the compiled UI with SPA fallback (unknown paths render

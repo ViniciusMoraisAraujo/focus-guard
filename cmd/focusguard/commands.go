@@ -129,6 +129,13 @@ var commands = map[string]Command{
 			"  focusguard status",
 		},
 	},
+	"metrics": {
+		Name: "metrics",
+		Run:  handleMetricsCommand,
+		Usage: []string{
+			"  focusguard metrics [--reset]          Latência por ação (medir o daemon)",
+		},
+	},
 	"update": {
 		Name: "update",
 		Run:  handleUpdateCommand,
@@ -202,6 +209,6 @@ var missionCommand = Command{
 var usageOrder = []string{
 	"block", "presets", "preset", "schedule", "apps", "dns", "pomodoro",
 	"pomodoro-defaults", "mission", "pomodoro-stop", "stats", "report",
-	"tamper-log", "goal", "status", "web", "update", "install", "uninstall",
+	"tamper-log", "goal", "status", "metrics", "web", "update", "install", "uninstall",
 	"install-watchdog", "uninstall-watchdog", "install-tray", "uninstall-tray",
 }
