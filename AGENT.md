@@ -392,7 +392,10 @@ confirm the version/tag with the person before pushing the tag
   touching it.
 - **IPC is the contract** — CLI/tray/daemon/**web** all speak the same
   protocol; changing the `internal/ipc` payload requires updating all three
-  sides + `focusguard-ui/src/api/types.ts`.
+  sides + `focusguard-ui/src/api/types.ts` in the same commit. The TS mirror
+  is **generated** — after changing an IPC struct run `make contract` (and
+  `make contract-check` to verify no drift; the CI checks it before a
+  release).
 - **`focusguard-web` is user-space** — never add a manifest/admin to it;
   the daemon is the only privileged process. Web only proxies via
   `ipc.Client`.

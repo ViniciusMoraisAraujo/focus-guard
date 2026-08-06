@@ -1,11 +1,14 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0 e 1 concluídas** (2026-08-05) — ver seção 5; próximas: Fase 2 (codegen).
+> **Status:** **Fases 0, 1 e 2 concluídas** (Fase 2 em 2026-08-06) — ver seção 5;
+> próximas: Fase 3 (registry de ações).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
 > testes) e Fase 1 (split `AuthProvider`/`DataProvider` + `useAction` + toast
 > em módulo) — ver seção 5 e 9.
+> **Revisão (2026-08-06):** execução da Fase 2 (codegen `make contract` +
+> códigos de erro aditivos `Response.Code`) — ver seção 5 e 9.
 > Escopo: visão completa (backend Go + frontend React + contrato IPC), com
 > fases priorizadas por impacto × risco. Nenhum código foi alterado para
 > produzir este documento; os números vêm de leitura do estado atual do repo
@@ -209,7 +212,7 @@ func runDaemon(ctx context.Context) error {
 |---|---|---|---|---|
 | **0. Caracterização** ✅ | Testes que congelam o comportamento atual — frontend (`client.ts`/`AppProvider`) e backend (casos do switch) | — | baixo | M |
 | **1. Frontend — responsabilidades** ✅ ⭐ | `AuthProvider`/`DataProvider` + hooks (`useAuth`, `useData`) + `useAction()` compartilhado + toast em módulo | Alto (F1/F3) | **baixo** (independe do núcleo Go; valida com `tsc`) | M |
-| **2. Frontend — contrato assistido** | Codegen Go→TS (`make contract` + checagem no CI) + códigos de erro aditivos (`Response.Code`) | Alto (F2/B12/C1) | baixo (aditivo, retrocompat) | M |
+| **2. Frontend — contrato assistido** ✅ | Codegen Go→TS (`make contract` + checagem no CI) + códigos de erro aditivos (`Response.Code`) | Alto (F2/B12/C1) | baixo (aditivo, retrocompat) | M |
 | **3. Registry de ações** | `Handler` + `Registry`; `ipc.Server` vira roteador; timeouts/permissões declarativos | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
 | **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
 | **5. Composition root** | `internal/daemon` + `Run(ctx)` + lifecycle; update → `internal/update` | Alto (B4/B10/B8) | médio | G |
@@ -217,7 +220,7 @@ func runDaemon(ctx context.Context) error {
 | **7. Eventos em tempo real** | `/ws` ou SSE no lugar do polling — **depende do event hub no daemon** (F3 do ui-plan) | Médio (F5) | médio | G |
 | **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
 
-**Ordem sugerida de execução:** ~~0 → 1~~ (concluídas) → 2 → 3 → 4 (começando
+**Ordem sugerida de execução:** ~~0 → 1 → 2~~ (concluídas) → 3 → 4 (começando
 pelas ações de menor risco: `user-*`, `dns-*`, depois
 `presets`/`apps`/`schedule`, e por último `block`/`pomodoro`) → 5 → 6 → 7 → 8.
 
@@ -811,8 +814,20 @@ func TestBlock_ConflitoAskFirst(t *testing.T) {
 - Validação: 19/19 testes, `tsc --noEmit`, `vite build` — verdes.
 - Revisão (code-reviewer): checkpoints verificados — `refresh` estável (`useCallback` deps `[]`), ordem `authenticatedRef` → carga, limpeza síncrona no logout, carga imediata no login, cleanup de listeners/intervalos (StrictMode-safe).
 
-### Próximo passo (Fase 2 — Frontend: contrato assistido)
+### Fase 2 — Frontend: contrato assistido (✅ concluída em 2026-08-06)
 
-1. **Codegen Go → TS** (`make contract` + checagem no CI): script stdlib em `scripts/` que gera `focusguard-ui/src/api/types.ts` a partir dos structs Go do `internal/ipc` — elimina o espelho manual (F2/C1) sem mudar o wire protocol.
-2. **Códigos de erro aditivos**: campo `code` opcional no `Response` (backend) + checagem por código na UI em vez de texto (B12).
+- **Codegen Go → TS**: `scripts/gen-contract/main.go` (stdlib, `go/ast`; padrão `verifyicon` com `//go:build ignore`) gera `focusguard-ui/src/api/types.ts` a partir dos structs Go do `internal/ipc` + domínios (policy, preset, pomodoro, analytics, schedule, tamper). `make contract` regenera; `make contract-check` falha se houver drift (adicionado ao CI em `.github/workflows/release.yml` antes do GoReleaser).
+  - Mapeia `time.Time`→string (RFC3339), `time.Duration`→number (nanosegundos), `omitempty`/ponteiros→opcional, tipos string nomeados com consts→literal union (`phase: "work" | "rest"`).
+  - **Corrigiu drift real do espelho manual**: `Block.allowlist`, `ApiRequest.name`, `ApiResponse.user_is_admin` estavam ausentes no `types.ts` antigo (F2/C1 resolvidos — o Go é a fonte da verdade).
+  - Geração determinística: ordem de campos = ordem do struct Go; preserva CRLF se o arquivo atual for CRLF.
+- **Códigos de erro aditivos (B12)**: `internal/ipc/codes.go` (CodeDurationInvalid, CodeDomainRequired, CodeDomainConflict, CodeInvalid, CodeNotConfigured, CodeUnknownAction) + campo opcional `Response.Code` (`json:"code,omitempty"`). Populados nos principais caminhos de erro do `server.go` (bloqueio: duração/domínio/conflito; ações "não configurado"; validações de payload: user-verify, schedule-import, goal-set, dns-set-upstream, pomodoro). Mensagens inalteradas — comportamento preservado.
+- **Frontend**: `ApiResponse.code` chega pelo codegen; `execAction` e `useAction` expõem `code` para a UI ramificar por código em vez de texto.
+- Validação: `go build ./...`, `go vet ./...`, `go test ./internal/...` (exceto daemon elevado), `tsc --noEmit`, vitest 19/19 — verdes. Commits:
+  - `feat(contract): generate api types from Go structs (make contract)`
+  - `feat(ipc): add additive error codes to IPC responses`
+
+### Próximo passo (Fase 3 — Registry de ações)
+
+1. **Registry**: `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`internal/ipc/spec.go`); `ipc.Server` vira roteador fino (decode → registry.Get → Validate → Handle) — B2/B6/B7, sem mudar wire protocol.
+2. Caracterização dos `case` do `ipc.Server` (backend — pendência da Fase 0) junto da migração.
 3. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for cortar release entre fases.
