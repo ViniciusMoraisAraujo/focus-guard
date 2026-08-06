@@ -135,6 +135,8 @@ export function Pomodoro() {
               totalMs={phaseTotalMs}
               tone={pomo.phase === "rest" ? "rest" : "focus"}
               label={pomo.phase === "rest" ? "descanso" : "foco"}
+              cycle={pomo.cycle}
+              cycles={pomo.cycles}
             />
             <Button variant="destructive" onClick={() => setConfirmStop(true)}>
               <Square /> Encerrar sessão

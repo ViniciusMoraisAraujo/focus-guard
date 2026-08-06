@@ -100,11 +100,18 @@ export function WeeklyGrid({ rules }: { rules: ScheduleRule[] }) {
               key={d}
               className={cn(
                 "bg-card px-1 py-1.5 text-center text-[11px] font-medium text-muted-foreground",
-                i === todayIdx && "bg-card text-primary",
+                (i === 0 || i === 6) && "text-muted-foreground/70",
               )}
             >
-              {d}
-              {i === todayIdx && <span className="ml-1 text-primary">•</span>}
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 rounded-full px-1.5 py-0.5",
+                  i === todayIdx && "bg-primary/10 font-semibold text-primary",
+                )}
+              >
+                {d}
+                {i === todayIdx && <span className="size-1.5 rounded-full bg-primary" />}
+              </span>
             </div>
           ))}
 
@@ -123,6 +130,7 @@ export function WeeklyGrid({ rules }: { rules: ScheduleRule[] }) {
 
           {/* Colunas de cada dia */}
           {DAYS.map((_, dayIdx) => {
+            const weekend = dayIdx === 0 || dayIdx === 6;
             // Segments do dia; lanes via coloração gulosa de intervalos
             // (ótima para intervalos): cada item entra na 1ª lane livre.
             const items = colored.flatMap((c) =>
@@ -149,7 +157,8 @@ export function WeeklyGrid({ rules }: { rules: ScheduleRule[] }) {
               <div
                 key={dayIdx}
                 className={cn(
-                  "relative bg-card",
+                  "relative bg-card transition-colors",
+                  weekend && "bg-muted/30",
                   dayIdx === todayIdx && "bg-card ring-1 ring-primary/20 ring-inset",
                 )}
                 style={{ height: COL_H }}
@@ -169,8 +178,8 @@ export function WeeklyGrid({ rules }: { rules: ScheduleRule[] }) {
                     className="absolute right-0 left-0 z-20 flex items-center"
                     style={{ top: `${(nowMin / 1440) * 100}%` }}
                   >
-                    <div className="h-px flex-1 bg-destructive" />
-                    <span className="-translate-y-1/2 rounded-sm bg-destructive px-1 text-[9px] font-bold text-white">
+                    <div className="h-px flex-1 animate-pulse bg-destructive" />
+                    <span className="-translate-y-1/2 animate-pulse rounded-sm bg-destructive px-1 text-[9px] font-bold text-white">
                       agora
                     </span>
                   </div>
@@ -186,7 +195,7 @@ export function WeeklyGrid({ rules }: { rules: ScheduleRule[] }) {
                       key={`${it.rule.id}-${idx}`}
                       title={`${it.rule.label || it.rule.preset} · ${hm(it.seg.start)}–${hm(it.seg.end)}`}
                       className={cn(
-                        "absolute z-10 overflow-hidden rounded px-1 py-0.5 text-[10px] leading-tight font-medium text-white shadow-sm transition-all duration-150 hover:z-30 hover:shadow-md",
+                        "absolute z-10 overflow-hidden rounded px-1 py-0.5 text-[10px] leading-tight font-medium text-white shadow-sm transition-all duration-150 hover:z-30 hover:scale-[1.03] hover:shadow-lg hover:ring-1 hover:ring-white/40",
                         it.color,
                         !it.rule.enabled && "opacity-40",
                       )}

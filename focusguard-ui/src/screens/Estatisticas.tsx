@@ -9,6 +9,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
 import { useData } from "@/context";
 import { formatClock, formatMinutes } from "@/hooks/useCountdown";
+import { cn } from "@/lib/utils";
 
 function download(filename: string, content: string, mime: string) {
   const blob = new Blob([content], { type: mime });
@@ -36,6 +37,12 @@ export function Estatisticas() {
   const { stats, daemonUp } = useData();
   const [missions, setMissions] = useState<LabelStat[] | null>(null);
   const [sessions, setSessions] = useState<FocusSession[] | null>(null);
+  // Dispara a animação de crescimento das barras após o primeiro paint.
+  const [grown, setGrown] = useState(false);
+  useEffect(() => {
+    const id = requestAnimationFrame(() => setGrown(true));
+    return () => cancelAnimationFrame(id);
+  }, []);
 
   useEffect(() => {
     api
@@ -136,23 +143,35 @@ export function Estatisticas() {
                 </p>
               ) : (
                 <div className="flex h-40 items-end gap-1.5 pt-3">
-                  {s.per_day.slice(-14).map((d) => (
-                    <div
-                      key={d.day}
-                      title={`${fmtDay(d.day)}: ${formatMinutes(d.duration)}`}
-                      className="flex min-w-0 flex-1 flex-col items-center gap-1.5"
-                    >
-                      <div className="flex w-full flex-1 items-end rounded-md bg-muted/60 overflow-hidden">
-                        <div
-                          className="w-full rounded-md bg-primary/80 transition-all"
-                          style={{ height: `${Math.max(4, (d.duration / 1e6 / maxDay) * 100)}%` }}
-                        />
+                  {s.per_day.slice(-14).map((d) => {
+                    const pct = (d.duration / 1e6 / maxDay) * 100;
+                    const isToday = d.day === s.per_day.at(-1)?.day;
+                    return (
+                      <div
+                        key={d.day}
+                        title={`${fmtDay(d.day)}: ${formatMinutes(d.duration)}`}
+                        className="group flex min-w-0 flex-1 flex-col items-center gap-1.5"
+                      >
+                        <div className="relative flex w-full flex-1 items-end rounded-md bg-muted/60 overflow-hidden">
+                          <div
+                            className={cn(
+                              "w-full rounded-md bg-gradient-to-t from-primary/60 to-primary transition-[height] duration-500 ease-out group-hover:from-primary/80 group-hover:to-primary group-hover:brightness-110",
+                              isToday && "from-emerald-500/70 to-emerald-500",
+                            )}
+                            style={{ height: grown ? `${Math.max(4, pct)}%` : "4%" }}
+                          />
+                        </div>
+                        <span
+                          className={cn(
+                            "text-[11px] tabular-nums",
+                            isToday ? "font-semibold text-emerald-500" : "text-muted-foreground",
+                          )}
+                        >
+                          {d.day.slice(8)}
+                        </span>
                       </div>
-                      <span className="text-[11px] text-muted-foreground tabular-nums">
-                        {d.day.slice(8)}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>
@@ -165,20 +184,27 @@ export function Estatisticas() {
                 <p className="text-sm text-muted-foreground">Sem dados por domínio ainda.</p>
               ) : (
                 <div className="flex flex-col gap-2.5">
-                  {s.per_domain.slice(0, 8).map((d) => (
-                    <div key={d.domain} className="grid grid-cols-[minmax(100px,200px)_1fr_auto] items-center gap-3">
-                      <span className="truncate text-sm">{d.domain}</span>
-                      <div className="h-2 overflow-hidden rounded-full bg-muted">
-                        <div
-                          className="h-full rounded-full bg-primary transition-all"
-                          style={{ width: `${Math.max(3, (d.duration / 1e6 / maxDomain) * 100)}%` }}
-                        />
+                  {s.per_domain.slice(0, 8).map((d) => {
+                    const pct = Math.max(3, (d.duration / 1e6 / maxDomain) * 100);
+                    return (
+                      <div
+                        key={d.domain}
+                        title={`${d.domain}: ${formatMinutes(d.duration)}`}
+                        className="group grid grid-cols-[minmax(100px,200px)_1fr_auto] items-center gap-3"
+                      >
+                        <span className="truncate text-sm">{d.domain}</span>
+                        <div className="h-2 overflow-hidden rounded-full bg-muted">
+                          <div
+                            className="h-full rounded-full bg-gradient-to-r from-primary/60 to-primary transition-[width] duration-500 ease-out group-hover:brightness-110"
+                            style={{ width: grown ? `${pct}%` : "3%" }}
+                          />
+                        </div>
+                        <span className="min-w-16 text-right text-xs text-muted-foreground tabular-nums">
+                          {formatMinutes(d.duration)}
+                        </span>
                       </div>
-                      <span className="min-w-16 text-right text-xs text-muted-foreground tabular-nums">
-                        {formatMinutes(d.duration)}
-                      </span>
-                    </div>
-                  ))}
+                    );
+                  })}
                 </div>
               )}
             </CardContent>
