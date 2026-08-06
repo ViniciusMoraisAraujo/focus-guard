@@ -58,7 +58,13 @@ func setupTestServer(t *testing.T) *Server {
 	}
 
 	sched := scheduler.NewScheduler(st, &mockEnforcer{})
-	return NewServer(sched)
+	s := NewServer(sched)
+	// Ações de domínio (block/apps/goal/presets/users/dns): o daemon real as
+	// registra com os handlers dos pacotes de domínio (composition root — Fase
+	// 5); aqui os testes internos usam os adapters de referência
+	// (handlers_ref_test.go), que reproduzem 1:1 o comportamento legado.
+	registerDomainReferenceHandlers(s)
+	return s
 }
 
 func executeRequest(t *testing.T, server *Server, req Request) Response {

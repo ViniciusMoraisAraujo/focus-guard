@@ -6,8 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"net"
-	"strconv"
-	"strings"
 	"sync"
 	"time"
 
@@ -425,39 +423,4 @@ func (s *Server) handleConnection(conn net.Conn) {
 	if s.takeUpdateApplied() {
 		s.dispatchUpdateHook()
 	}
-}
-
-// normalizeUpstream validates a user-supplied upstream resolver and returns it
-// in host:port form (a bare host gets the DNS default port 53). Empty input is
-// rejected — the caller can always pass a concrete resolver explicitly.
-func normalizeUpstream(in string) (string, error) {
-	in = strings.TrimSpace(in)
-	if in == "" {
-		return "", errors.New("informe um upstream (ex: 1.1.1.2, 9.9.9.9:53)")
-	}
-	host, port, err := net.SplitHostPort(in)
-	if err != nil {
-		// Sem porta explícita (ex: "1.1.1.2", "dns.google") → porta 53.
-		if !strings.Contains(in, ":") {
-			return net.JoinHostPort(in, "53"), nil
-		}
-		return "", fmt.Errorf("upstream inválido %q (use host ou host:porta)", in)
-	}
-	if host == "" || port == "" {
-		return "", fmt.Errorf("upstream inválido %q (use host ou host:porta)", in)
-	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
-		return "", fmt.Errorf("porta de upstream inválida %q", port)
-	}
-	return net.JoinHostPort(host, port), nil
-}
-
-// blockAllModeSuffix describes the block-all flavor for the success message:
-// panic mode (all internet) vs deep-focus mode (only the allowlist reachable).
-func blockAllModeSuffix(allowlist []string) string {
-	if len(allowlist) == 0 {
-		return " (toda a internet)"
-	}
-	return fmt.Sprintf(" (apenas %s permitido)", strings.Join(allowlist, ", "))
 }

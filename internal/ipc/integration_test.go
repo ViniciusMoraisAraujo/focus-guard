@@ -62,6 +62,10 @@ func startIntegrationServer(t *testing.T) {
 	}
 
 	srv := NewServer(sched)
+	// Ações de domínio: o daemon real as registra com os handlers dos pacotes
+	// de domínio (Fase 5); aqui os testes de socket usam os adapters de
+	// referência (handlers_ref_test.go).
+	registerDomainReferenceHandlers(srv)
 	go func() {
 		if err := srv.Start(); err != nil {
 			t.Logf("integration server stopped: %v", err)
