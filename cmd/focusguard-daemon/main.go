@@ -796,12 +796,14 @@ func runDaemon() bool {
 	server.Register(users.NewAdd(userStore))
 	server.Register(users.NewRemove(userStore))
 	server.Register(users.NewSetPassword(userStore))
-	if pg != nil {
-		ga := &guardApps{store: appsStore, guard: pg}
-		server.Register(apps.NewList(ga))
-		server.Register(apps.NewAdd(ga))
-		server.Register(apps.NewRemove(ga))
-	}
+	// apps registrado incondicionalmente (pg pode ser nil quando o process
+	// guard não sobe — ex.: testes que o stubam): o refreshGuard do guardApps
+	// já é no-op com guard nil, e o ValidateRegistry abaixo exige handler para
+	// todos os specs (apps-list/add/remove) — sem eles o boot falharia.
+	ga := &guardApps{store: appsStore, guard: pg}
+	server.Register(apps.NewList(ga))
+	server.Register(apps.NewAdd(ga))
+	server.Register(apps.NewRemove(ga))
 
 	// Fechamento specs↔registry no boot (Fase 4): todo handler registrado tem
 	// ActionSpec (user-verify isento — web-only) e todo spec tem handler.

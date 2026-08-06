@@ -128,7 +128,9 @@ type AppsManager interface {
 }
 
 // SetApps wires the process denylist into the server. Nil makes the apps-*
-// actions fail with a clear message.
+// actions fail with a clear message. Retained for the in-package test
+// reference handlers (handlers_ref_test.go) — the daemon registers the real
+// domain handlers at the composition root.
 func (s *Server) SetApps(m AppsManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -161,7 +163,9 @@ type UserManager interface {
 }
 
 // SetUsers wires the credential store into the server. Nil makes the user-*
-// actions fail with a clear message.
+// actions fail with a clear message. Retained for the in-package test
+// reference handlers (handlers_ref_test.go) — the daemon registers the real
+// domain handlers at the composition root.
 func (s *Server) SetUsers(m UserManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
