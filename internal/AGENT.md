@@ -6,7 +6,7 @@
 
 ## Propósito
 
-Núcleo do FocusGuard: **23 pacotes** consumidos pelos binários de `cmd/`.
+Núcleo do FocusGuard: **34 pacotes** consumidos pelos binários de `cmd/`.
 Fonte de verdade em RAM (scheduler), disco como espelho (state.json), watchers
 restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 
@@ -17,16 +17,25 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 | `analytics` | Histórico JSONL de sessões; streak, stats, exports CSV/JSON/HTML |
 | `apps` | Denylist de processos (apps.json) p/ o process guard; fallback `steam, discord` |
 | `autostart` | Serviço (`sc`/systemd), autostart do tray (HKCU Run / XDG), atalho desktop + `ExtractIcon` |
+| `blocks` | Handlers de domínio das ações `block`/`block-all` (`Blocker`/`Catalog`) |
+| `daemon` | Ciclo de vida do daemon: `Run(ctx) error` + shutdown ordenado (B10) |
+| `dns` | Handlers de domínio do sinkhole DNS (`start`/`stop`/`status`/`set-upstream`) |
+| `dnsserver` | Sinkhole DNS embutido (porta 53, miekg/dns) + forward de upstream |
 | `enforcer` | Aplica bloqueios no SO: hosts + firewall (`enforcer_linux.go`/`enforcer_windows.go`); `BlockAll`/allowlist; sanitização de domínios |
+| `eventhub` | Pub/sub de eventos em processo (ring buffer + long-poll `Wait`) — mudanças de estado |
+| `filelog` | Log de arquivo compartilhado (append + rotação) ao lado do executável |
 | `fsutil` | SHA-256 de arquivo (watchers) |
 | `goal` | Meta diária (goal.json) |
 | `hostswatch` | Watcher do `hosts`: fsnotify + hash anti-loop; detecta/reverte adulterações |
 | `httpapi` | HTTP da UI: proxy IPC + estático + guardas localhost (Host, Content-Type, CSP) |
 | `icon` | Renderiza `img/focusguard.png` em qualquer tamanho; `GenerateICO`/`GeneratePNG` |
 | `ipc` | Protocolo JSON sobre socket; `SendWithTimeout`; server/handlers |
+| `ipcerr` | Códigos de erro estáveis do IPC (`Error`) — espelho de `internal/ipc/codes.go`, aditivo |
+| `metrics` | Registry de latência por ação (ring + percentis) — IPC do daemon e proxy web |
 | `policy` | Modelo `Block` (`IsActive`, `CanUnblock`, `RemainingTime`) |
 | `pomodoro` | Sessões work/rest/cycles; prefs persistidas; resumo pós-sessão |
 | `preset` | Catálogo builtin (social/video/news/games) + personalizados |
+| `presets` | Handlers de domínio do catálogo de presets (list/add/remove) |
 | `processguard` | Encerra processos da denylist a cada 5s durante sessão ativa |
 | `recovery` | Smart Recovery: `FindRecentBackup`, `ShouldRollBack`, `RestoreFromBackup` |
 | `schedule` | Regras recorrentes (dias/horários, janelas overnight, import iCal); worker 30s |
@@ -36,6 +45,8 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 | `tamper` | Log JSONL append-only de burlas detectadas/revertidas |
 | `tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
 | `update` | Auto-update multi-binário atômico (`UpdateToAll`) com rollback |
+| `user` | Armazenamento de contas/senhas (usuário admin, hash) |
+| `users` | Handlers de domínio de usuários (add/remove/verify/set-password) |
 | `watchdog` | Health check systemd (`NOTIFY_SOCKET`) |
 
 ## Regras específicas

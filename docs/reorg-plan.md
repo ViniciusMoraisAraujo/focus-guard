@@ -1,7 +1,7 @@
 # Plano — Reorganização de Diretórios e Arquitetura
 
-> **Status:** documento vivo — **planejamento** (nada executado ainda).
-> **Criado em 2026-08-06.** Escopo escolhido: **todas as 3 frentes** —
+> **Status:** documento vivo — **Fase A concluída** (2026-08-06); Fases B–D
+> pendentes. **Criado em 2026-08-06.** Escopo escolhido: **todas as 3 frentes** —
 > (A) organização de docs, (B) assets de build em diretório próprio,
 > (C) `internal/` agrupado em camadas.
 
@@ -12,8 +12,8 @@
 | Item na raiz | Problema | Destino proposto |
 |---|---|---|
 | `focusguard.exe`, `focusguard-daemon.exe`, `focusguard-web.exe`, `scheduler.test.exe` | Binários/lixo locais commitados ou esquecidos | **Deletar** (`.gitignore` já cobre `*.exe`/`*.test`) |
-| `task.md`, `follow-up-v0.15.1.md`, `plan-new-ui-and-user.md` | Planos antigos já implementados (v0.15.x / F4-F5) soltos na raiz | `docs/archive/` |
-| `AGENT.md` + `AGENTS.md` + `docs/AGENT.md` | **3 guias redundantes e divergentes** (EN completo 461 linhas × TL;DR PT 37 linhas × espelho 446 linhas) | Consolidar: **1 canônico** na raiz + TL;DR aponta para ele |
+| ~~`task.md`, `follow-up-v0.15.1.md`, `plan-new-ui-and-user.md`~~ | Planos antigos já implementados (v0.15.x / F4-F5) soltos na raiz | ~~`docs/archive/`~~ → **removidos** (decisão do mantenedor, commit `d645321`) ✅ |
+| `AGENT.md` + ~~`AGENTS.md`~~ + ~~`docs/AGENT.md`~~ | **3 guias redundantes e divergentes** (EN completo 461 linhas × TL;DR PT 37 linhas × espelho 446 linhas) | Consolidar: **1 canônico** na raiz — `AGENTS.md` removido (`d645321`) e `docs/AGENT.md` removido (Fase A) ✅ |
 | `versioninfo.json` (raiz), `focusguard-daemon.exe.manifest`, `focusguard.ico/.png`, `server.role`, `install.txt` | Assets de build espalhados na raiz | `packaging/` (ver Frente B) |
 | `img/focusguard.png` | Artwork canônico (1024px) | `packaging/artwork/` |
 | `docs/` | Já centraliza docs — manter | — |
@@ -72,8 +72,8 @@ sem testes):
 8. **`scripts/verifyicon/main.go`**: lê `focusguard.ico` da raiz (cwd-relative).
 9. **`install.txt`**: embutido nos archives Windows/Linux pelo goreleaser.
 10. **Guides**: `AGENT.md` (mapa de pacotes, seções 3/6), `internal/AGENT.md`
-    (mapa, conta 23 pacotes), `cmd/AGENT.md`, `scripts/AGENT.md` (tabela de
-    assets), `docs/AGENT.md`, `README.md`.
+    (mapa, 34 pacotes), `cmd/AGENT.md`, `scripts/AGENT.md` (tabela de assets),
+    `README.md`.
 
 ---
 
@@ -139,20 +139,20 @@ focusguard/
 > make contract-check` (e `tsc --noEmit` quando tocar no frontend). Nada de
 > "mover e compilar depois".
 
-### Fase A — Organização de docs (baixo risco, sem tocar Go)
+### Fase A — Organização de docs (baixo risco, sem tocar Go) — ✅ concluída (2026-08-06)
 
-1. `docs/archive/`: mover `task.md`, `follow-up-v0.15.1.md`,
-   `plan-new-ui-and-user.md`; corrigir links que apontem para eles (não há
-   referências fora deles próprios — confirmado).
-2. Remover `docs/AGENT.md` (espelho divergente — o canônico fica na raiz).
-3. Reconciliar `AGENT.md` (EN, completo) × `AGENTS.md` (TL;DR PT): manter os
-   dois, mas o TL;DR vira **resumo + link** para o canônico (sem duplicar
-   tabelas). Atualizar o mapa de pacotes do canônico (seção 3) para os 28
-   pacotes **atuais** (já com `blocks`, `dns`, `ipcerr`, `presets`, `users`,
-   `daemon`, `eventhub`, `metrics`).
-4. Atualizar `internal/AGENT.md`, `cmd/AGENT.md`, `scripts/AGENT.md` (tabelas
-   de pacotes/arquivos) — só texto, sem mover nada ainda.
-- **Validação:** `git mv` + revisão de links; nenhum build necessário.
+1. ✅ Planos antigos da raiz (`task.md`, `follow-up-v0.15.1.md`,
+   `plan-new-ui-and-user.md`) **removidos** — o mantenedor optou por deletar em
+   vez de arquivar em `docs/archive/` (commit `d645321`); não havia referências
+   fora deles próprios.
+2. ✅ `docs/AGENT.md` (espelho divergente) **removido** — o canônico fica na raiz.
+3. ✅ Guias consolidados: `AGENTS.md` (TL;DR PT) **removido** (`d645321`); mapa
+   de pacotes do canônico (seção 3) atualizado para os **34 pacotes** atuais
+   (`blocks`, `dns`, `ipcerr`, `presets`, `user`, `users` adicionados) e
+   contagem da seção 6 corrigida (25 → 34).
+4. ✅ `internal/AGENT.md` atualizado (23 → 34 pacotes, 11 linhas novas);
+   `cmd/AGENT.md` e `scripts/AGENT.md` já estavam em dia (só texto, nada movido).
+- **Validação:** revisão de links; nenhum build necessário (só texto).
 
 ### Fase B — Assets de build → `packaging/` (médio risco)
 
