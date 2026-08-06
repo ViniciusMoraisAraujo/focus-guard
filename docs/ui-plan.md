@@ -1,9 +1,10 @@
 # Plano — FocusGuard UI (Web Amigável)
 
 > **Status:** documento vivo. **F1 e F2 implementadas em 2026-08-03** — a
-> interface web já roda (ver seção 10). **F4 em andamento (2026-08-04):**
-> todas as 10 telas navegáveis; grade semanal da Agenda e anel visual do
-> Pomodoro adicionados.
+> interface web já roda (ver seção 10). **F4 concluída em 2026-08-06:**
+> todas as 10 telas navegáveis; polimento visual finalizado (anel do Pomodoro
+> com gradiente, grade semanal da Agenda refinada, gráficos de Stats
+> animados).
 >
 > **Decisões registradas:**
 >
@@ -251,7 +252,7 @@ focusguard-ui/                 # frontend React + Vite + TS
 | **F1 — Fundação** | ✅ 2026-08-03 | `internal/httpapi` + `cmd/focusguard-web` + `focusguard web` + `make ui` + goreleaser/installers |
 | **F2 — UI MVP** | ✅ 2026-08-03 | Scaffold React + 4 telas + cliente API tipado + build validado |
 | **F3 — Real-time** | ✅ 2026-08-06 | **SSE** (decisão: em vez de `/ws`) — event hub no daemon + long-poll `event-subscribe` + `GET /api/events` + EventSource no frontend com fallback de polling; expiração de block/pomodoro/schedule viram eventos (refactor-plan Fase 7) |
-| **F4 — Telas restantes** | 🚧 (telas ✔, visuais em andamento) | Pomodoro visual (anel), Agenda (grade semanal), Stats (gráficos), Presets, Apps, Tamper-log — todos os dados já expostos |
+| **F4 — Telas restantes** | ✅ 2026-08-06 | Todas as telas + **polimento visual**: anel do Pomodoro com gradiente SVG/glow/pulso final/dots de ciclo, grade semanal com dia atual em pill/tint de fim de semana/linha "agora" pulsante, gráficos de Stats com gradiente e animação de crescimento |
 | **F5 — Linux + polimento** | ✅ 2026-08-06 | Acesso ao socket no Linux por **grupo `focusguard`** (daemon chowna `/run/focusguard.sock` p/ root:focusguard 0660; install-linux.sh cria o grupo e adiciona o usuário; hint no erro do CLI), docs finais, release conjunta (web já embutido em todos os arquivos) |
 
 ---
@@ -292,7 +293,11 @@ focusguard-ui/                 # frontend React + Vite + TS
 - ✅ F5 — **Linux + release conjunta** (2026-08-06): socket por grupo
   `focusguard` (chown no `ipc_linux.go`, `setup_socket_group` no
   install-linux.sh, hint no erro do CLI, docs no README).
-- ⬜ F4 (telas ✔, polimento visual em andamento — roadmap acima).
+- ✅ F4 — **polimento visual** (2026-08-06): anel do Pomodoro (gradiente
+  SVG, glow, pulso <15% restante, dots de ciclo proporcionais), grade
+  semanal da Agenda (pill do dia atual, tint de fim de semana, linha "agora"
+  pulsante, hover com scale+ring nos blocos) e gráficos de Stats (barras com
+  gradiente — dia mais recente em esmeralda — e crescimento animado no mount).
 
 ---
 
