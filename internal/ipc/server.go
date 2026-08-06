@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"focusguard/internal/analytics"
 	"focusguard/internal/dnsserver"
 	"focusguard/internal/eventhub"
+	"focusguard/internal/metrics"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
 	"focusguard/internal/schedule"
@@ -32,6 +34,15 @@ const updateTimeout = 120 * time.Second
 // quiet cycle is never reported as "daemon indisponível".
 const eventSubscribeTimeout = 20 * time.Second
 
+// slowActionThreshold is when the daemon logs a structured slow-action line
+// (Fase 8 — C3). Blocking actions legitimately cross 1s when the resolver is
+// slow (2.4-10.2s measured) — that is exactly the signal the log exists for.
+// event-subscribe is excluded (a 20s long-poll by design, not a regression).
+// update/update-check are intentionally INCLUDED: they are rare (demand / 24h
+// background check) and their download latency is precisely the observability
+// signal wanted — not background noise.
+const slowActionThreshold = 1 * time.Second
+
 type Server struct {
 	scheduler *scheduler.Scheduler
 	// registry holds the action handlers: o roteador despacha por
@@ -49,6 +60,7 @@ type Server struct {
 	tamperLog       TamperProvider
 	dnsCtrl         DNSController
 	eventHub        *eventhub.Hub
+	metrics         *metrics.Registry
 	onUpdateApplied func()
 	currentVersion  string
 
@@ -295,6 +307,22 @@ func (s *Server) SetEventHub(h *eventhub.Hub) {
 	s.eventHub = h
 }
 
+// SetMetrics wires the latency registry (Fase 8) into the server. Nil (tests
+// and dev builds) disables recording and makes the metrics action fail with
+// "não configurado".
+func (s *Server) SetMetrics(reg *metrics.Registry) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.metrics = reg
+}
+
+// metricsProvider é o accessor com lock do registry de latência.
+func (s *Server) metricsProvider() *metrics.Registry {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.metrics
+}
+
 // SetUpdateChecker wires the update checker into the server.
 func (s *Server) SetUpdateChecker(c UpdateChecker) {
 	s.mu.Lock()
@@ -383,24 +411,51 @@ func (s *Server) Register(h Handler) {
 // and returns the wire Response. The transport layer (handleConnection) only
 // encodes it and fires the post-response update hook. Ação desconhecida (ou
 // Server sem registry — dev build) recebe a mensagem do switch legado
-// preservada (wire protocol inalterado) com CodeUnknownAction.
+// preservada (wire protocol inalterado) com CodeUnknownAction. Nota: um
+// handler que devolvesse (nil, nil) de Handle cairia neste fallback (o
+// legado encodaria JSON "null") — nenhum handler atual faz isso.
+//
+// Cada dispatch é medido no registry de métricas (Fase 8) e ações acima de
+// slowActionThreshold (exceto event-subscribe) geram um log estruturado
+// leve — a observabilidade que o C3 pedia.
 func (s *Server) Dispatch(req *Request) *Response {
+	start := time.Now()
+
+	var resp *Response
 	if s.registry != nil {
 		if h, ok := s.registry.Get(req.Action); ok {
 			if err := h.Validate(req); err != nil {
-				return errorResponse(err)
+				resp = errorResponse(err)
+			} else if r, err := h.Handle(context.Background(), req); err != nil {
+				resp = errorResponse(err)
+			} else {
+				resp = r
 			}
-			resp, err := h.Handle(context.Background(), req)
-			if err != nil {
-				return errorResponse(err)
-			}
-			return resp
 		}
 	}
-	return &Response{
-		Success: false,
-		Code:    CodeUnknownAction,
-		Message: "Not suported action: " + req.Action,
+	if resp == nil {
+		resp = &Response{
+			Success: false,
+			Code:    CodeUnknownAction,
+			Message: "Not suported action: " + req.Action,
+		}
+	}
+
+	s.observe(req.Action, start, resp)
+	return resp
+}
+
+// observe records the dispatch latency and logs structured slow-action lines.
+// event-subscribe é excluído: sua latência é o long-poll de 20s por design,
+// não um sinal de regressão.
+func (s *Server) observe(action string, start time.Time, resp *Response) {
+	d := time.Since(start)
+	if reg := s.metricsProvider(); reg != nil && action != "event-subscribe" {
+		reg.Record(action, d)
+	}
+	if d >= slowActionThreshold && action != "event-subscribe" {
+		log.Printf("[Metrics] action=%s duration_ms=%d ok=%t code=%s",
+			action, d.Milliseconds(), resp.Success, resp.Code)
 	}
 }
 

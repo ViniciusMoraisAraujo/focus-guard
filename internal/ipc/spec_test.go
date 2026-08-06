@@ -108,6 +108,7 @@ func TestSpecActions_CoversProxyableActions(t *testing.T) {
 		"stats": true, "missions": true, "sessions": true,
 		"dns-start": true, "dns-stop": true, "dns-status": true, "dns-set-upstream": true,
 		"event-subscribe": true,
+		"metrics":         true,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("SpecActions = %d ações (%v), want %d", len(got), got, len(want))

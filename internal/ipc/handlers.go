@@ -35,6 +35,7 @@ func (s *Server) registerHandlers() {
 	s.registry.Register(funcHandler{action: "update-check", handle: s.handleUpdateCheck})
 	s.registry.Register(funcHandler{action: "status", handle: s.handleStatus})
 	s.registry.Register(funcHandler{action: "event-subscribe", handle: s.handleEventSubscribe})
+	s.registry.Register(funcHandler{action: "metrics", handle: s.handleMetrics})
 }
 
 // eventHubProvider é o accessor com lock do hub de eventos (o daemon o
@@ -69,6 +70,21 @@ func (s *Server) handleEventSubscribe(ctx context.Context, req *Request) (*Respo
 		wire = append(wire, Event{Type: e.Type, At: e.At})
 	}
 	return &Response{Success: true, Rev: rev, Events: wire}, nil
+}
+
+// handleMetrics devolve o snapshot de latência por ação (Fase 8 — C3). Reset
+// zera o registro antes do snapshot — o "metrics --reset" do CLI marca o
+// início de uma janela de medição. Registry não configurado é erro estável
+// (CodeNotConfigured).
+func (s *Server) handleMetrics(_ context.Context, req *Request) (*Response, error) {
+	reg := s.metricsProvider()
+	if reg == nil {
+		return nil, Err(CodeNotConfigured, "métricas não configuradas")
+	}
+	if req.Reset {
+		reg.Reset()
+	}
+	return &Response{Success: true, Metrics: reg.Snapshot()}, nil
 }
 
 // tamperProvider is o accessor com lock do provedor de eventos de burla

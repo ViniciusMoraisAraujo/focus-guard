@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"focusguard/internal/analytics"
+	"focusguard/internal/metrics"
 	"focusguard/internal/policy"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
@@ -75,6 +76,9 @@ type Request struct {
 	// higher sequence is published (or its internal budget expires) and
 	// returns the newer events plus the new rev.
 	Since int64 `json:"since,omitempty"`
+	// Reset clears the daemon's latency metrics before snapshotting (Fase 8 —
+	// "focusguard metrics --reset" marks the start of a measurement window).
+	Reset bool `json:"reset,omitempty"`
 }
 
 // Event is one daemon state-change notification (event-subscribe). Events are
@@ -151,6 +155,10 @@ type Response struct {
 	// first (empty when the internal budget expired with no changes).
 	Rev    int64   `json:"rev,omitempty"`
 	Events []Event `json:"events,omitempty"`
+	// Metrics is the daemon's latency snapshot per action (metrics action,
+	// Fase 8 — C3): count/total/avg/max for the process lifetime and
+	// p50/p95/p99 over a recent window, sorted by action.
+	Metrics []metrics.ActionStat `json:"metrics,omitempty"`
 	// Users lists the web UI usernames (user-list) — names only, never hashes.
 	Users []string `json:"users,omitempty"`
 	// UserIsAdmin reports whether the user-verify credentials belong to the
