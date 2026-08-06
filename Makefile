@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon build-web ui icon winres test vet clean install uninstall msi help fmt tidy
+.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet clean install uninstall msi help fmt tidy
 
 GO       := go
 BIN_DIR  := bin
@@ -61,6 +61,19 @@ ui:
 	cd focusguard-ui && npm ci && npm run build
 	find cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} +
 	cp -r focusguard-ui/dist/. cmd/focusguard-web/assets/
+
+# contract regenera focusguard-ui/src/api/types.ts a partir dos structs Go que
+# definem o contrato IPC (internal/ipc + policy, preset, pomodoro, analytics,
+# schedule, tamper) — o Go é a fonte de verdade do espelho TypeScript, sem
+# edição manual (Fase 2 do docs/refactor-plan.md). Rode após mudar um struct do
+# contrato (regra do AGENT.md: mudou o IPC, muda os 4 lados no mesmo commit).
+contract:
+	go run ./scripts/gen-contract/main.go
+
+# contract-check falha se types.ts estiver desatualizado (drift) — usado no CI
+# para garantir que o codegen rodou antes do commit.
+contract-check:
+	go run ./scripts/gen-contract/main.go --check
 
 # msi gera o instalador da edição desktop do Windows
 # (focusguard-<versão>-amd64.msi) via go-msi + WiX Toolset. Requer um ambiente

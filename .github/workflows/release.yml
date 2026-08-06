@@ -23,6 +23,12 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      # Contrato Go→TS: o types.ts é gerado (make contract); se alguém mudou
+      # um struct do IPC e esqueceu de regenerar, a release falha aqui em vez
+      # de publicar um espelho desatualizado (Fase 2 do docs/refactor-plan.md).
+      - name: Check Go→TS contract is up to date
+        run: make contract-check
+
       - name: Install tray build dependencies (Linux cgo)
         run: |
           sudo apt-get update
