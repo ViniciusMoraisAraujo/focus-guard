@@ -52,8 +52,8 @@ func (r *Registry) Actions() []string {
 // must have an ActionSpec (otherwise the web proxy would 403 it silently — a
 // handler forgotten in the spec table is a boot-time bug, not a runtime
 // surprise). The reverse direction (every spec has a handler) is enforced by
-// TestServer_SpecsAllHaveHandlers; web-only actions the daemon still serves
-// (user-verify) are exempt.
+// TestServer_SpecsAllHaveHandlers and by ValidateRegistry at daemon boot;
+// web-only actions the daemon still serves (user-verify) are exempt.
 func (r *Registry) ValidateSpecs(webOnly ...string) error {
 	exempt := make(map[string]bool, len(webOnly))
 	for _, a := range webOnly {
