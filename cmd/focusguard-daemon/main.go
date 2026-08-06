@@ -17,6 +17,8 @@ import (
 
 	"focusguard/internal/analytics"
 	"focusguard/internal/apps"
+	"focusguard/internal/blocks"
+	"focusguard/internal/dns"
 	"focusguard/internal/dnsserver"
 	"focusguard/internal/enforcer"
 	"focusguard/internal/goal"
@@ -24,6 +26,7 @@ import (
 	"focusguard/internal/ipc"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
+	"focusguard/internal/presets"
 	"focusguard/internal/processguard"
 	"focusguard/internal/schedule"
 	"focusguard/internal/scheduler"
@@ -32,6 +35,7 @@ import (
 	"focusguard/internal/tamper"
 	"focusguard/internal/update"
 	"focusguard/internal/user"
+	"focusguard/internal/users"
 	"focusguard/internal/watchdog"
 )
 
@@ -105,6 +109,7 @@ func isAddrInUse(err error) bool {
 	return strings.Contains(msg, "in use") || strings.Contains(msg, "em uso") ||
 		strings.Contains(msg, "already in use")
 }
+
 var newUpdater = func(owner, repo string) updaterAPI {
 	return update.NewUpdater(owner, repo, update.WithVersion(daemonVersion))
 }
@@ -678,9 +683,6 @@ func runDaemon() bool {
 
 	server := ipc.NewServer(sched)
 	server.SetCurrentVersion(daemonVersion)
-	if pg != nil {
-		server.SetApps(&guardApps{store: appsStore, guard: pg})
-	}
 	server.SetTamper(tamperRec)
 
 	// DNS Sinkhole ("Rei da Rede"): servidor DNS local (porta 53) que responde
@@ -698,14 +700,15 @@ func runDaemon() bool {
 	}
 	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsUpstream)
 	server.SetDNS(dnsSrv)
-	server.SetOnDNSStarted(func() {
-		// Browsers com DoH embutido ignorariam o sinkhole pela porta 853; o
-		// BlockDoH fecha essa rota. Idempotente — o scheduler também o aplica
-		// enquanto houver blocos ativos.
+	// Hook DoH do dns-start: fechado pela porta 853 (browsers com DoH embutido
+	// ignorariam o sinkhole). Idempotente — o scheduler também o aplica
+	// enquanto houver blocos ativos. Passado ao handler de domínio (dns.Start)
+	// no composition root abaixo; o ipc não o consome mais.
+	dohHook := func() {
 		if err := enf.BlockDoH(); err != nil {
 			log.Printf("[FocusGuard Daemon] Falha ao bloquear DoH (porta 853): %v", err)
 		}
-	})
+	}
 	if sched.DNSEnabled() {
 		if err := dnsSrv.Start(); err != nil {
 			log.Printf("[FocusGuard Daemon] DNS habilitado, mas não subiu: %v", err)
@@ -748,7 +751,6 @@ func runDaemon() bool {
 	if err := userStore.EnsureAdmin(); err != nil {
 		log.Printf("[FocusGuard Daemon] Aviso: falha ao garantir o usuário admin: %v", err)
 	}
-	server.SetUsers(userStore)
 
 	// Agendamento recorrente: regras "bloquear social seg-sex 08:00-12:00"
 	// persistidas em schedules.json. O worker de background aplica as janelas
@@ -769,7 +771,37 @@ func runDaemon() bool {
 
 	// Meta diária de foco (ex: 4h/dia) persistida em goal.json — alimenta o
 	// "focusguard goal" e o status da TUI.
-	server.SetGoal(goal.NewStore(filepath.Join(filepath.Dir(statePath), "goal.json")))
+	goalStore := goal.NewStore(filepath.Join(filepath.Dir(statePath), "goal.json"))
+	server.SetGoal(goalStore)
+
+	// Composition root (Fase 5): as ações de domínio (block/block-all, apps-*,
+	// goal-*, presets, preset-*, user-*, dns-*) são atendidas pelos handlers
+	// dos pacotes de domínio (interfaces estreitas, DIP) — não pelos adapters
+	// do ipc. O ipc.Server registra só os handlers de nível servidor
+	// (ping/status/tamper/services); este bloco fecha o registry (34 ações)
+	// que o ValidateRegistry abaixo verifica no boot.
+	server.Register(blocks.New(sched, presetStore))
+	server.Register(blocks.NewBlockAll(sched))
+	server.Register(presets.NewList(presetStore))
+	server.Register(presets.NewAdd(presetStore))
+	server.Register(presets.NewRemove(presetStore))
+	server.Register(goal.NewGet(goalStore))
+	server.Register(goal.NewSet(goalStore))
+	server.Register(dns.NewStart(dnsSrv, sched, dohHook))
+	server.Register(dns.NewStop(dnsSrv, sched))
+	server.Register(dns.NewStatus(dnsSrv, sched))
+	server.Register(dns.NewSetUpstream(dnsSrv, sched))
+	server.Register(users.NewList(userStore))
+	server.Register(users.NewVerify(userStore))
+	server.Register(users.NewAdd(userStore))
+	server.Register(users.NewRemove(userStore))
+	server.Register(users.NewSetPassword(userStore))
+	if pg != nil {
+		ga := &guardApps{store: appsStore, guard: pg}
+		server.Register(apps.NewList(ga))
+		server.Register(apps.NewAdd(ga))
+		server.Register(apps.NewRemove(ga))
+	}
 
 	// Fechamento specs↔registry no boot (Fase 4): todo handler registrado tem
 	// ActionSpec (user-verify isento — web-only) e todo spec tem handler.
