@@ -5,6 +5,43 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.16.0] - 2026-08-06
+
+### ✨ Novas funcionalidades
+
+- **Registry de ações com specs declarativas** — o `ipc.Server` virou um
+  roteador fino: cada ação declara permissão, timeout e handler via
+  `ActionSpec` (33 ações), eliminando o `switch` legado (Fases 2–3 do
+  refactor-plan).
+- **Serviços de domínio** — analytics, pomodoro, schedule, update e apps
+  viraram pacotes com interfaces estreitas, compostos no composition root do
+  daemon com `ValidateRegistry` no boot (Fases 4–5).
+- **Eventos em tempo real (SSE)** — event hub no daemon + long-poll
+  `event-subscribe` + `GET /api/events`; o frontend usa `EventSource` com
+  fallback de polling; expiração de bloqueios/pomodoro/agenda viram eventos
+  (Fase 7).
+- **Observabilidade** — `internal/metrics` mede latência por ação IPC/HTTP
+  (percentis p50/p95/p99), nova ação `metrics` + `GET /api/metrics` e comando
+  `focusguard metrics [--reset]` (Fase 8).
+- **CLI por comando** — `cmd/focusguard/main.go` dividido em um arquivo por
+  comando com tabela `commands`/`usageOrder` validada por teste (Fase 6).
+- **Acesso ao socket por grupo no Linux (F5 do ui-plan)** — o daemon chowna
+  `/run/focusguard.sock` para `root:focusguard 0660`; `install-linux.sh` cria
+  o grupo `focusguard` e adiciona o usuário; o CLI sugere o grupo no erro de
+  conexão.
+
+### 🎨 Interface web
+
+- **Polimento visual (F4 do ui-plan)** — anel do Pomodoro com gradiente SVG,
+  glow e dots de ciclo; grade semanal da Agenda com dia atual em pill e tint
+  de fim de semana; gráficos de Estatísticas com gradiente e animação de
+  crescimento.
+
+### 🛠️ Build
+
+- **Versioninfo atualizado para 0.16.0** nos binários
+  (focusguard, focusguard-daemon, focusguard-watchdog).
+
 ## [0.15.2] - 2026-08-05
 
 ### 🐛 Correções

@@ -1,6 +1,6 @@
 # Release — FocusGuard
 
-**SemVer** versioning (current: **v0.15.2**). The changelog follows **Keep a
+**SemVer** versioning (current: **v0.16.0**). The changelog follows **Keep a
 Changelog**, with dated sections and emoji categories (e.g. `### 🛡 ...`).
 
 > F5 do ui-plan (2026-08-06): a release é **conjunta** — todos os arquivos
