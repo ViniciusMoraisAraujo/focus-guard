@@ -63,6 +63,15 @@ var fieldHints = map[string]string{
 	"ScheduleRule.days": "0 = domingo",
 }
 
+// typeOverrides replaces the TS type of a specific field. Used only when the
+// Go source models a documented literal union as a plain string (ex.: tamper
+// source/action — see the comments on tamper.Event). If the Go field ever
+// gains real constants, move the union to the Go side and drop the override.
+var typeOverrides = map[string]string{
+	"TamperEvent.source": `"hosts" | "state"`,
+	"TamperEvent.action": `"restore" | "reconcile"`,
+}
+
 func main() {
 	check := flag.Bool("check", false, "fail when types.ts differs from the generated output (CI)")
 	flag.Parse()
@@ -165,11 +174,11 @@ func generate() (string, error) {
 
 	for _, t := range targets {
 		f := files[t.file]
-		spec := findTypeSpec(f, t.goType)
+		spec, gd := findTypeSpec(f, t.goType)
 		if spec == nil {
 			return "", fmt.Errorf("%s: tipo %s não encontrado", t.file, t.goType)
 		}
-		s, err := g.emitStruct(f, spec, t.pkg, t.tsName)
+		s, err := g.emitStruct(f, spec, gd, t.pkg, t.tsName)
 		if err != nil {
 			return "", fmt.Errorf("%s.%s: %w", t.pkg, t.goType, err)
 		}
@@ -184,8 +193,11 @@ func generate() (string, error) {
 	return out, nil
 }
 
-// findTypeSpec returns the TypeSpec for name in the file, or nil.
-func findTypeSpec(f *ast.File, name string) *ast.TypeSpec {
+// findTypeSpec returns the TypeSpec for name in the file (nil if absent) and
+// the GenDecl that owns it. The owning GenDecl is needed for the type's doc
+// comment: go/ast may attach it to the GenDecl instead of the TypeSpec (as it
+// does for analytics.Session).
+func findTypeSpec(f *ast.File, name string) (*ast.TypeSpec, *ast.GenDecl) {
 	for _, decl := range f.Decls {
 		gd, ok := decl.(*ast.GenDecl)
 		if !ok || gd.Tok != token.TYPE {
@@ -194,11 +206,11 @@ func findTypeSpec(f *ast.File, name string) *ast.TypeSpec {
 		for _, spec := range gd.Specs {
 			ts, ok := spec.(*ast.TypeSpec)
 			if ok && ts.Name.Name == name {
-				return ts
+				return ts, gd
 			}
 		}
 	}
-	return nil
+	return nil, nil
 }
 
 // gen holds the symbol tables needed to translate Go types to TS.
@@ -265,15 +277,21 @@ func (g *gen) tsType(expr ast.Expr, pkg string) (ts string, optional bool, hint 
 }
 
 // emitStruct renders one TS interface from a Go struct declaration.
-func (g *gen) emitStruct(f *ast.File, spec *ast.TypeSpec, pkg, tsName string) (string, error) {
+func (g *gen) emitStruct(f *ast.File, spec *ast.TypeSpec, gd *ast.GenDecl, pkg, tsName string) (string, error) {
 	st, ok := spec.Type.(*ast.StructType)
 	if !ok {
 		return "", fmt.Errorf("%s não é struct", spec.Name.Name)
 	}
 
 	var b strings.Builder
-	if spec.Doc != nil {
-		if line := firstLine(spec.Doc.Text()); line != "" {
+	// go/ast pode anexar o doc ao GenDecl em vez do TypeSpec (ex.:
+	// analytics.Session) — usa o primeiro disponível.
+	doc := spec.Doc
+	if doc == nil && gd != nil {
+		doc = gd.Doc
+	}
+	if doc != nil {
+		if line := firstLine(doc.Text()); line != "" {
 			fmt.Fprintf(&b, "// %s\n", line)
 		}
 	}
@@ -305,6 +323,10 @@ func (g *gen) emitStruct(f *ast.File, spec *ast.TypeSpec, pkg, tsName string) (s
 		ts, optional, hint, err := g.tsType(field.Type, pkg)
 		if err != nil {
 			return "", err
+		}
+		if override, ok := typeOverrides[tsName+"."+name]; ok {
+			ts = override
+			hint = ""
 		}
 		optional = optional || omitempty
 

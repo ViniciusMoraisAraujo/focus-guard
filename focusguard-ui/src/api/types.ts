@@ -13,12 +13,14 @@ export interface Block {
   allowlist?: string[]; // Allowlist names the domains still reachable under the all-internet
 }
 
+// Preset is a named group of domains blocked together by category.
 export interface Preset {
   name: string;
   label: string;
   domains: string[];
 }
 
+// State is the observable session snapshot (also sent over IPC).
 export interface PomodoroState {
   active: boolean;
   preset?: string;
@@ -29,17 +31,20 @@ export interface PomodoroState {
   phase_until?: string; // RFC3339
 }
 
+// DayStat aggregates focus for a single calendar day.
 export interface DayStat {
   day: string;
   duration: number; // nanosegundos
   sessions: number;
 }
 
+// DomainStat aggregates focus attributed to a single blocked domain (each
 export interface DomainStat {
   domain: string;
   duration: number; // nanosegundos
 }
 
+// Stats is the aggregated report returned by the "stats" IPC action.
 export interface Stats {
   total_sessions: number;
   total_focus: number; // nanosegundos
@@ -48,12 +53,14 @@ export interface Stats {
   streak: number; // Streak is the current run of consecutive days with focus.
 }
 
+// LabelStat aggregates focus for one named mission (sessions with a Label).
 export interface LabelStat {
   label: string;
   duration: number; // nanosegundos
   sessions: number;
 }
 
+// Session is one completed focus session, recorded by the pomodoro controller
 export interface FocusSession {
   start: string; // RFC3339
   end: string; // RFC3339
@@ -67,6 +74,7 @@ export interface FocusSession {
   strict: boolean;
 }
 
+// Rule is a recurring block window. Days are time.Weekday (0=Sunday).
 export interface ScheduleRule {
   id: string;
   label?: string;
@@ -78,10 +86,11 @@ export interface ScheduleRule {
   enabled: boolean;
 }
 
+// Event is one detected tamper attempt.
 export interface TamperEvent {
   at: string; // RFC3339
-  source: string;
-  action: string;
+  source: "hosts" | "state";
+  action: "restore" | "reconcile";
   detail?: string;
 }
 

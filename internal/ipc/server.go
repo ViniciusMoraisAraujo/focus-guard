@@ -377,6 +377,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 	if err := json.NewDecoder(conn).Decode(&req); err != nil {
 		_ = json.NewEncoder(conn).Encode(&Response{
 			Success: false,
+			Code:    CodeInvalid,
 			Message: "Request invalid",
 		})
 		return
@@ -959,7 +960,9 @@ func (s *Server) handleConnection(conn net.Conn) {
 		st, err := s.runUpdateCheck(ctx, true, req.Channel)
 		cancel()
 		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
+			// O único erro conhecido aqui é o checker ausente (dev builds) — a
+			// semântica exata de CodeNotConfigured.
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: err.Error()}
 			break
 		}
 		resp = Response{
@@ -990,7 +993,8 @@ func (s *Server) handleConnection(conn net.Conn) {
 		st, err := s.runUpdateCheck(ctx, false, req.Channel)
 		cancel()
 		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
+			// Mesmo caso do "update": checker ausente em dev builds.
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: err.Error()}
 			break
 		}
 		resp = Response{
