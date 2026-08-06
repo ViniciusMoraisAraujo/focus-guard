@@ -3,10 +3,8 @@ package main
 import (
 	"context"
 	"errors"
-
 	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -18,6 +16,7 @@ import (
 	"focusguard/internal/analytics"
 	"focusguard/internal/apps"
 	"focusguard/internal/blocks"
+	"focusguard/internal/daemon"
 	"focusguard/internal/dns"
 	"focusguard/internal/dnsserver"
 	"focusguard/internal/enforcer"
@@ -514,8 +513,41 @@ func main() {
 	}
 }
 
+// stopLifecycleComponents para os componentes na ordem inversa de registro —
+// o mesmo teardown ordenado que o internal/daemon executa (B10). Usado nos
+// pontos de falha do boot que antecedem o Run (onde o lifecycle ainda não
+// assumiu o controle).
+func stopLifecycleComponents(components []daemon.Component) {
+	for i := len(components) - 1; i >= 0; i-- {
+		components[i].Stop()
+	}
+}
+
+// ipcServerLifecycle adapta *ipc.Server ao daemon.Server do lifecycle: o Start
+// é o ponto do boot saudável (Bug 2 — remove a flag de update quando a nova
+// versão já reconciliou o estado e está pronta para servir IPC) seguido do
+// serve; o Stop fecha o listener (faz o Start retornar nil).
+type ipcServerLifecycle struct{ server *ipc.Server }
+
+func (l ipcServerLifecycle) Start() error {
+	if exe, err := osExecutable(); err == nil {
+		clearUpdateInProgress(filepath.Dir(exe))
+	}
+	log.Println("[FocusGuard Daemon] Servidor IPC ativo e aguardando requisições...")
+	return l.server.Start()
+}
+
+func (l ipcServerLifecycle) Stop() error { return l.server.Stop() }
+
 func runDaemon() bool {
 	log.Println("[FocusGuard Daemon] Iniciando serviço...")
+
+	// Satélites do boot (watchers/workers/guards) registrados como componentes
+	// do lifecycle (Fase 5 — B10): o internal/daemon os para em ordem inversa
+	// no shutdown. Os Start são no-op (StopOnly) porque o boot histórico os
+	// inicia na construção — o lifecycle assume o servidor IPC e TODO o
+	// teardown.
+	var components []daemon.Component
 
 	// Singleton: se outra instância do daemon já está atendendo o IPC, esta
 	// encerra limpo em vez de crash-loopar no bind (o log mostrou o ciclo
@@ -534,7 +566,7 @@ func runDaemon() bool {
 		if err != nil {
 			log.Printf("[FocusGuard Daemon] pprof indisponível em %s: %v", addr, err)
 		} else {
-			defer stopPprof()
+			components = append(components, daemon.StopOnly(stopPprof))
 			log.Printf("[FocusGuard Daemon] pprof ativo em http://%s/debug/pprof/ (temporário, loopback)", addr)
 		}
 	}
@@ -554,6 +586,7 @@ func runDaemon() bool {
 	st, err := store.NewStore(statePath)
 	if err != nil {
 		log.Printf("[FocusGuard Daemon] Erro ao criar store: %v", err)
+		stopLifecycleComponents(components)
 		return false
 	}
 
@@ -572,6 +605,7 @@ func runDaemon() bool {
 
 	if err := sched.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro na reconciliação: %v", err)
+		stopLifecycleComponents(components)
 		return false
 	}
 	log.Println("[FocusGuard Daemon] Estado reconciliado com sucesso.")
@@ -594,7 +628,7 @@ func runDaemon() bool {
 
 	hw := startHostswatch(enf, sched)
 	if hw != nil {
-		defer hw.Stop()
+		components = append(components, daemon.StopOnly(hw.Stop))
 		hw.SetTamperLogger(tamperRec)
 		if notifier, ok := enf.(interface{ SetOnHostsWrite(func()) }); ok {
 			notifier.SetOnHostsWrite(hw.MarkSelfWrite)
@@ -603,7 +637,7 @@ func runDaemon() bool {
 
 	sw := startStatewatch(sched, statePath)
 	if sw != nil {
-		defer sw.Stop()
+		components = append(components, daemon.StopOnly(sw.Stop))
 		sw.SetTamperLogger(tamperRec)
 		st.SetOnSave(sw.MarkSelfWrite)
 	}
@@ -615,7 +649,7 @@ func runDaemon() bool {
 	appsStore := apps.NewStore(filepath.Join(filepath.Dir(statePath), "apps.json"))
 	pg := startProcessGuard(sched, appsStore.List())
 	if pg != nil {
-		defer pg.Stop()
+		components = append(components, daemon.StopOnly(pg.Stop))
 	}
 
 	server := ipc.NewServer(sched)
@@ -653,7 +687,7 @@ func runDaemon() bool {
 			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsserver.DefaultBindAddr, dnsUpstream)
 		}
 	}
-	defer dnsSrv.Stop()
+	components = append(components, daemon.StopOnly(func() { _ = dnsSrv.Stop() }))
 
 	// Modo Pomodoro & Presets: ciclos de trabalho/descanso sobre as categorias
 	// (--preset social, video, news, games). O controller bloqueia via o
@@ -672,7 +706,7 @@ func runDaemon() bool {
 	server.SetPomodoroPrefs(pomoPrefs)
 	stopPomoWatch := watchPomodoroCompletions(pomo, pomoPrefs)
 	if stopPomoWatch != nil {
-		defer stopPomoWatch()
+		components = append(components, daemon.StopOnly(stopPomoWatch))
 	}
 
 	// Presets personalizados do usuário: catálogo persistido (builtins + custom)
@@ -696,7 +730,7 @@ func runDaemon() bool {
 	server.SetSchedules(scheduleMgr)
 	stopSchedule := startScheduleWorker(scheduleMgr, presetResolver{store: presetStore}, sched, scheduleCheckInterval)
 	if stopSchedule != nil {
-		defer stopSchedule()
+		components = append(components, daemon.StopOnly(stopSchedule))
 	}
 
 	// Strict Mode & Analytics: histórico de sessões em JSONL ao lado do
@@ -747,11 +781,12 @@ func runDaemon() bool {
 	// Drift vira falha de boot, não 403/404 silencioso em runtime.
 	if err := server.ValidateRegistry(); err != nil {
 		log.Printf("[FocusGuard Daemon] Registry fora do contrato specs: %v", err)
+		stopLifecycleComponents(components)
 		return false
 	}
 
 	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
-		defer stopUpdate()
+		components = append(components, daemon.StopOnly(stopUpdate))
 		// Após aplicar um update, o daemon encerra a sessão pomodoro e os
 		// bloqueios ativos e reinicia sozinho (osExit(1)) para o systemd/SCM
 		// subirem a nova versão — em vez de ficar rodando o binário antigo em
@@ -759,60 +794,24 @@ func runDaemon() bool {
 		server.SetOnUpdateApplied(func() { restartAfterUpdate(sched, pomo.Stop) })
 	}
 
-	sigChan := make(chan os.Signal, 1)
-	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+	// Lifecycle (Fase 5 — B10): o internal/daemon executa o servidor IPC e o
+	// shutdown ordenado (componentes parados na ordem inversa de registro) com
+	// Run(ctx) explícito — no lugar dos defers e da goroutine de sinais
+	// manuais. Sinais (SIGINT/SIGTERM) e a parada do serviço (serviceStopCh)
+	// são tratados dentro do Run: a parada só é honrada quando não há
+	// bloqueios/sessão ativos (CanStop) — com bloqueios ativos o pedido é
+	// ignorado e a proteção continua.
+	err = daemon.New(daemon.Deps{
+		Server:     &ipcServerLifecycle{server: server},
+		Components: components,
+		Stop:       serviceStopCh,
+		CanStop:    func() bool { return !sched.HasActiveBlocks() && !server.HasActiveSession() },
+	}).Run(context.Background())
 
-	go func() {
-		// svcStop é a cópia local do canal de parada do serviço: após a PRIMEIRA
-		// notificação (mesmo quando ignorada por bloqueios ativos) o canal é
-		// zerado — um canal fechado fica "pronto" para sempre no select, o que
-		// faria este goroutine hot-looper como um canal de sinal fechado.
-		svcStop := serviceStopCh
-		for {
-			select {
-			case sig, ok := <-sigChan:
-				if !ok {
-					// Canal fechado pelo caminho de erro (close(sigChan)): o
-					// goroutine não pode continuar lendo nil para sempre — seria
-					// o hot-loop que inundou o log com "Sinal <nil> ignorado".
-					return
-				}
-				if sched.HasActiveBlocks() || server.HasActiveSession() {
-					log.Printf("[FocusGuard Daemon] Sinal %v ignorado: existem bloqueios/sessão ativos.", sig)
-					continue
-				}
-				log.Println("[FocusGuard Daemon] Nenhum bloqueio/sessão ativo. Encerrando servidor IPC...")
-			case <-svcStop:
-				svcStop = nil
-				if sched.HasActiveBlocks() || server.HasActiveSession() {
-					log.Println("[FocusGuard Daemon] Parada do serviço ignorada: existem bloqueios/sessão ativos.")
-					continue
-				}
-				log.Println("[FocusGuard Daemon] Serviço parando. Encerrando servidor IPC...")
-			}
-			_ = server.Stop()
-			return
-		}
-	}()
-
-	serverErr := make(chan error, 1)
-	go func() {
-		// Bug 2: ponto do boot saudável. A flag de update sobrevive ao restart
-		// pós-update (escrita antes do UpdateToAll, mantida enquanto o daemon
-		// está fora) e é removida aqui — quando a nova versão já reconciliou o
-		// estado e está pronta para servir IPC. A partir daqui o watchdog volta
-		// a monitorar normalmente; até lá, ele não mata nem desfaz o update.
-		if exe, err := osExecutable(); err == nil {
-			clearUpdateInProgress(filepath.Dir(exe))
-		}
-		log.Println("[FocusGuard Daemon] Servidor IPC ativo e aguardando requisições...")
-		serverErr <- server.Start()
-	}()
-
-	err = <-serverErr
 	if err != nil {
-		signal.Stop(sigChan)
-		close(sigChan)
+		// Bind em uso por outra instância (a varredura de singleton acima já
+		// cobre o caso comum; o bind ainda pode falhar por uma corrida) —
+		// encerra limpo em vez de crash-loopar.
 		if isAddrInUse(err) && probeDaemonAlive() {
 			log.Println("[FocusGuard Daemon] Outra instância já está ativa na porta IPC — encerrando esta (evita crash-loop no bind).")
 			return true
@@ -821,8 +820,6 @@ func runDaemon() bool {
 		return false
 	}
 
-	signal.Stop(sigChan)
-	close(sigChan)
 	log.Println("[FocusGuard Daemon] Servidor IPC finalizado.")
 	return true
 }

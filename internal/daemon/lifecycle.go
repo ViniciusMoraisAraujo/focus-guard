@@ -52,6 +52,21 @@ type Deps struct {
 	CanStop func() bool
 }
 
+// stopOnly adapta um stop func a um Component cujo Start é no-op — usado
+// para os satélites que o composition root inicia durante a construção do
+// boot (a ordem histórica), cabendo ao lifecycle apenas o teardown ordenado.
+type stopOnly struct{ stop func() }
+
+func (c stopOnly) Start() error { return nil }
+func (c stopOnly) Stop() {
+	if c.stop != nil {
+		c.stop()
+	}
+}
+
+// StopOnly wraps a plain stop func into a Component whose Start is a no-op.
+func StopOnly(stop func()) Component { return stopOnly{stop: stop} }
+
 // Daemon runs the FocusGuard daemon lifecycle.
 type Daemon struct{ deps Deps }
 
