@@ -84,18 +84,8 @@ var commands = map[string]Command{
 			"  focusguard pomodoro-defaults          Mostrar os padrões salvos do pomodoro",
 		},
 	},
-	"mission": {
-		Name: "mission",
-		Run:  func(c *ipc.Client, _ []string) { handleMissionCommand(c) },
-		Usage: []string{
-			"  focusguard mission                    Resumo de foco por missão nomeada",
-		},
-	},
-	// Alias histórico (singular/plural) — mesmo handler, sem entrada no help.
-	"missions": {
-		Name: "missions",
-		Run:  func(c *ipc.Client, _ []string) { handleMissionCommand(c) },
-	},
+	"mission":  missionCommand,
+	"missions": {Name: "missions", Run: missionCommand.Run}, // alias (sem Usage no help)
 	"pomodoro-stop": {
 		Name: "pomodoro-stop",
 		Run:  func(c *ipc.Client, _ []string) { handlePomodoroStopCommand(c) },
@@ -194,6 +184,16 @@ var commands = map[string]Command{
 		Usage: []string{
 			"  focusguard uninstall-tray           Remover o tray da inicialização",
 		},
+	},
+}
+
+// missionCommand é o Command canônico da missão; o alias "missions" aponta o
+// mesmo Run, sem entrada própria no help.
+var missionCommand = Command{
+	Name: "mission",
+	Run:  func(c *ipc.Client, _ []string) { handleMissionCommand(c) },
+	Usage: []string{
+		"  focusguard mission                    Resumo de foco por missão nomeada",
 	},
 }
 
