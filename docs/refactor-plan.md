@@ -974,12 +974,19 @@ handlers vivem nos pacotes de domínio e o daemon os registra no boot:
    - `feat(daemon): add lifecycle package with Run(ctx) and ordered shutdown (B10)`
    - `refactor(daemon): delegate runDaemon to the daemon lifecycle (B10)`
 
+9. **Limpeza dos `Set*` mortos** — `SetApps`/`SetUsers`/`SetOnDNSStarted` e os
+   campos `s.apps`/`s.users`/`s.onDNSStarted` saíram do `ipc.Server`: os
+   adapters de referência dos testes recebem essas deps via `refDeps`
+   (injetado por `setupTestServerWithDeps`; `setupTestServer` vira wrapper com
+   deps nil) e os handlers de `apps-*`/`user-*`/`dns-start` viraram métodos de
+   `*refDeps` (o dns-start usa `deps.s` para o controller/scheduler). As
+   interfaces `AppsManager`/`UserManager` permanecem (contrato dos adapters de
+   referência). 17 call sites de teste migrados. Validação: suíte interna
+   verde, `contract-check` em dia.
+
 ### Próximo passo
 
-1. **Limpeza dos `Set*` mortos** — com o lifecycle extraído,
-   `SetApps`/`SetUsers`/`SetOnDNSStarted` (hoje só usados pelos adapters de
-   referência dos testes) podem ser removidos do `ipc.Server`.
-2. **Fase 6 — CLI por comando**: `cmd/focusguard/main.go` → `commands/` com um
+1. **Fase 6 — CLI por comando**: `cmd/focusguard/main.go` → `commands/` com um
    arquivo por comando + tabela (B5).
-3. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
+2. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
    cortar release entre fases.
