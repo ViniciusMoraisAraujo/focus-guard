@@ -99,7 +99,7 @@ func TestSpecActions_CoversProxyableActions(t *testing.T) {
 		"update": true, "update-check": true,
 		"presets": true, "preset-add": true, "preset-remove": true,
 		"tamper-log": true,
-		"apps-list": true, "apps-add": true, "apps-remove": true,
+		"apps-list":  true, "apps-add": true, "apps-remove": true,
 		"user-list": true, "user-add": true, "user-remove": true, "user-set-password": true,
 		"schedule-list": true, "schedule-add": true, "schedule-import": true, "schedule-remove": true,
 		"pomodoro": true, "pomodoro-stop": true, "pomodoro-defaults": true,
@@ -117,6 +117,23 @@ func TestSpecActions_CoversProxyableActions(t *testing.T) {
 	}
 	if _, ok := SpecFor("user-verify"); ok {
 		t.Error("user-verify não pode estar no spec")
+	}
+}
+
+// TestSpec_ProxyBudgetAtLeastDaemonInternal trava o invariante de timeout do
+// update (B7): o orçamento do proxy (spec) deve ser ≥ o orçamento interno do
+// daemon para a mesma ação (internal/ipc.updateTimeout) — senão um update
+// lento-mas-bem-sucedido viraria "daemon indisponível" falso.
+func TestSpec_ProxyBudgetAtLeastDaemonInternal(t *testing.T) {
+	if spec, ok := SpecFor("update"); ok {
+		if spec.Timeout < updateTimeout {
+			t.Errorf("spec.update.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, updateTimeout)
+		}
+	}
+	if spec, ok := SpecFor("update-check"); ok {
+		if spec.Timeout < updateTimeout {
+			t.Errorf("spec.update-check.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, updateTimeout)
+		}
 	}
 }
 

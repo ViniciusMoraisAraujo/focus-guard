@@ -393,23 +393,26 @@ func (s *Server) handleConnection(conn net.Conn) {
 	// Roteador fino (Fase 3): ações migradas para o registry passam por
 	// registry.Get → Validate → Handle; as demais caem no switch legado até a
 	// Fase 4 migrá-las para handlers (strangler). Wire protocol inalterado.
-	updateApplied := false
-	if h, ok := s.registry.Get(req.Action); ok {
-		if err := h.Validate(&req); err != nil {
-			writeError(conn, err)
-			return
+	// Defensivo: um Server construído sem NewServer (registry nil) degrada para
+	// o dispatchLegacy em vez de panico.
+	if s.registry != nil {
+		if h, ok := s.registry.Get(req.Action); ok {
+			if err := h.Validate(&req); err != nil {
+				writeError(conn, err)
+				return
+			}
+			resp, err := h.Handle(context.Background(), &req)
+			if err != nil {
+				writeError(conn, err)
+				return
+			}
+			_ = json.NewEncoder(conn).Encode(resp)
+			return // handlers migrados nunca aplicam update — o hook fica para o legado
 		}
-		resp, err := h.Handle(context.Background(), &req)
-		if err != nil {
-			writeError(conn, err)
-			return
-		}
-		_ = json.NewEncoder(conn).Encode(resp)
-	} else {
-		var legacy Response
-		legacy, updateApplied = s.dispatchLegacy(req)
-		_ = json.NewEncoder(conn).Encode(&legacy)
 	}
+
+	legacy, updateApplied := s.dispatchLegacy(req)
+	_ = json.NewEncoder(conn).Encode(&legacy)
 
 	// Notifica o hook de restart APÓS a resposta já ter sido escrita no socket
 	// (o CLI foca no fflush antes do daemon sair do processo). O hook faz o

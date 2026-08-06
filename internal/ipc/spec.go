@@ -13,6 +13,8 @@ type Permission int
 
 const (
 	// PermPublic: no session required (health, ping, login, auth-status).
+	// Reservado para o vocabulário do enum — nenhuma ação do /api/action usa
+	// hoje (todas exigem sessão; as públicas vivem em rotas próprias do httpapi).
 	PermPublic Permission = iota
 	// PermAuthenticated: any valid session.
 	PermAuthenticated
