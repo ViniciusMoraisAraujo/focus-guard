@@ -3,7 +3,7 @@ package main
 import (
 	"context"
 	"errors"
-	"fmt"
+
 	"log"
 	"os"
 	"os/signal"
@@ -48,28 +48,16 @@ const (
 
 var updateCheckInterval = 24 * time.Hour
 
-// updateInProgressFile é a flag do Bug 2: escrita ANTES do UpdateToAll e
-// removida apenas quando a NOVA versão do daemon conclui um boot saudável.
-// Ela precisa sobreviver ao restart do próprio daemon, então não pode ser
-// removida logo após o update — é o sinal que mantém o watchdog de fora
-// durante a troca dos binários e o restart via SCM.
-const updateInProgressFile = "update.inprogress"
+// updateInProgressFile é a flag do Bug 2 — vive no internal/update
+// (InProgressFileName) com a orquestração de update (Orchestrator, B4). Este
+// alias mantém o nome histórico usado pelos testes do daemon.
+const updateInProgressFile = update.InProgressFileName
 
-// markUpdateInProgress sinaliza ao watchdog que um update está em andamento e
-// que a ausência do daemon é intencional. Best-effort: se a escrita falhar o
-// update ainda prossegue (o watchdog apenas volta a interferir).
-func markUpdateInProgress(installDir string) {
-	p := filepath.Join(installDir, updateInProgressFile)
-	if err := os.WriteFile(p, []byte(time.Now().Format(time.RFC3339)+"\n"), 0o644); err != nil {
-		log.Printf("[FocusGuard Daemon] Aviso: não foi possível criar %s: %v", p, err)
-	}
-}
-
-// clearUpdateInProgress remove a flag do Bug 2. Chamada no boot saudável da
-// nova versão e no caminho de erro (update falhou → daemon segue rodando).
-func clearUpdateInProgress(installDir string) {
-	_ = os.Remove(filepath.Join(installDir, updateInProgressFile))
-}
+// markUpdateInProgress/clearUpdateInProgress delegam ao internal/update — o
+// ciclo de vida da flag (escrever antes do swap, remover só no boot saudável
+// ou no caminho de erro) é responsabilidade do Orchestrator.
+func markUpdateInProgress(installDir string)  { update.MarkInProgress(installDir) }
+func clearUpdateInProgress(installDir string) { update.ClearInProgress(installDir) }
 
 // scheduleCheckInterval is how often the daemon re-evaluates recurring rules:
 // fine enough to start a block within a minute of its window opening, cheap
@@ -329,15 +317,17 @@ func startStatewatch(rec statewatch.Reconciler, statePath string) *statewatch.St
 	return sw
 }
 
-type updaterAPI interface {
-	CheckForUpdate(ctx context.Context) (*update.UpdateResult, error)
-	UpdateToAll(ctx context.Context, result *update.UpdateResult, binaries []string) ([]string, error)
-	SetChannel(channel string)
-	// CleanupStale varre a pasta de instalação de artefatos de updates
-	// passados (.old/.trash órfãos e .bak antigos), mantendo só o .bak mais
-	// novo por binário (o watchdog ainda precisa dele para o smart recovery).
-	CleanupStale(installDir string)
-}
+// updaterAPI é o alias da superfície exigida pela orquestração de update
+// (internal/update.UpdaterAPI) — o daemon e o Orchestrator compartilham o
+// mesmo contrato.
+type updaterAPI = update.UpdaterAPI
+
+// stopForBinarySwap é o preparo do swap (parar o serviço do watchdog + o
+// processo do tray no Windows para liberar os .exe). A implementação vive no
+// internal/update (StopForBinarySwap); este var existe para os testes do
+// daemon stubarem sem tocar em serviços/processos reais — o daemonUpdater o
+// repassa ao Orchestrator a cada chamada.
+var stopForBinarySwap = update.StopForBinarySwap
 
 type daemonUpdater struct {
 	u        updaterAPI
@@ -350,76 +340,23 @@ func (d *daemonUpdater) Check(ctx context.Context, apply bool, channel string) (
 		return st, nil
 	}
 
-	// Canal de release por request: "beta" opta por prereleases; o padrão
-	// ("" / "stable") as ignora. O updater é compartilhado entre as conexões
-	// IPC (cada uma em sua goroutine): SetChannel é atômico e a checagem usa
-	// um snapshot consistente — em flips rápidos prevalece o último canal
-	// escrito (last-writer-wins), semântica benigna e livre de data race.
-	d.u.SetChannel(channel)
+	// A orquestração completa do update (canal, flag Bug 2, preparo do swap
+	// Bug 3, UpdateToAll + CleanupStale Bug 1, fallback move-on-reboot) vive
+	// no internal/update (Orchestrator, B4) — o daemon só delega e converte o
+	// Status do domínio para o wire. O preparo do swap é o var stubbable do
+	// pacote main (stopForBinarySwap), lido aqui no momento da chamada para os
+	// stubs dos testes valerem.
+	orch := update.NewOrchestrator(d.u, d.binaries, daemonVersion)
+	orch.StopForSwap = stopForBinarySwap
 
-	res, err := d.u.CheckForUpdate(ctx)
-	if err != nil {
-		return st, err
-	}
-	if res == nil {
-		return st, nil
-	}
-
-	st.Available = true
-	st.NewVersion = res.Version
-	if apply {
-		// Bug 1 corrigido: atualiza a SUITE inteira (daemon + CLI + tray +
-		// watchdog), não só o daemon. Um update parcial quebraria o protocolo
-		// IPC (daemon novo ↔ CLI antiga). O rollback é atômico dentro do
-		// UpdateToAll; qualquer falha aqui mantém Applied=false — e portanto
-		// o daemon NÃO reinicia para um estado meio-atualizado.
-		//
-		// Bug 2: a flag de update é escrita ANTES de trocar os binários e só a
-		// nova versão a remove após um boot saudável. Sem ela, o watchdog
-		// vê o daemon fora do ar durante a troca/restart e o mata (ou desfaz
-		// o update pelo smart recovery) no meio da operação.
-		var installDir string
-		if len(d.binaries) > 0 {
-			installDir = filepath.Dir(d.binaries[0])
-			markUpdateInProgress(installDir)
-		}
-		// Bug 3 (task.md): no Windows, para o watchdog e o tray ANTES da troca
-		// para liberar os .exe — um binário em execução fica travado para
-		// rename (o erro "Acesso negado" da task.md). O restore religa o
-		// watchdog se ele estava rodando. No Linux é um no-op.
-		restoreGuards := stopForBinarySwap(d.binaries)
-		defer restoreGuards()
-
-		if _, err := d.u.UpdateToAll(ctx, res, d.binaries); err != nil {
-			if errors.Is(err, update.ErrScheduledOnReboot) {
-				// Fallback move-on-reboot: o daemon segue rodando a versão
-				// antiga e a troca completa no próximo boot — a flag não pode
-				// ficar (senão o watchdog ficaria mudo à toa) e o daemon NÃO
-				// reinicia. O watchdog é religado pelo defer do restoreGuards.
-				if installDir != "" {
-					clearUpdateInProgress(installDir)
-				}
-				st.PendingReboot = true
-				return st, nil
-			}
-			// Update falhou: o daemon segue rodando a versão antiga — a flag
-			// não pode ficar para trás, senão o watchdog ficaria mudo à toa.
-			if installDir != "" {
-				clearUpdateInProgress(installDir)
-			}
-			return st, fmt.Errorf("falha ao aplicar atualização: %w", err)
-		}
-		st.Applied = true
-		// Bug 1: o UpdateToAll devolve os backups criados, mas sem esta
-		// varredura os .bak.<timestamp> se acumulavam para sempre (um .bak
-		// por binário a cada update). CleanupStale mantém só o mais novo por
-		// binário — o watchdog ainda precisa dele caso a nova versão
-		// crash-loope antes de confirmar saúde.
-		if installDir != "" {
-			d.u.CleanupStale(installDir)
-		}
-	}
-	return st, nil
+	res, err := orch.Check(ctx, apply, channel)
+	return ipc.UpdateStatus{
+		CurrentVersion: res.CurrentVersion,
+		NewVersion:     res.NewVersion,
+		Available:      res.Available,
+		Applied:        res.Applied,
+		PendingReboot:  res.PendingReboot,
+	}, err
 }
 
 // siblingBinaries returns the paths of every FocusGuard binary expected next

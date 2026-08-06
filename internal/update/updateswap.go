@@ -1,4 +1,4 @@
-package main
+package update
 
 import (
 	"log"
@@ -17,16 +17,16 @@ const (
 	trayProcName = "focusguard-tray.exe"
 )
 
-// stopForBinarySwap para tudo que manteria um .exe travado durante a troca
-// dos binários no Windows — o serviço do watchdog (cujo binário também é
-// substituído) e o processo do tray (GUI de sessão do usuário, que não é
-// supervisionado pelo SCM e não pode ser trocado em execução) — e devolve um
-// restore que religa o watchdog se ele estava rodando. No Linux um binário em
-// execução pode ser renomeado livremente, então é um no-op. Tudo best-effort:
-// falha em parar não aborta o update (o rename retry + fallback move-on-reboot
-// cobrem o caso residual). Stubbable nos testes para não tocar em serviços ou
-// processos reais.
-var stopForBinarySwap = func(binaries []string) func() {
+// StopForBinarySwap é a implementação padrão de StopForSwap: para tudo que
+// manteria um .exe travado durante a troca dos binários no Windows — o serviço
+// do watchdog (cujo binário também é substituído) e o processo do tray (GUI de
+// sessão do usuário, que não é supervisionado pelo SCM e não pode ser trocado
+// em execução) — e devolve um restore que religa o watchdog se ele estava
+// rodando. No Linux um binário em execução pode ser renomeado livremente,
+// então é um no-op. Tudo best-effort: falha em parar não aborta o update (o
+// rename retry + fallback move-on-reboot cobrem o caso residual). Stubbable
+// nos testes para não tocar em serviços ou processos reais.
+var StopForBinarySwap StopForSwap = func(binaries []string) func() {
 	if runtime.GOOS != "windows" {
 		return func() {}
 	}
