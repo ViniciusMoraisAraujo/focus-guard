@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net"
+	"runtime"
 	"time"
 )
 
@@ -26,6 +27,15 @@ func (c *Client) SendWithTimeout(req Request, timeout time.Duration) (*Response,
 func (c *Client) sendWithDialer(req Request, dial func() (net.Conn, error), timeout time.Duration) (*Response, error) {
 	conn, err := dial()
 	if err != nil {
+		// No Linux o daemon roda como root e o socket é root:focusguard 0660
+		// (F5 do ui-plan): o erro mais comum para o usuário comum é não estar
+		// no grupo. O nome do grupo "focusguard" precisa casar com o
+		// socketGroupName (ipc_linux.go) e o setup_socket_group do
+		// scripts/install-linux.sh. O prefixo "error connecting to ipc" é
+		// preservado — testes e o CLI dependem dele.
+		if runtime.GOOS == "linux" {
+			return nil, fmt.Errorf("error connecting to ipc: %v (Linux: seu usuário precisa estar no grupo focusguard — sudo usermod -aG focusguard $USER e re-logar)", err)
+		}
 		return nil, fmt.Errorf("error connecting to ipc: %v", err)
 	}
 

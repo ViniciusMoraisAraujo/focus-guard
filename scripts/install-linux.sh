@@ -254,6 +254,28 @@ install_service() {
   echo "[FocusGuard] ✔ FocusGuard instalado e iniciado!"
 }
 
+# setup_socket_group habilita o acesso ao daemon sem sudo (F5 do ui-plan): o
+# daemon roda como root e chowna /run/focusguard.sock para root:focusguard
+# 0660. Sem o grupo, só o root (sudo) usa o CLI/tray/web. O grupo é criado se
+# faltar e o usuário que invocou o sudo é adicionado a ele — o re-login (ou
+# newgrp) é necessário para a sessão atual pegar a nova associação.
+setup_socket_group() {
+  local user
+  user="$(tray_user)"
+
+  if ! getent group focusguard >/dev/null 2>&1; then
+    echo "[FocusGuard] Criando grupo focusguard (acesso ao socket sem sudo)..."
+    groupadd --system focusguard 2>/dev/null \
+      || groupadd focusguard 2>/dev/null \
+      || { echo "[FocusGuard] Aviso: não foi possível criar o grupo focusguard. CLI/tray/web exigirão sudo." >&2; return 0; }
+  fi
+  if [[ -n "${user}" && "${user}" != "root" ]]; then
+    usermod -aG focusguard "${user}" 2>/dev/null \
+      || echo "[FocusGuard] Aviso: não foi possível adicionar ${user} ao grupo focusguard. Use: sudo usermod -aG focusguard ${user}" >&2
+  fi
+  echo "[FocusGuard] ✔ Grupo focusguard pronto. Faça logout/login (ou 'newgrp focusguard') para o CLI acessar o daemon sem sudo."
+}
+
 do_install() {
   require_root
   if ! cmd_exists systemctl; then
@@ -262,6 +284,7 @@ do_install() {
   fi
   install_binaries
   cleanup_old_layout
+  setup_socket_group
   install_service
   install_desktop_shortcut
 }
