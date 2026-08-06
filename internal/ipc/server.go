@@ -368,6 +368,41 @@ func (s *Server) Stop() error {
 	return nil
 }
 
+// Register adds (or replaces) an action handler. The composition root
+// (cmd/focusguard-daemon) uses it to wire the domain handlers; NewServer keeps
+// the server-level handlers (ping/status/tamper/services) as defaults.
+func (s *Server) Register(h Handler) {
+	if s.registry == nil {
+		s.registry = NewRegistry()
+	}
+	s.registry.Register(h)
+}
+
+// Dispatch routes one request through the registry (Get → Validate → Handle)
+// and returns the wire Response. The transport layer (handleConnection) only
+// encodes it and fires the post-response update hook. Ação desconhecida (ou
+// Server sem registry — dev build) recebe a mensagem do switch legado
+// preservada (wire protocol inalterado) com CodeUnknownAction.
+func (s *Server) Dispatch(req *Request) *Response {
+	if s.registry != nil {
+		if h, ok := s.registry.Get(req.Action); ok {
+			if err := h.Validate(req); err != nil {
+				return errorResponse(err)
+			}
+			resp, err := h.Handle(context.Background(), req)
+			if err != nil {
+				return errorResponse(err)
+			}
+			return resp
+		}
+	}
+	return &Response{
+		Success: false,
+		Code:    CodeUnknownAction,
+		Message: "Not suported action: " + req.Action,
+	}
+}
+
 func (s *Server) handleConnection(conn net.Conn) {
 	defer conn.Close()
 
@@ -381,39 +416,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Roteador: registry.Get → Validate → Handle. O switch legado foi
-	// eliminado (Fase 4) — toda ação conhecida tem handler registrado, e a
-	// desconhecida cai no 404 abaixo. Wire protocol inalterado.
-	// Defensivo: um Server construído sem NewServer (registry nil) degrada
-	// para a resposta de ação desconhecida em vez de pânico.
-	if s.registry != nil {
-		if h, ok := s.registry.Get(req.Action); ok {
-			if err := h.Validate(&req); err != nil {
-				writeError(conn, err)
-				return
-			}
-			resp, err := h.Handle(context.Background(), &req)
-			if err != nil {
-				writeError(conn, err)
-				return
-			}
-			_ = json.NewEncoder(conn).Encode(resp)
-			// Hook de restart pós-resposta (mesma ordem do legado): o update é
-			// o único handler que arma o latch — para os demais é um no-op.
-			if s.takeUpdateApplied() {
-				s.dispatchUpdateHook()
-			}
-			return
-		}
+	// Roteador: Dispatch (registry.Get → Validate → Handle). O switch legado
+	// foi eliminado (Fase 4) — toda ação conhecida tem handler registrado.
+	resp := s.Dispatch(&req)
+	_ = json.NewEncoder(conn).Encode(resp)
+	// Hook de restart pós-resposta (mesma ordem do legado): o update é o único
+	// handler que arma o latch — para os demais é um no-op.
+	if s.takeUpdateApplied() {
+		s.dispatchUpdateHook()
 	}
-
-	// Ação desconhecida (ou Server sem registry — dev build): mensagem do
-	// switch legado preservada (wire protocol inalterado).
-	_ = json.NewEncoder(conn).Encode(&Response{
-		Success: false,
-		Code:    CodeUnknownAction,
-		Message: "Not suported action: " + req.Action,
-	})
 }
 
 // normalizeUpstream validates a user-supplied upstream resolver and returns it

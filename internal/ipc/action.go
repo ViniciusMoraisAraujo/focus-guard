@@ -2,9 +2,7 @@ package ipc
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
-	"net"
 
 	"focusguard/internal/ipcerr"
 )
@@ -35,22 +33,21 @@ func Err(code, message string) *ActionError {
 	return &ActionError{Code: code, Message: message}
 }
 
-// writeError encodes an error into a Response on conn. ActionError keeps its
-// stable code; *ipcerr.Error (the shared code carried by the domain services
-// that cannot import ipc — analytics, pomodoro, schedule, tamper) is mapped to
-// the same wire shape; any other error keeps its message (success:false).
-func writeError(conn net.Conn, err error) {
+// errorResponse converts a handler error into the wire Response. ActionError
+// keeps its stable code; *ipcerr.Error (the shared code carried by the domain
+// services that cannot import ipc — analytics, pomodoro, schedule, update) is
+// mapped to the same wire shape; any other error keeps its message
+// (success:false) — behavior identical to the pre-registry switch.
+func errorResponse(err error) *Response {
 	var ae *ActionError
 	if errors.As(err, &ae) {
-		_ = json.NewEncoder(conn).Encode(&Response{Success: false, Code: ae.Code, Message: ae.Message})
-		return
+		return &Response{Success: false, Code: ae.Code, Message: ae.Message}
 	}
 	var se *ipcerr.Error
 	if errors.As(err, &se) {
-		_ = json.NewEncoder(conn).Encode(&Response{Success: false, Code: se.Code, Message: se.Message})
-		return
+		return &Response{Success: false, Code: se.Code, Message: se.Message}
 	}
-	_ = json.NewEncoder(conn).Encode(&Response{Success: false, Message: err.Error()})
+	return &Response{Success: false, Message: err.Error()}
 }
 
 // funcHandler adapts plain functions to the Handler interface — the adapter
