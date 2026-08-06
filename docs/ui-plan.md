@@ -252,7 +252,7 @@ focusguard-ui/                 # frontend React + Vite + TS
 | **F2 — UI MVP** | ✅ 2026-08-03 | Scaffold React + 4 telas + cliente API tipado + build validado |
 | **F3 — Real-time** | ✅ 2026-08-06 | **SSE** (decisão: em vez de `/ws`) — event hub no daemon + long-poll `event-subscribe` + `GET /api/events` + EventSource no frontend com fallback de polling; expiração de block/pomodoro/schedule viram eventos (refactor-plan Fase 7) |
 | **F4 — Telas restantes** | 🚧 (telas ✔, visuais em andamento) | Pomodoro visual (anel), Agenda (grade semanal), Stats (gráficos), Presets, Apps, Tamper-log — todos os dados já expostos |
-| **F5 — Linux + polimento** | ⬜ | Acesso ao socket no Linux, docs finais, release conjunta |
+| **F5 — Linux + polimento** | ✅ 2026-08-06 | Acesso ao socket no Linux por **grupo `focusguard`** (daemon chowna `/run/focusguard.sock` p/ root:focusguard 0660; install-linux.sh cria o grupo e adiciona o usuário; hint no erro do CLI), docs finais, release conjunta (web já embutido em todos os arquivos) |
 
 ---
 
@@ -289,7 +289,10 @@ focusguard-ui/                 # frontend React + Vite + TS
   `event-subscribe` + `GET /api/events` (SSE com keepalive e Last-Event-ID) +
   EventSource no `DataProvider` com fallback de polling (30s) — ver Fase 7 do
   refactor-plan.
-- ⬜ F4–F5 (roadmap acima).
+- ✅ F5 — **Linux + release conjunta** (2026-08-06): socket por grupo
+  `focusguard` (chown no `ipc_linux.go`, `setup_socket_group` no
+  install-linux.sh, hint no erro do CLI, docs no README).
+- ⬜ F4 (telas ✔, polimento visual em andamento — roadmap acima).
 
 ---
 
@@ -297,6 +300,7 @@ focusguard-ui/                 # frontend React + Vite + TS
 
 1. ~~F3~~ ✅ (SSE — refactor-plan Fase 7): expiração de block, pomodoro e
    schedule chegam por evento; o polling virou fallback.
-2. **F4:** telas de Pomodoro, Agenda, Stats, Presets, Apps, Tamper-log.
-3. **F5:** acesso ao socket no Linux (grupo/sudo), revisão final de docs,
-   release conjunta com o `focusguard-web`.
+2. ~~F5~~ ✅ (2026-08-06): socket Linux por grupo `focusguard`, docs finais e
+   release conjunta (web já embarcado em todos os arquivos).
+3. **F4:** telas de Pomodoro, Agenda, Stats, Presets, Apps, Tamper-log
+   (polimento visual).

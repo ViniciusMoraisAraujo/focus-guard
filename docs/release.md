@@ -1,7 +1,12 @@
 # Release — FocusGuard
 
-**SemVer** versioning (current: **v0.15.0**). The changelog follows **Keep a
+**SemVer** versioning (current: **v0.15.2**). The changelog follows **Keep a
 Changelog**, with dated sections and emoji categories (e.g. `### 🛡 ...`).
+
+> F5 do ui-plan (2026-08-06): a release é **conjunta** — todos os arquivos
+> Linux já carregam o `focusguard-web` (build no hook + tar.gz) e o
+> `install-linux.sh` cria o grupo `focusguard` para o acesso ao socket sem
+> sudo.
 
 ## Release checklist
 

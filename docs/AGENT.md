@@ -85,7 +85,7 @@ multi-binary auto-update with rollback.
 |---|---|---|
 | Firewall | `iptables`/`ip6tables` | `netsh advfirewall` |
 | Hosts | `/etc/hosts` | `C:\Windows\System32\drivers\etc\hosts` |
-| IPC socket | `/run/focusguard.sock` | `%PROGRAMDATA%\FocusGuard\focusguard.sock` |
+| IPC socket | `/run/focusguard.sock` (`root:focusguard` 0660 — membros do grupo `focusguard` usam sem sudo; F5 do ui-plan) | `%PROGRAMDATA%\FocusGuard\focusguard.sock` |
 | Service | systemd (unit + `NOTIFY_SOCKET` watchdog) | Native `svc` service (SCM), `sc.exe` |
 | Install path | `/opt/focusguard` (root:root) | `C:\Program Files\FocusGuard` (System / All Users) |
 | State | `/var/lib/focusguard/` | `C:\ProgramData\FocusGuard\` |

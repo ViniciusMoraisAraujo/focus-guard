@@ -166,6 +166,23 @@ sudo ./install-linux.sh uninstall
 sudo make uninstall
 ```
 
+#### Acesso ao socket (CLI/tray/web sem sudo)
+
+O daemon roda como **root** (systemd) e expõe o IPC em `/run/focusguard.sock`
+(`0660`, `root:focusguard`). Para o CLI/tray/web funcionarem **sem sudo**, o
+seu usuário precisa pertencer ao grupo **`focusguard`** — o `install-linux.sh`
+já cria o grupo e adiciona o usuário que rodou o instalador. Se você foi
+adicionado manualmente (ou em outra máquina):
+
+```bash
+sudo usermod -aG focusguard $USER
+# e faça logout/login (ou: newgrp focusguard) — o grupo só vale em sessões novas
+```
+
+Sem o grupo, os comandos falham com "Erro de comunicação" e o próprio erro
+sugere o `usermod`. O daemon segue protegido: **apenas membros do grupo (ou
+root) falam com ele** — o socket nunca é 0666.
+
 #### Manualmente
 
 ```bash
