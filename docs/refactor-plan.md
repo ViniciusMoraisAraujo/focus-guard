@@ -1,8 +1,8 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1, 2, 3, 4, 5 e 6 concluídas** (Fase 6 em 2026-08-06:
-> CLI por comando — B5) — ver seção 5; próximas: Fase 7 (eventos em tempo
-> real / `/ws`).
+> **Status:** **Fases 0, 1, 2, 3, 4, 5, 6 e 7 concluídas** (Fase 7 em 2026-08-06:
+> eventos em tempo real — event hub + SSE; Fase 6: CLI por comando — B5) — ver
+> seção 5; próxima: Fase 8 (observabilidade, opcional).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -229,7 +229,7 @@ func runDaemon(ctx context.Context) error {
 | **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
 | **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP); lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em `internal/update` (B4/B10) | Alto | médio | G |
 | **6. CLI por comando** ✅ | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
-| **7. Eventos em tempo real** | `/ws` ou SSE no lugar do polling — **depende do event hub no daemon** (F3 do ui-plan) | Médio (F5) | médio | G |
+| **7. Eventos em tempo real** ✅ | Event hub no daemon + long-poll `event-subscribe` (IPC) + SSE no `httpapi` (`/api/events`) + EventSource no frontend com fallback de polling (F5/F3) | Médio (F5) | médio | G |
 | **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
 
 **Ordem sugerida de execução:** ~~0 → 1 → 2 → 3~~ (concluídas) → 4 (começando
@@ -1016,9 +1016,59 @@ Validação: `go build`/`vet` verdes, suíte Go completa verde,
 `contract-check` em dia, `gofmt` limpo (novos arquivos). Commits:
 - `refactor(cli): split main.go into one file per command with a table (B5)`
 
+### Fase 7 — Eventos em tempo real (✅ concluída em 2026-08-06)
+
+Polling do frontend (10s status/presets, 60s stats) → **eventos**: o daemon
+publica mudanças de estado coarse e o web as entrega ao browser via SSE.
+
+1. **`internal/eventhub`** (novo): `Hub` com ring buffer (64) + `Publish`/
+   `Wait(ctx, since)` long-poll. Eventos são coarse e sem payload (o estado do
+   daemon é a fonte da verdade — o subscriber re-busca o dado afetado). Um
+   subscriber que reconecta pega do ring o que perdeu.
+2. **IPC**: `ipc.Event{type, at}` + tokens `EventBlocksChanged`/
+   `EventPomodoroChanged`/`EventPomodoroComplete`/`EventScheduleChanged`;
+   `Request.Since`/`Response.Rev`/`Response.Events`; ação `event-subscribe`
+   (spec `PermAuthenticated`, Timeout 30s ≥ orçamento interno de 20s);
+   `Server.SetEventHub`. Handler default: hub não configurado → erro estável
+   (`CodeNotConfigured`).
+3. **Pontos de publish**: `scheduler.SetOnChange` (Block/ExtendBlock/
+   BlockDomains/BlockAllInternet/onExpire/Reconcile + `SetDNSEnabled`/
+   `SetDNSUpstream` — ajustes visíveis no status, fecham o gap do DNS apontado
+   no review); `pomodoro.SetOnChange` (start/phase/conclusão, fora do lock) +
+   `watchPomodoroCompletions` ganhou o 3º param `onComplete`
+   (`pomodoro-complete`); `schedule.SetOnChange` (Add/Remove — notifica fora
+   do lock, sem deadlock).
+4. **`httpapi`**: `GET /api/events` (SSE, `requireAuth`, gzip desabilitado no
+   stream) faz long-poll no `event-subscribe` (timeout = `spec.Timeout` + 5s),
+   escreve cada evento como `event: <type>` + `id: <rev>`, keepalive comentado
+   no ciclo quieto, `event: error` + close quando o daemon cai. Na reconexão o
+   `Last-Event-ID` do browser vira o `since` (sem re-entrega do ring).
+5. **Frontend** (`data-context`): autenticado, abre o `EventSource` em
+   `/api/events`; `blocks-changed`/`pomodoro-changed` → `refresh()`;
+   `pomodoro-complete` → `refresh()` + `reloadStats()`. Polling de
+   status/presets (10s) **removido**; fallback de 30s liga no `onerror` do SSE
+   e desliga no reconectar; stats mantém o baseline de 60s. `schedule-changed`
+   não tem listener no provider (não guarda schedules — Agenda busca no
+   mount); o daemon continua publicando (contrato p/ CLI/tray).
+6. **Codegen**: `ipc.Event` entrou nos targets — `types.ts` regenerado
+   (`make contract`).
+
+Decisões: **SSE no lugar de `/ws`** (stdlib, sem nova dependência; EventSource
+reconecta sozinho e carrega o cookie de sessão); o web é o ÚNICO subscriber do
+hub (uma conexão por aba — o daemon bloqueia o long-poll, não há fan-out
+grande). Gap documentado: mutações fora de blocks/pomodoro/schedule/DNS
+(`goal-set`, `apps-*`, `preset-*`, `user-*`) não publicam evento — as telas
+que as disparam refrescam no próprio fluxo; outro cliente (CLI) numa aba
+aberta pode ficar stale até o próximo evento (o polling antigo mascarava).
+
+Validação: suíte Go completa, `contract-check`, `tsc --noEmit`, vitest 22/22 —
+verdes (o `TestWatchFsEvents_*` do statewatch é flake pré-existente de timing
+do fsnotify — passa isolado). Commits:
+- `feat(eventhub): add daemon event hub with long-poll event-subscribe (Fase 7)`
+
 ### Próximo passo
 
-1. **Fase 7 — Eventos em tempo real**: `/ws` ou SSE no lugar do polling do
-   frontend (F5) — **depende do event hub no daemon** (ver seção 5).
+1. **Fase 8 — Observabilidade** (opcional): métricas de latência por ação
+   IPC/HTTP, logs estruturados leves (C3).
 2. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
    cortar release entre fases.

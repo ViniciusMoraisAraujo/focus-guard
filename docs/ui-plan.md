@@ -250,7 +250,7 @@ focusguard-ui/                 # frontend React + Vite + TS
 |---|---|---|
 | **F1 — Fundação** | ✅ 2026-08-03 | `internal/httpapi` + `cmd/focusguard-web` + `focusguard web` + `make ui` + goreleaser/installers |
 | **F2 — UI MVP** | ✅ 2026-08-03 | Scaffold React + 4 telas + cliente API tipado + build validado |
-| **F3 — Real-time** | ⬜ | `/ws` com eventos (block expirou, pomodoro, schedule) — precisa de event hub no daemon |
+| **F3 — Real-time** | ✅ 2026-08-06 | **SSE** (decisão: em vez de `/ws`) — event hub no daemon + long-poll `event-subscribe` + `GET /api/events` + EventSource no frontend com fallback de polling; expiração de block/pomodoro/schedule viram eventos (refactor-plan Fase 7) |
 | **F4 — Telas restantes** | 🚧 (telas ✔, visuais em andamento) | Pomodoro visual (anel), Agenda (grade semanal), Stats (gráficos), Presets, Apps, Tamper-log — todos os dados já expostos |
 | **F5 — Linux + polimento** | ⬜ | Acesso ao socket no Linux, docs finais, release conjunta |
 
@@ -285,13 +285,18 @@ focusguard-ui/                 # frontend React + Vite + TS
   `siblingBinaries`, `.gitignore`.
 - ✅ Smoke test real: servidor servindo a UI, `/api/action` devolvendo status
   do daemon ao vivo, 415/403/headers de segurança confirmados.
-- ⬜ F3–F5 (roadmap acima).
+- ✅ F3 — **SSE real-time** (2026-08-06): `internal/eventhub` + ação IPC
+  `event-subscribe` + `GET /api/events` (SSE com keepalive e Last-Event-ID) +
+  EventSource no `DataProvider` com fallback de polling (30s) — ver Fase 7 do
+  refactor-plan.
+- ⬜ F4–F5 (roadmap acima).
 
 ---
 
 ## 11. Próximos passos
 
-1. **F3:** event hub no daemon + `/ws` (push de expiração, pomodoro, schedule).
+1. ~~F3~~ ✅ (SSE — refactor-plan Fase 7): expiração de block, pomodoro e
+   schedule chegam por evento; o polling virou fallback.
 2. **F4:** telas de Pomodoro, Agenda, Stats, Presets, Apps, Tamper-log.
 3. **F5:** acesso ao socket no Linux (grupo/sudo), revisão final de docs,
    release conjunta com o `focusguard-web`.

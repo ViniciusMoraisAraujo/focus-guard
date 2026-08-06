@@ -170,6 +170,7 @@ implementation details belong in code comments, not here.
 | `daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
 | `dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
 | `enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
+| `eventhub` | In-process event pub/sub (ring buffer + long-poll `Wait`) — daemon state changes |
 | `filelog` | Shared file logging (append + rotation) next to the executable |
 | `fsutil` | Filesystem helpers shared by the watchers |
 | `goal` | Daily focus goal |
@@ -420,6 +421,12 @@ confirm the version/tag with the person before pushing the tag
 - **`focusguard-web` is user-space** — never add a manifest/admin to it;
   the daemon is the only privileged process. Web only proxies via
   `ipc.Client`.
+- **Real-time events** — the daemon publishes coarse state changes on
+  `internal/eventhub` (`scheduler`/`pomodoro`/`schedule`/`watchPomodoroCompletions`
+  hooks); the web relays the `event-subscribe` long-poll over SSE
+  (`GET /api/events`) and the UI refreshes the affected data. New event type =
+  `ipc.Event*` constant + publish point + frontend listener (regenerate
+  `types.ts` via `make contract` if the wire type changes).
 - **Port 48902** — `httpapi.DefaultAddr` is the single source of truth
   (server + CLI probe); don't scatter the port across literals.
 - **`git status` before committing** — `.syso`, `focusguard.ico/.png`, and
