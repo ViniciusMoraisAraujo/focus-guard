@@ -12,12 +12,16 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 
 ## Mapa dos pacotes
 
+> Pacotes sob `domain/` são regra de negócio; os demais vivem flat em
+> `internal/` (o split em camadas está em andamento — `docs/reorg-plan.md`
+> Fase C: C1 concluída, C2–C7 pendentes).
+
 | Pacote | Responsabilidade |
 |---|---|
-| `analytics` | Histórico JSONL de sessões; streak, stats, exports CSV/JSON/HTML |
-| `apps` | Denylist de processos (apps.json) p/ o process guard; fallback `steam, discord` |
+| `domain/analytics` | Histórico JSONL de sessões; streak, stats, exports CSV/JSON/HTML |
+| `domain/apps` | Denylist de processos (apps.json) p/ o process guard; fallback `steam, discord` |
 | `autostart` | Serviço (`sc`/systemd), autostart do tray (HKCU Run / XDG), atalho desktop + `ExtractIcon` |
-| `blocks` | Handlers de domínio das ações `block`/`block-all` (`Blocker`/`Catalog`) |
+| `domain/blocks` | Handlers de domínio das ações `block`/`block-all` (`Blocker`/`Catalog`) |
 | `daemon` | Ciclo de vida do daemon: `Run(ctx) error` + shutdown ordenado (B10) |
 | `dns` | Handlers de domínio do sinkhole DNS (`start`/`stop`/`status`/`set-upstream`) |
 | `dnsserver` | Sinkhole DNS embutido (porta 53, miekg/dns) + forward de upstream |
@@ -25,28 +29,28 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 | `eventhub` | Pub/sub de eventos em processo (ring buffer + long-poll `Wait`) — mudanças de estado |
 | `filelog` | Log de arquivo compartilhado (append + rotação) ao lado do executável |
 | `fsutil` | SHA-256 de arquivo (watchers) |
-| `goal` | Meta diária (goal.json) |
+| `domain/goal` | Meta diária (goal.json) |
 | `hostswatch` | Watcher do `hosts`: fsnotify + hash anti-loop; detecta/reverte adulterações |
 | `httpapi` | HTTP da UI: proxy IPC + estático + guardas localhost (Host, Content-Type, CSP) |
-| `icon` | Renderiza `img/focusguard.png` em qualquer tamanho; `GenerateICO`/`GeneratePNG` |
+| `icon` | Renderiza `packaging/artwork/focusguard.png` em qualquer tamanho; `GenerateICO`/`GeneratePNG` |
 | `ipc` | Protocolo JSON sobre socket; `SendWithTimeout`; server/handlers |
 | `ipcerr` | Códigos de erro estáveis do IPC (`Error`) — espelho de `internal/ipc/codes.go`, aditivo |
 | `metrics` | Registry de latência por ação (ring + percentis) — IPC do daemon e proxy web |
-| `policy` | Modelo `Block` (`IsActive`, `CanUnblock`, `RemainingTime`) |
-| `pomodoro` | Sessões work/rest/cycles; prefs persistidas; resumo pós-sessão |
-| `preset` | Catálogo builtin (social/video/news/games) + personalizados |
-| `presets` | Handlers de domínio do catálogo de presets (list/add/remove) |
+| `domain/policy` | Modelo `Block` (`IsActive`, `CanUnblock`, `RemainingTime`) |
+| `domain/pomodoro` | Sessões work/rest/cycles; prefs persistidas; resumo pós-sessão |
+| `domain/preset` | Catálogo builtin (social/video/news/games) + personalizados |
+| `domain/presets` | Handlers de domínio do catálogo de presets (list/add/remove) |
 | `processguard` | Encerra processos da denylist a cada 5s durante sessão ativa |
-| `recovery` | Smart Recovery: `FindRecentBackup`, `ShouldRollBack`, `RestoreFromBackup` |
-| `schedule` | Regras recorrentes (dias/horários, janelas overnight, import iCal); worker 30s |
-| `scheduler` | Ciclo de vida dos bloqueios: `Block`, `Reconcile`, expiração, refresh de IPs (15min) |
+| `domain/recovery` | Smart Recovery: `FindRecentBackup`, `ShouldRollBack`, `RestoreFromBackup` |
+| `domain/schedule` | Regras recorrentes (dias/horários, janelas overnight, import iCal); worker 30s |
+| `domain/scheduler` | Ciclo de vida dos bloqueios: `Block`, `Reconcile`, expiração, refresh de IPs (15min) |
 | `statewatch` | Watcher do `state.json`: restaura o disco a partir da RAM |
 | `store` | Persistência JSON atômica + réplica AES-256-GCM atrelada ao hardware |
 | `tamper` | Log JSONL append-only de burlas detectadas/revertidas |
 | `tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
 | `update` | Auto-update multi-binário atômico (`UpdateToAll`) com rollback |
-| `user` | Armazenamento de contas/senhas (usuário admin, hash) |
-| `users` | Handlers de domínio de usuários (add/remove/verify/set-password) |
+| `domain/user` | Armazenamento de contas/senhas (usuário admin, hash) |
+| `domain/users` | Handlers de domínio de usuários (add/remove/verify/set-password) |
 | `watchdog` | Health check systemd (`NOTIFY_SOCKET`) |
 
 ## Regras específicas

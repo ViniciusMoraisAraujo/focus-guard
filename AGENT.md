@@ -160,14 +160,16 @@ Web (focusguard-web) ────┘                                        │
 ### Internal packages (`internal/`) — quick map
 
 Every package has a dedicated test (`*_test.go` in the same directory);
-implementation details belong in code comments, not here.
+implementation details belong in code comments, not here. Packages under
+`domain/` are business logic; the rest live flat under `internal/` (the
+layered split is in progress — `docs/reorg-plan.md` Fase C).
 
 | Package | One-liner |
 |---|---|
-| `analytics` | Session history (JSONL), streaks, stats, export, report |
-| `apps` | Process denylist for the process guard |
+| `domain/analytics` | Session history (JSONL), streaks, stats, export, report |
+| `domain/apps` | Process denylist for the process guard |
 | `autostart` | Installs/removes the service + tray autostart + desktop shortcut |
-| `blocks` | Domain handlers for the `block`/`block-all` actions (`Blocker`/`Catalog`) |
+| `domain/blocks` | Domain handlers for the `block`/`block-all` actions (`Blocker`/`Catalog`) |
 | `daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
 | `dns` | Domain handlers for the DNS sinkhole (`start`/`stop`/`status`/`set-upstream`) |
 | `dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
@@ -175,28 +177,28 @@ implementation details belong in code comments, not here.
 | `eventhub` | In-process event pub/sub (ring buffer + long-poll `Wait`) — daemon state changes |
 | `filelog` | Shared file logging (append + rotation) next to the executable |
 | `fsutil` | Filesystem helpers shared by the watchers |
-| `goal` | Daily focus goal |
+| `domain/goal` | Daily focus goal |
 | `hostswatch` | Detects/reverts tampering of `hosts` |
 | `httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
 | `icon` | Generates `.ico`/`.png` from the canonical artwork |
 | `ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
 | `ipcerr` | Stable IPC error codes (`Error`) — mirror of `internal/ipc/codes.go`, additive-only |
 | `metrics` | Per-action latency registry (ring + percentiles) — daemon IPC and web proxy |
-| `policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
-| `pomodoro` | Work/rest/cycle sessions |
-| `preset` | Catalog of block categories (builtin + custom) |
-| `presets` | Domain handlers for the preset catalog actions (list/add/remove) |
+| `domain/policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
+| `domain/pomodoro` | Work/rest/cycle sessions |
+| `domain/preset` | Catalog of block categories (builtin + custom) |
+| `domain/presets` | Domain handlers for the preset catalog actions (list/add/remove) |
 | `processguard` | Kills denylisted processes during an active session |
-| `recovery` | Smart Recovery: detects and reverts a broken update |
-| `schedule` | Recurring block scheduling |
-| `scheduler` | Block lifecycle (source of truth in RAM) |
+| `domain/recovery` | Smart Recovery: detects and reverts a broken update |
+| `domain/schedule` | Recurring block scheduling |
+| `domain/scheduler` | Block lifecycle (source of truth in RAM) |
 | `statewatch` | Detects/reverts tampering of `state.json` |
 | `store` | Atomic JSON persistence + encrypted replicas |
 | `tamper` | Append-only log of tampering attempts |
 | `tray` | System tray icon controller |
 | `update` | Atomic multi-binary auto-update, with daemon restart |
-| `user` | User accounts/password store (admin user, hashing) |
-| `users` | Domain handlers for user management (add/remove/verify/set-password) |
+| `domain/user` | User accounts/password store (admin user, hashing) |
+| `domain/users` | Domain handlers for user management (add/remove/verify/set-password) |
 | `watchdog` | systemd health check (`NOTIFY_SOCKET`) |
 
 ---
@@ -311,6 +313,7 @@ go test ./... -count=1 -timeout=60s   # make test
 │   ├── focusguard-tray/        # systray (+ icon-only versioninfo.json)
 │   └── focusguard-watchdog/    # health-check / Smart Recovery (+ versioninfo.json with icon)
 ├── internal/                   # 34 packages (see the map in section 3)
+│   ├── domain/                 # business logic (13 packages — Fase C1)
 └── scripts/
     ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
     ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart)

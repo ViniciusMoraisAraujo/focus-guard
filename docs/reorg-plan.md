@@ -1,9 +1,10 @@
 # Plano — Reorganização de Diretórios e Arquitetura
 
-> **Status:** documento vivo — **Fases A e B concluídas** (2026-08-06); Fases
-> C–D pendentes. **Criado em 2026-08-06.** Escopo escolhido: **todas as 3
-> frentes** — (A) organização de docs, (B) assets de build em diretório
-> próprio, (C) `internal/` agrupado em camadas.
+> **Status:** documento vivo — **A, B e C1 concluídas; Fase D (validação
+> checkpoint pós-C1) concluída** (2026-08-06); **C2–C7 pendentes**. **Criado em
+> 2026-08-06.** Escopo escolhido: **todas as 3 frentes** — (A) organização de
+> docs, (B) assets de build em diretório próprio, (C) `internal/` agrupado em
+> camadas.
 
 ## Diagnóstico (estado atual)
 
@@ -195,22 +196,28 @@ focusguard/
 > primeiro), um commit por camada, compilando a cada passo. NUNCA mover tudo de
 > uma vez.
 
-1. **C1 — Folhas e domínio puro** → `internal/domain/`: `policy`, `preset`,
-   `goal`, `analytics`, `pomodoro`, `schedule`, `scheduler`, `recovery`,
-   `user`, `apps`, `blocks`, `presets`, `users` (ajustar paths no
-   `gen-contract` à medida que cada struct do contrato mudar de pasta).
-2. **C2 — Infraestrutura** → `internal/infrastructure/`: `fsutil`, `store`,
-   `tamper`, `enforcer`, `hostswatch`, `statewatch`, `processguard`,
+1. ✅ **C1 — Folhas e domínio puro** → `internal/domain/` (commit `7fc690a`):
+   `policy`, `preset`, `goal`, `analytics`, `pomodoro`, `schedule`,
+   `scheduler`, `recovery`, `user`, `apps`, `blocks`, `presets`, `users`;
+   imports reescritos por sed (word-boundary) e paths do `gen-contract`
+   atualizados (policy/preset/pomodoro/analytics/schedule). `go build`,
+   `go vet`, testes e `contract-check` verdes. Fio solto documentado:
+   `goal/apps/blocks/presets/users → ipc` (handlers usam tipos do transport)
+   — limpeza separada, **não** no meio da migração.
+2. **C2 — Infraestrutura** (pendente) → `internal/infrastructure/`: `fsutil`,
+   `store`, `tamper`, `enforcer`, `hostswatch`, `statewatch`, `processguard`,
    `dnsserver`, `dns`, `autostart`, `filelog`, `icon`, `update`.
-3. **C3 — Transport** → `internal/transport/`: `ipcerr`, `ipc`, `metrics`,
-   `eventhub`, `httpapi`.
-4. **C4 — System** → `internal/system/`: `daemon`, `tray`, `watchdog`.
-5. **C5 — `cmd/*`**: atualizar todos os imports para os novos paths.
-6. **C6 — Ferramentas**: `scripts/gen-contract/main.go` (paths do contrato),
-   `scripts/verifyicon` (se usa `internal/tray`), `Makefile` (targets que
-   referenciam `internal/...`), `.goreleaser.yaml` (main paths dos builds).
-7. **C7 — Docs**: reescrever mapas no `AGENT.md`, `internal/AGENT.md`,
-   `cmd/AGENT.md`, `docs/README` se existir.
+3. **C3 — Transport** (pendente) → `internal/transport/`: `ipcerr`, `ipc`,
+   `metrics`, `eventhub`, `httpapi`.
+4. **C4 — System** (pendente) → `internal/system/`: `daemon`, `tray`,
+   `watchdog`.
+5. **C5 — `cmd/*`** (pendente): atualizar todos os imports para os novos paths.
+6. **C6 — Ferramentas** (pendente): `scripts/gen-contract/main.go` (paths do
+   contrato), `scripts/verifyicon` (se usa `internal/tray`), `Makefile`
+   (targets que referenciam `internal/...`), `.goreleaser.yaml` (main paths
+   dos builds).
+7. **C7 — Docs** (pendente): reescrever mapas no `AGENT.md`,
+   `internal/AGENT.md`, `cmd/AGENT.md`, `docs/README` se existir.
 
 - **Ferramentas de migração:** `git mv` para preservar histórico; sed para
   reescrever imports (`s|focusguard/internal/<pkg>|focusguard/internal/<camada>/<pkg>|g`);
@@ -222,12 +229,24 @@ focusguard/
   necessários ou herança dos testes de referência (fio solto da Fase 4 —
   candidato a limpeza separada, **não** no meio da migração).
 
-### Fase D — Validação final e release
+### Fase D — Validação final e release — ✅ concluída como **checkpoint pós-C1** (2026-08-06)
 
-1. Suíte completa 2× (Go + frontend) + `goreleaser check` + `make ui`.
-2. Smoke test de build: `make build` (todos os binários) e `make msi` (se o
-   host tiver WiX) para provar que packaging/ e os novos imports fecham.
-3. Commit final + (opcional) tag de release seguinte.
+> Como a C2–C7 ainda não rodou, a Fase D validou o estado atual (A + B + C1)
+> como checkpoint; re-executar após a C7 para a validação definitiva.
+
+1. ✅ Suíte Go completa 2× (`go build` + `go vet` + testes não-admin, 2
+   passes verdes) + `contract-check` em dia; frontend `npm ci` + `tsc --noEmit`
+   + `vitest run` (22 testes) + `npm run build` (bundle determinístico).
+   Nota: um `go test` falhou uma vez por corrida com o `npm ci` paralelo
+   (node_modules em transformação + cleanup flaky de TempDir no Windows) —
+   passou nos 2 passes subsequentes sem concorrência.
+2. ✅ Smoke de build: 5 binários Windows compilados (`bin/`) + MSIs desktop e
+   Server regenerados em `dist/` (go-msi + WiX com os paths de `packaging/` e
+   os novos imports de `internal/domain/`); `goreleaser check` validou o
+   `.goreleaser.yaml`.
+3. ✅ Docs sincronizados (mapa de pacotes com `domain/` em `AGENT.md` e
+   `internal/AGENT.md`) e commit final do checkpoint. Tag de release seguinte:
+   pendente (não pedida).
 
 ---
 
