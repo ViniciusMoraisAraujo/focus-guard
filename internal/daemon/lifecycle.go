@@ -12,6 +12,7 @@ package daemon
 
 import (
 	"context"
+	"errors"
 	"log"
 	"os"
 	"os/signal"
@@ -78,6 +79,12 @@ func New(deps Deps) *Daemon { return &Daemon{deps: deps} }
 // server fails, then tears everything down in reverse order. It returns the
 // server error on failure and nil on a clean shutdown.
 func (d *Daemon) Run(ctx context.Context) error {
+	// Sem servidor IPC não há o que servir — o contrato do Deps exige um; o
+	// guard é para o erro ser tratável (e não um panic dentro da goroutine).
+	if d.deps.Server == nil {
+		return errors.New("daemon: IPC server not wired (Deps.Server is nil)")
+	}
+
 	started := 0
 	for _, c := range d.deps.Components {
 		if err := c.Start(); err != nil {

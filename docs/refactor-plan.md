@@ -1,7 +1,8 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1, 2, 3, 4 e 5 concluídas** (Fase 5 em 2026-08-06) — ver seção 5;
-> próximas: lifecycle do daemon (`internal/daemon` + `Run(ctx)`) e Fase 6 (CLI por comando).
+> **Status:** **Fases 0, 1, 2, 3, 4 e 5 concluídas** (Fase 5 em 2026-08-06, incl.
+> lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em
+> `internal/update` — B4/B10) — ver seção 5; próximas: Fase 6 (CLI por comando).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -16,6 +17,9 @@
 > **Revisão (2026-08-06):** execução da Fase 5 (composition root: handlers de
 > domínio registrados no daemon; `ipc.Server` vira transport — B3/B4-parcial) —
 > ver seção 5 e 9.
+> **Revisão (2026-08-06):** execução do restante da Fase 5 (lifecycle
+> `internal/daemon` + `Run(ctx)` e orquestração de update em
+> `internal/update.Orchestrator` — B4/B10) — ver seção 5 e 9.
 > Escopo: visão completa (backend Go + frontend React + contrato IPC), com
 > fases priorizadas por impacto × risco. Nenhum código foi alterado para
 > produzir este documento; os números vêm de leitura do estado atual do repo
@@ -222,7 +226,7 @@ func runDaemon(ctx context.Context) error {
 | **2. Frontend — contrato assistido** ✅ | Codegen Go→TS (`make contract` + checagem no CI) + códigos de erro aditivos (`Response.Code`) | Alto (F2/B12/C1) | baixo (aditivo, retrocompat) | M |
 | **3. Registry de ações** ✅ | `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`spec.go`); `ipc.Server` vira roteador (registry-first + fallback legado); `httpapi` consome `SpecFor` (B2/B6/B7) | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
 | **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
-| **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP). Falta o lifecycle (`internal/daemon` + `Run(ctx)`, B4/B10) | Alto | médio | G |
+| **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP); lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em `internal/update` (B4/B10) | Alto | médio | G |
 | **6. CLI por comando** | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
 | **7. Eventos em tempo real** | `/ws` ou SSE no lugar do polling — **depende do event hub no daemon** (F3 do ui-plan) | Médio (F5) | médio | G |
 | **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
@@ -943,14 +947,38 @@ handlers vivem nos pacotes de domínio e o daemon os registra no boot:
    - `test(ipc): wire real domain handlers with the router (external test)`
    - `fix(daemon): always register apps handlers so boot validation passes`
    - `test(ipc): dispatch all 19 domain actions through the real router`
+6. **Lifecycle do daemon (B10)** — `internal/daemon` (novo): `Deps{Server,
+   Components, Stop, CanStop}` + `Daemon.Run(ctx) error` com boot ordenado
+   (componentes em ordem) e shutdown ordenado (ordem inversa — os defers
+   implícitos viram teardown explícito e testável). Sinais (SIGINT/SIGTERM) e
+   a parada do serviço (`serviceStopCh`) são tratados dentro do `Run`: a
+   parada só é honrada quando `CanStop` (sem bloqueios/sessão ativos) — com
+   bloqueios ativos o pedido é ignorado e a proteção continua; cancelamento de
+   ctx é shutdown incondicional. Testes com fakes (ordem start/stop, erro de
+   servidor, abort de boot, gate CanStop, ctx).
+7. **Orquestração de update (B4)** — o antigo `daemonUpdater.Check` do main
+   virou `internal/update.Orchestrator` (testável sem shell elevado): flag
+   `update.inprogress` (Bug 2), preparo do swap `StopForBinarySwap` (Bug 3,
+   movido de `updateswap.go`), `UpdateToAll` + `CleanupStale` (Bug 1) e o
+   fallback `PendingReboot`. O `daemonUpdater.Check` do daemon só delega e
+   converte `update.Status` → wire. O `Orchestrator` satisfaz `update.Checker`.
+8. **`runDaemon` delegou para `daemon.New(deps).Run(ctx)`**: a goroutine de
+   sinais e o `serverErr` manual saíram; os defers viraram componentes
+   `StopOnly` na ordem exata (pprof → hw → sw → pg → dns → pomo → schedule →
+   update, teardown inverso 1:1); o boot saudável (remoção da flag Bug 2)
+   virou o `Start` do adaptador `ipcServerLifecycle`; falhas pré-Run usam
+   `stopLifecycleComponents`. Validação: `go build`/`vet`, suíte interna
+   verde, `internal/update` + `internal/daemon` (novos testes) verdes,
+   `contract-check` em dia, `tsc` + vitest 19/19. Commits:
+   - `refactor(update): extract daemon update orchestration into an Orchestrator (B4)`
+   - `feat(daemon): add lifecycle package with Run(ctx) and ordered shutdown (B10)`
+   - `refactor(daemon): delegate runDaemon to the daemon lifecycle (B10)`
 
 ### Próximo passo
 
-1. **Lifecycle do daemon (restante da Fase 5 do plano — B4/B10/B8)**: extrair
-   `internal/daemon` com `Run(ctx) error` e shutdown ordenado; mover a
-   orquestração de update (`daemonUpdater`/flag/stop de guards) para
-   `internal/update`. Com ele, `SetApps`/`SetUsers`/`SetOnDNSStarted` (hoje só
-   usados pelos adapters de referência dos testes) podem ser removidos.
+1. **Limpeza dos `Set*` mortos** — com o lifecycle extraído,
+   `SetApps`/`SetUsers`/`SetOnDNSStarted` (hoje só usados pelos adapters de
+   referência dos testes) podem ser removidos do `ipc.Server`.
 2. **Fase 6 — CLI por comando**: `cmd/focusguard/main.go` → `commands/` com um
    arquivo por comando + tabela (B5).
 3. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for

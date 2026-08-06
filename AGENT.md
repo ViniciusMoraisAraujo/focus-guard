@@ -164,6 +164,7 @@ implementation details belong in code comments, not here.
 | `analytics` | Session history (JSONL), streaks, stats, export, report |
 | `apps` | Process denylist for the process guard |
 | `autostart` | Installs/removes the service + tray autostart + desktop shortcut |
+| `daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
 | `dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
 | `enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
 | `filelog` | Shared file logging (append + rotation) next to the executable |
