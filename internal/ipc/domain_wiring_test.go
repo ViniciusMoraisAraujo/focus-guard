@@ -215,6 +215,52 @@ func TestDomainWiring_ComposesWithRouter(t *testing.T) {
 	}
 }
 
+// TestDomainWiring_AllActionsDispatch dispara TODAS as 19 ações de domínio
+// contra o roteador real (handlers de produção), prendendo o shape do wire de
+// cada família — a rede de segurança contra drift entre os adapters de
+// referência (testes internos) e os handlers reais (daemon).
+func TestDomainWiring_AllActionsDispatch(t *testing.T) {
+	s, blk, _ := composeTestServer(t)
+
+	now := time.Now()
+	blk.block = &policy.Block{Domain: "x.com", StartedAt: now, ExpiresAt: now.Add(time.Hour)}
+
+	cases := []struct {
+		name   string
+		req    ipc.Request
+		wantOK bool
+	}{
+		{name: "block", req: ipc.Request{Action: "block", Domain: "x.com", Duration: "1h"}, wantOK: true},
+		{name: "block-all", req: ipc.Request{Action: "block-all", Duration: "1h"}, wantOK: true},
+		{name: "presets", req: ipc.Request{Action: "presets"}, wantOK: true},
+		{name: "preset-add", req: ipc.Request{Action: "preset-add", PresetName: "meu", PresetDomains: []string{"a.com"}}, wantOK: true},
+		{name: "preset-remove", req: ipc.Request{Action: "preset-remove", PresetName: "meu"}, wantOK: true},
+		{name: "apps-list", req: ipc.Request{Action: "apps-list"}, wantOK: true},
+		{name: "apps-add", req: ipc.Request{Action: "apps-add", AppName: "steam.exe"}, wantOK: true},
+		{name: "apps-remove", req: ipc.Request{Action: "apps-remove", AppName: "steam.exe"}, wantOK: true},
+		{name: "goal-get", req: ipc.Request{Action: "goal-get"}, wantOK: true},
+		{name: "goal-set", req: ipc.Request{Action: "goal-set", GoalMinutes: 60}, wantOK: true},
+		{name: "user-list", req: ipc.Request{Action: "user-list"}, wantOK: true},
+		{name: "user-add", req: ipc.Request{Action: "user-add", UserName: "maria", UserPassword: "senha-forte-1"}, wantOK: true},
+		{name: "user-verify-ok", req: ipc.Request{Action: "user-verify", UserName: "maria", UserPassword: "senha-forte-1"}, wantOK: true},
+		{name: "user-set-password", req: ipc.Request{Action: "user-set-password", UserName: "maria", UserPassword: "nova-senha-123"}, wantOK: true},
+		{name: "user-remove", req: ipc.Request{Action: "user-remove", UserName: "maria"}, wantOK: true},
+		{name: "user-verify-fail", req: ipc.Request{Action: "user-verify", UserName: "maria", UserPassword: "senha-forte-1"}, wantOK: false},
+		{name: "dns-start", req: ipc.Request{Action: "dns-start"}, wantOK: true},
+		{name: "dns-stop", req: ipc.Request{Action: "dns-stop"}, wantOK: true},
+		{name: "dns-status", req: ipc.Request{Action: "dns-status"}, wantOK: true},
+		{name: "dns-set-upstream", req: ipc.Request{Action: "dns-set-upstream", Upstream: "9.9.9.9"}, wantOK: true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			resp := s.Dispatch(&tc.req)
+			if resp.Success != tc.wantOK {
+				t.Fatalf("%s: success=%v msg=%q", tc.name, resp.Success, resp.Message)
+			}
+		})
+	}
+}
+
 // TestDomainWiring_NoStoreFailsAsLegacy verifica que os handlers de domínio
 // reproduzem os erros "não configurado" do switch legado (store ausente),
 // fechando o comportamento que os adapters de referência também testam.
