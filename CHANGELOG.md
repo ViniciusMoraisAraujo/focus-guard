@@ -5,6 +5,34 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.16.1] - 2026-08-06
+
+### 🪟 Windows
+
+- **Atalho no desktop para a edição Server** — o instalador
+  `focusguard-server-*.msi` agora também cria o atalho "FocusGuard Server" na
+  Área de Trabalho (antes só no Menu Iniciar), apontando para o
+  `focusguard.exe`, que abre a interface web.
+
+### 🐛 Correções
+
+- **Interface web com a tela de login nas instalações** — os pacotes .msi
+  gerados localmente embutiam um bundle antigo (anterior à autenticação), que
+  abria o painel sem pedir login e mostrava "daemon desligado" mesmo com o
+  serviço ativo. Os instaladores agora embutem a UI atual (com o fluxo de
+  login).
+
+### 📝 Documentação
+
+- **Plano de caça a bugs pós-refatoração** — `docs/bug-hunt-plan.md`, com 9
+  etapas progressivas (contrato IPC → roteador → concorrência → domínios →
+  HTTP/SSE → frontend → plataforma → fuzz/E2E) e critérios de saída por etapa.
+- **Plano de reorganização de diretórios/arquitetura** — `docs/reorg-plan.md`,
+  com as 3 frentes (docs/archive, `internal/` em camadas, `packaging/`),
+  pontos de ruptura mapeados e fases A→D.
+- **Docs antigos da raiz removidos** (`task.md`, `follow-up-v0.15.1.md`,
+  `plan-new-ui-and-user.md`, `AGENTS.md`) — conteúdo absorvido por `docs/`.
+
 ## [0.16.0] - 2026-08-06
 
 ### ✨ Novas funcionalidades
