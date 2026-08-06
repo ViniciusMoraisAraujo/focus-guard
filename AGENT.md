@@ -396,14 +396,23 @@ confirm the version/tag with the person before pushing the tag
   is **generated** — after changing an IPC struct run `make contract` (and
   `make contract-check` to verify no drift; the CI checks it before a
   release).
-- **Actions live in the registry, not the switch** — `ipc.Server` routes
-  through `Registry` (`registry.Get → Validate → Handle`, errors via
-  `writeError`); a new action is a `Handler` + one line in `specs`
-  (`internal/ipc/spec.go`) + `Register` — never a new `case`. Actions still
-  un-migrated fall back to `dispatchLegacy` (strangler — Fase 3 do
-  refactor-plan). The web proxy (`httpapi`) reads permission + timeout from
-  `ipc.SpecFor`; an action **without** a spec (`user-verify`, unknown) is not
-  forwarded (403 allowlist).
+- **Actions live in the registry, not the switch** — `ipc.Server` is a pure
+  transport: `NewServer` registers only the server-level handlers
+  (ping/status/tamper/service adapters), and the daemon (composition root)
+  registers the domain-backed ones (`block`, `block-all`, `apps-*`, `goal-*`,
+  `presets`, `preset-*`, `user-*`, `dns-*`) from their domain packages via
+  `server.Register` before `ValidateRegistry`. The legacy switch
+  (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
+  `CodeUnknownAction`. A new action is a `Handler` + one line in `specs`
+  (`internal/ipc/spec.go`) + `Register` in the composition root — never a new
+  `case`. The in-package ipc tests use reference adapters
+  (`handlers_ref_test.go`) because ipc cannot import the domain packages
+  (cycle); `domain_wiring_test.go` (package `ipc_test`) wires the REAL domain
+  handlers through the router. `ValidateRegistry()` closes specs↔registry at
+  boot (every handler has a spec, every spec has a handler; `user-verify` is
+  web-only and exempt). The web proxy (`httpapi`) reads permission + timeout
+  from `ipc.SpecFor`; an action **without** a spec (`user-verify`, unknown) is
+  not forwarded (403 allowlist).
 - **`focusguard-web` is user-space** — never add a manifest/admin to it;
   the daemon is the only privileged process. Web only proxies via
   `ipc.Client`.

@@ -1,7 +1,7 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1, 2, 3 e 4 concluídas** (Fase 4 em 2026-08-06) — ver seção 5;
-> próximas: Fase 5 (composition root).
+> **Status:** **Fases 0, 1, 2, 3, 4 e 5 concluídas** (Fase 5 em 2026-08-06) — ver seção 5;
+> próximas: lifecycle do daemon (`internal/daemon` + `Run(ctx)`) e Fase 6 (CLI por comando).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -12,6 +12,9 @@
 > **Revisão (2026-08-06):** execução da Fase 3 (action registry: `Handler` +
 > `Registry` + `ActionSpec`/`Permission` declarativos; `ipc.Server` vira
 > roteador com fallback legado; `httpapi` consome `SpecFor` — B2/B6/B7) —
+> ver seção 5 e 9.
+> **Revisão (2026-08-06):** execução da Fase 5 (composition root: handlers de
+> domínio registrados no daemon; `ipc.Server` vira transport — B3/B4-parcial) —
 > ver seção 5 e 9.
 > Escopo: visão completa (backend Go + frontend React + contrato IPC), com
 > fases priorizadas por impacto × risco. Nenhum código foi alterado para
@@ -219,7 +222,7 @@ func runDaemon(ctx context.Context) error {
 | **2. Frontend — contrato assistido** ✅ | Codegen Go→TS (`make contract` + checagem no CI) + códigos de erro aditivos (`Response.Code`) | Alto (F2/B12/C1) | baixo (aditivo, retrocompat) | M |
 | **3. Registry de ações** ✅ | `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`spec.go`); `ipc.Server` vira roteador (registry-first + fallback legado); `httpapi` consome `SpecFor` (B2/B6/B7) | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
 | **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
-| **5. Composition root** | `internal/daemon` + `Run(ctx)` + lifecycle; update → `internal/update` | Alto (B4/B10/B8) | médio | G |
+| **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP). Falta o lifecycle (`internal/daemon` + `Run(ctx)`, B4/B10) | Alto | médio | G |
 | **6. CLI por comando** | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
 | **7. Eventos em tempo real** | `/ws` ou SSE no lugar do polling — **depende do event hub no daemon** (F3 do ui-plan) | Médio (F5) | médio | G |
 | **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
@@ -893,13 +896,62 @@ um `Handler` no registry**; ação desconhecida vira `CodeUnknownAction`.
 4. Validação: `go build` + `go vet` + `go test ./internal/...` (30 pacotes)
    verdes; `contract-check` em dia (nenhum struct mudou).
 
-### Próximo passo (Fase 5 — Composition root)
+### Fase 5 — Composition root (✅ concluída em 2026-08-06)
 
-1. Mover os handlers de `internal/ipc` (hoje adaptadores `funcHandler`) para
-   os pacotes de domínio com interfaces estreitas (DIP) — os esboços estão na
-   seção 8 (`internal/users`, `internal/blocks`, `internal/dns`,
-   `internal/presets`, `internal/apps`), todos já implementando `ipc.Handler`.
-2. Registrar os handlers no `cmd/focusguard-daemon` (composition root), não
-   no `NewServer` — o `ipc.Server` vira transport puro.
+O `ipc.Server` virou **transport puro** para as ações de domínio — os
+handlers vivem nos pacotes de domínio e o daemon os registra no boot:
+
+1. **Transporte**: `Server.Register(h)` (registro pós-construção) e
+   `Server.Dispatch(req)` (roteador Get → Validate → Handle, devolve o
+   `Response`; `handleConnection` só encoda + dispara o hook de update
+   pós-resposta). `writeError` virou `errorResponse` (ActionError/ipcerr →
+   código estável; erro comum → mensagem).
+2. **Handlers de domínio na produção**: os adapters `funcHandler` de
+   `block`/`block-all`/`apps-*`/`goal-*`/`presets`/`preset-*`/`user-*`/`dns-*`
+   saíram do pacote `ipc` (deletados `blocks_handler.go`/`dns_handler.go`/
+   `users_handler.go`); os reais estão em `internal/blocks`, `internal/dns`,
+   `internal/goal`, `internal/presets`, `internal/users`, `internal/apps`
+   (interfaces estreitas — DIP, esboços da seção 8).
+   - `NewServer` registra só os 15 de nível servidor (ping/status/tamper-log +
+     adapters de `analytics`/`schedule`/`pomodoro`/`update` — serviços que não
+     podem importar ipc).
+   - Os testes internos do ipc (ciclo de import: domínio→ipc) usam os mesmos
+     adapters movidos para `handlers_ref_test.go` (referência 1:1),
+     registrados pelo `setupTestServer`/`startIntegrationServer`.
+   - `internal/ipc/domain_wiring_test.go` (package `ipc_test`) compõe os
+     handlers REAIS com o roteador via `Dispatch` + `ValidateRegistry` e
+     dispara todas as 19 ações de domínio — rede contra drift
+     referência↔domínio.
+3. **Composition root (`cmd/focusguard-daemon`)**: os 19 handlers de domínio
+   são construídos com as dependências reais e registrados via
+   `server.Register` antes do `ValidateRegistry` (fechamento specs↔registry
+   no boot, 34 ações). `SetApps`/`SetUsers`/`SetOnDNSStarted` saíram do boot
+   (os handlers recebem as deps por construtor); `SetPresets`/`SetGoal`/
+   `SetDNS` permanecem — o `status` e os adapters de pomodoro/schedule leem
+   esses campos. `apps-*` é registrado incondicionalmente (com `pg` nil o
+   `refreshGuard` é no-op; sem os handlers o boot falharia).
+4. **Mudança de comportamento deliberada**: `user-set-password` ganhou
+   fail-fast no `Validate` do handler de domínio (username vazio / senha < 8 →
+   `CodeInvalid` antes do store — antes caía no store, sem código e com o
+   prefixo "user: " na mensagem). As demais 18 ações reproduzem 1:1
+   (mensagens, códigos, ordem) — preso pelos testes de domínio + wiring test.
+5. Validação: `go build`/`vet` verdes, suíte Go completa verde (34+ pacotes),
+   `contract-check` em dia, `tsc` + vitest 19/19. Commits:
+   - `refactor(ipc): expose Register/Dispatch, extract errorResponse`
+   - `refactor(ipc): move domain-backed handlers to test reference`
+   - `feat(daemon): compose domain handlers at the composition root`
+   - `test(ipc): wire real domain handlers with the router (external test)`
+   - `fix(daemon): always register apps handlers so boot validation passes`
+   - `test(ipc): dispatch all 19 domain actions through the real router`
+
+### Próximo passo
+
+1. **Lifecycle do daemon (restante da Fase 5 do plano — B4/B10/B8)**: extrair
+   `internal/daemon` com `Run(ctx) error` e shutdown ordenado; mover a
+   orquestração de update (`daemonUpdater`/flag/stop de guards) para
+   `internal/update`. Com ele, `SetApps`/`SetUsers`/`SetOnDNSStarted` (hoje só
+   usados pelos adapters de referência dos testes) podem ser removidos.
+2. **Fase 6 — CLI por comando**: `cmd/focusguard/main.go` → `commands/` com um
+   arquivo por comando + tabela (B5).
 3. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
    cortar release entre fases.

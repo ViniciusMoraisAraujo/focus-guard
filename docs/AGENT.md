@@ -381,12 +381,19 @@ confirm the version/tag with the person before pushing the tag
 - **IPC is the contract** — CLI/tray/daemon/**web** all speak the same
   protocol; changing the `internal/ipc` payload requires updating all three
   sides + `focusguard-ui/src/api/types.ts`.
-- **Actions live in the registry, not the switch** — `ipc.Server` routes
-  through `Registry` (`registry.Get → Validate → Handle`, errors via
-  `writeError`); a new action is a `Handler` + one line in `specs`
-  (`internal/ipc/spec.go`) + `Register` — never a new `case`. The legacy
-  switch (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
-  `CodeUnknownAction`. `server.ValidateRegistry()` closes specs↔registry at
+- **Actions live in the registry, not the switch** — `ipc.Server` is a pure
+  transport: `NewServer` registers only the server-level handlers
+  (ping/status/tamper/service adapters), and the daemon (composition root)
+  registers the domain-backed ones (`block`, `block-all`, `apps-*`, `goal-*`,
+  `presets`, `preset-*`, `user-*`, `dns-*`) from their domain packages via
+  `server.Register` before `ValidateRegistry`. The legacy switch
+  (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
+  `CodeUnknownAction`. A new action is a `Handler` + one line in `specs`
+  (`internal/ipc/spec.go`) + `Register` in the composition root — never a new
+  `case`. The in-package ipc tests use reference adapters
+  (`handlers_ref_test.go`) because ipc cannot import the domain packages
+  (cycle); `domain_wiring_test.go` (package `ipc_test`) wires the REAL domain
+  handlers through the router. `ValidateRegistry()` closes specs↔registry at
   boot (every handler has a spec, every spec has a handler; `user-verify` is
   web-only and exempt). The web proxy (`httpapi`) reads permission + timeout
   from `ipc.SpecFor`; an action **without** a spec (`user-verify`, unknown) is
