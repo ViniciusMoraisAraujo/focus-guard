@@ -1,7 +1,7 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1, 2 e 3 concluídas** (Fase 3 em 2026-08-06) — ver seção 5;
-> próximas: Fase 4 (serviços de domínio).
+> **Status:** **Fases 0, 1, 2, 3 e 4 concluídas** (Fase 4 em 2026-08-06) — ver seção 5;
+> próximas: Fase 5 (composition root).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -414,7 +414,7 @@ O caso atual faz 4 coisas num bloco: valida duração, resolve preset em lote,
 (ordem de validação e mensagens idênticas) com as dependências injetadas:
 
 ```go
-// internal/blocks/handler.go (novo — Fase 4)
+// internal/blocks/handler.go (novo — Fase 5)
 package blocks
 
 import (
@@ -539,7 +539,7 @@ func (h *Handler) blockOrConflict(req *ipc.Request, d time.Duration) (*ipc.Respo
 ### 8.3 Ação `user-set-password` (hoje: `internal/ipc/server.go` linhas 613–625)
 
 ```go
-// internal/users/handler.go (novo — Fase 4)
+// internal/users/handler.go (novo — Fase 5)
 package users
 
 import (
@@ -852,8 +852,8 @@ func TestBlock_ConflitoAskFirst(t *testing.T) {
   `TestAction_UnknownAction_Forbidden`). Testes de timeout agora comparam com
   `ipc.SpecFor(...).Timeout`.
 - **Fechamento**: `TestServer_RegisteredHandlersHaveSpecs` (todo handler
-  registrado tem spec — direção registry→specs; a inversa fecha quando o
-  switch esvaziar na Fase 4).
+  registrado tem spec — direção registry→specs) e, a partir da Fase 4,
+  `TestServer_SpecsAllHaveHandlers` (a inversa) + `ValidateRegistry` no boot.
 - **Caracterização backend (pendência da Fase 0)**: coberta pela suíte
   existente do `server_test.go` (presets/apps/tamper/goal já tinham testes —
   os mesmos testes agora exercitam o roteador + handlers).
@@ -863,15 +863,43 @@ func TestBlock_ConflitoAskFirst(t *testing.T) {
   - `refactor(web): declarative action permissions and timeouts via ipc specs`
   - `refactor(ipc): route actions through the registry, migrate low-risk handlers`
 
-### Próximo passo (Fase 4 — Serviços de domínio)
+### Fase 4 — Serviços de domínio (✅ concluída em 2026-08-06)
 
-1. Migrar cada `case` restante → serviço coeso (strangler, um por commit,
-   ordem sugerida: `user-*`, `dns-*`, `presets`, `apps`, `schedule`,
-   `analytics`, `pomodoro` e por último `block`/`block-all`/`update`).
-2. Mover os handlers migrados na Fase 3 (hoje adaptadores em `internal/ipc`)
-   para os pacotes de domínio com interfaces estreitas (DIP) — os esboços
-   estão na seção 8 (`internal/users`, `internal/blocks`...).
-3. Encerrar o fechamento specs↔registry no boot (todo spec tem handler;
-   `user-verify` isento).
-4. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
+O switch legado `dispatchLegacy` foi eliminado — **toda ação conhecida agora é
+um `Handler` no registry**; ação desconhecida vira `CodeUnknownAction`.
+
+1. **Migração dos 12 cases restantes** → handlers em `internal/ipc/` com
+   adaptador `funcHandler`, comportamento 1:1 (mensagens, códigos, ordem):
+   - `analytics` (`stats`/`missions`/`sessions`) e `schedule` (`schedule-*`) →
+     serviços de domínio `analytics.Service`/`schedule.Service` (ipc-free,
+     erros via `*ipcerr.Error`).
+   - `pomodoro` (`pomodoro`/`pomodoro-defaults`/`pomodoro-stop`) → novo
+     `pomodoro.Service` (ipc-free; validação `maxPomodoroMinutes`/`maxPomodoroCycles`
+     movida do switch).
+   - `update`/`update-check` → novo `update.Service` (ipc-free; bridge
+     `updateCheckerBridge` converte wire→domínio; latch `updateApplied` +
+     `dispatchUpdateHook` preserva o restart pós-resposta).
+   - `block`/`block-all`/`status`/`user-*`/`dns-*` → adapters inline no ipc
+     (goal-style). Os pacotes `internal/users|blocks|dns|presets|apps`
+     (esboços da seção 8) implementam `ipc.Handler` e são material do
+     composition root da **Fase 5** — os adapters do ipc NÃO podem usá-los
+     (ciclo de import ipc→domínio).
+2. **Fechamento specs↔registry no boot**: `ipc.Server.ValidateRegistry()`
+   (todo handler tem spec; `user-verify` web-only isento; todo spec tem
+   handler) chamado em `cmd/focusguard-daemon` após o wiring de dependências.
+   Testes: `TestServer_RegisteredHandlersHaveSpecs`,
+   `TestServer_SpecsAllHaveHandlers`.
+3. `handleConnection` virou roteador puro; comentários/AGENT.md atualizados.
+4. Validação: `go build` + `go vet` + `go test ./internal/...` (30 pacotes)
+   verdes; `contract-check` em dia (nenhum struct mudou).
+
+### Próximo passo (Fase 5 — Composition root)
+
+1. Mover os handlers de `internal/ipc` (hoje adaptadores `funcHandler`) para
+   os pacotes de domínio com interfaces estreitas (DIP) — os esboços estão na
+   seção 8 (`internal/users`, `internal/blocks`, `internal/dns`,
+   `internal/presets`, `internal/apps`), todos já implementando `ipc.Handler`.
+2. Registrar os handlers no `cmd/focusguard-daemon` (composition root), não
+   no `NewServer` — o `ipc.Server` vira transport puro.
+3. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
    cortar release entre fases.

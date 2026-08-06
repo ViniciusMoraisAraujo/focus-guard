@@ -384,11 +384,13 @@ confirm the version/tag with the person before pushing the tag
 - **Actions live in the registry, not the switch** — `ipc.Server` routes
   through `Registry` (`registry.Get → Validate → Handle`, errors via
   `writeError`); a new action is a `Handler` + one line in `specs`
-  (`internal/ipc/spec.go`) + `Register` — never a new `case`. Actions still
-  un-migrated fall back to `dispatchLegacy` (strangler — Fase 3 do
-  refactor-plan). The web proxy (`httpapi`) reads permission + timeout from
-  `ipc.SpecFor`; an action **without** a spec (`user-verify`, unknown) is not
-  forwarded (403 allowlist).
+  (`internal/ipc/spec.go`) + `Register` — never a new `case`. The legacy
+  switch (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
+  `CodeUnknownAction`. `server.ValidateRegistry()` closes specs↔registry at
+  boot (every handler has a spec, every spec has a handler; `user-verify` is
+  web-only and exempt). The web proxy (`httpapi`) reads permission + timeout
+  from `ipc.SpecFor`; an action **without** a spec (`user-verify`, unknown) is
+  not forwarded (403 allowlist).
 - **`focusguard-web` is user-space** — never add a manifest/admin to it;
   the daemon is the only privileged process. Web only proxies via
   `ipc.Client`.
