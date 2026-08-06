@@ -172,7 +172,7 @@ implementation details belong in code comments, not here.
 | `hostswatch` | Detects/reverts tampering of `hosts` |
 | `httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
 | `icon` | Generates `.ico`/`.png` from the canonical artwork |
-| `ipc` | Client-server protocol (Request/Response JSON over socket) |
+| `ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
 | `policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
 | `pomodoro` | Work/rest/cycle sessions |
 | `preset` | Catalog of block categories (builtin + custom) |
@@ -396,6 +396,14 @@ confirm the version/tag with the person before pushing the tag
   is **generated** — after changing an IPC struct run `make contract` (and
   `make contract-check` to verify no drift; the CI checks it before a
   release).
+- **Actions live in the registry, not the switch** — `ipc.Server` routes
+  through `Registry` (`registry.Get → Validate → Handle`, errors via
+  `writeError`); a new action is a `Handler` + one line in `specs`
+  (`internal/ipc/spec.go`) + `Register` — never a new `case`. Actions still
+  un-migrated fall back to `dispatchLegacy` (strangler — Fase 3 do
+  refactor-plan). The web proxy (`httpapi`) reads permission + timeout from
+  `ipc.SpecFor`; an action **without** a spec (`user-verify`, unknown) is not
+  forwarded (403 allowlist).
 - **`focusguard-web` is user-space** — never add a manifest/admin to it;
   the daemon is the only privileged process. Web only proxies via
   `ipc.Client`.

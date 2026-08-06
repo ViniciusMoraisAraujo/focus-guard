@@ -1,7 +1,7 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1 e 2 concluídas** (Fase 2 em 2026-08-06) — ver seção 5;
-> próximas: Fase 3 (registry de ações).
+> **Status:** **Fases 0, 1, 2 e 3 concluídas** (Fase 3 em 2026-08-06) — ver seção 5;
+> próximas: Fase 4 (serviços de domínio).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -9,6 +9,10 @@
 > em módulo) — ver seção 5 e 9.
 > **Revisão (2026-08-06):** execução da Fase 2 (codegen `make contract` +
 > códigos de erro aditivos `Response.Code`) — ver seção 5 e 9.
+> **Revisão (2026-08-06):** execução da Fase 3 (action registry: `Handler` +
+> `Registry` + `ActionSpec`/`Permission` declarativos; `ipc.Server` vira
+> roteador com fallback legado; `httpapi` consome `SpecFor` — B2/B6/B7) —
+> ver seção 5 e 9.
 > Escopo: visão completa (backend Go + frontend React + contrato IPC), com
 > fases priorizadas por impacto × risco. Nenhum código foi alterado para
 > produzir este documento; os números vêm de leitura do estado atual do repo
@@ -213,14 +217,14 @@ func runDaemon(ctx context.Context) error {
 | **0. Caracterização** ✅ | Testes que congelam o comportamento atual — frontend (`client.ts`/`AppProvider`) e backend (casos do switch) | — | baixo | M |
 | **1. Frontend — responsabilidades** ✅ ⭐ | `AuthProvider`/`DataProvider` + hooks (`useAuth`, `useData`) + `useAction()` compartilhado + toast em módulo | Alto (F1/F3) | **baixo** (independe do núcleo Go; valida com `tsc`) | M |
 | **2. Frontend — contrato assistido** ✅ | Codegen Go→TS (`make contract` + checagem no CI) + códigos de erro aditivos (`Response.Code`) | Alto (F2/B12/C1) | baixo (aditivo, retrocompat) | M |
-| **3. Registry de ações** | `Handler` + `Registry`; `ipc.Server` vira roteador; timeouts/permissões declarativos | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
+| **3. Registry de ações** ✅ | `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`spec.go`); `ipc.Server` vira roteador (registry-first + fallback legado); `httpapi` consome `SpecFor` (B2/B6/B7) | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
 | **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
 | **5. Composition root** | `internal/daemon` + `Run(ctx)` + lifecycle; update → `internal/update` | Alto (B4/B10/B8) | médio | G |
 | **6. CLI por comando** | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
 | **7. Eventos em tempo real** | `/ws` ou SSE no lugar do polling — **depende do event hub no daemon** (F3 do ui-plan) | Médio (F5) | médio | G |
 | **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
 
-**Ordem sugerida de execução:** ~~0 → 1 → 2~~ (concluídas) → 3 → 4 (começando
+**Ordem sugerida de execução:** ~~0 → 1 → 2 → 3~~ (concluídas) → 4 (começando
 pelas ações de menor risco: `user-*`, `dns-*`, depois
 `presets`/`apps`/`schedule`, e por último `block`/`pomodoro`) → 5 → 6 → 7 → 8.
 
@@ -826,8 +830,48 @@ func TestBlock_ConflitoAskFirst(t *testing.T) {
   - `feat(contract): generate api types from Go structs (make contract)`
   - `feat(ipc): add additive error codes to IPC responses`
 
-### Próximo passo (Fase 3 — Registry de ações)
+### Fase 3 — Registry de ações (✅ concluída em 2026-08-06)
 
-1. **Registry**: `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`internal/ipc/spec.go`); `ipc.Server` vira roteador fino (decode → registry.Get → Validate → Handle) — B2/B6/B7, sem mudar wire protocol.
-2. Caracterização dos `case` do `ipc.Server` (backend — pendência da Fase 0) junto da migração.
-3. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for cortar release entre fases.
+- **Infra**: `internal/ipc/spec.go` (`Permission`, `ActionSpec`, tabela `specs`
+  com as 33 ações encaminháveis pelo web — `user-verify` deliberadamente
+  ausente, vira allowlist por spec; `SpecFor`/`SpecActions`), `action.go`
+  (`Handler`, `ActionError`, `Err`, `writeError`), `registry.go` (`Registry`
+  com `Register`/`Get`/`Actions`/`ValidateSpecs`).
+- **Roteador fino**: `ipc.Server.handleConnection` despacha por
+  `registry.Get → Validate → Handle` (erros via `writeError`); as ações ainda
+  não migradas caem no `dispatchLegacy` (strangler) — wire protocol e
+  mensagens inalterados.
+- **Migração inicial (10 ações de baixo risco)**: `ping`, `presets`,
+  `preset-add/remove`, `apps-list/add/remove`, `tamper-log`, `goal-get/set`
+  → handlers em `internal/ipc/handlers.go` (adaptador `funcHandler`),
+  registrados no `NewServer` (o daemon segue com `NewServer(sched)` + `Set*`
+  — composition root é a Fase 5). Switch: 34 → 24 cases.
+- **B6/B7 (httpapi)**: o `switch` de permissão e o `actionTimeoutFor` somem —
+  `handleAction` lê `ipc.SpecFor(req.Action)` (`Permission` + `Timeout`). Ação
+  sem spec (user-verify ou desconhecida) → 403 (allowlist; teste
+  `TestAction_UnknownAction_Forbidden`). Testes de timeout agora comparam com
+  `ipc.SpecFor(...).Timeout`.
+- **Fechamento**: `TestServer_RegisteredHandlersHaveSpecs` (todo handler
+  registrado tem spec — direção registry→specs; a inversa fecha quando o
+  switch esvaziar na Fase 4).
+- **Caracterização backend (pendência da Fase 0)**: coberta pela suíte
+  existente do `server_test.go` (presets/apps/tamper/goal já tinham testes —
+  os mesmos testes agora exercitam o roteador + handlers).
+- Validação: `go vet` + `go test` de `internal/ipc` e `internal/httpapi`
+  verdes; `contract-check` em dia (nenhum struct mudou). Commits:
+  - `feat(ipc): add action registry with declarative specs (Handler, Registry, ActionSpec)`
+  - `refactor(web): declarative action permissions and timeouts via ipc specs`
+  - `refactor(ipc): route actions through the registry, migrate low-risk handlers`
+
+### Próximo passo (Fase 4 — Serviços de domínio)
+
+1. Migrar cada `case` restante → serviço coeso (strangler, um por commit,
+   ordem sugerida: `user-*`, `dns-*`, `presets`, `apps`, `schedule`,
+   `analytics`, `pomodoro` e por último `block`/`block-all`/`update`).
+2. Mover os handlers migrados na Fase 3 (hoje adaptadores em `internal/ipc`)
+   para os pacotes de domínio com interfaces estreitas (DIP) — os esboços
+   estão na seção 8 (`internal/users`, `internal/blocks`...).
+3. Encerrar o fechamento specs↔registry no boot (todo spec tem handler;
+   `user-verify` isento).
+4. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
+   cortar release entre fases.
