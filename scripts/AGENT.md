@@ -19,7 +19,7 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 | `focusguard.service` | Unit systemd (template; `ExecStart` é reescrito pelo install-linux.sh) |
 | `focusguard-tray.desktop` | Template de autostart do tray (Linux) |
 | `msi/` | `wix.json` (desktop) + `wix-server.json` (Server, headless) + `product.wxs` (template WiX) do go-msi |
-| `../server.role` | Marcador vazio da edição Server — o MSI Server instala ao lado do daemon. Em instalação LIMPA (sem `state.json`) o DNS sinkhole nasce habilitado no 1º boot; em conversão de instalação existente, habilite na tela Rede ou com `focusguard dns start` (ver `isServerEdition` no daemon) |
+| `../packaging/server.role` | Marcador vazio da edição Server — o MSI Server instala ao lado do daemon. Em instalação LIMPA (sem `state.json`) o DNS sinkhole nasce habilitado no 1º boot; em conversão de instalação existente, habilite na tela Rede ou com `focusguard dns start` (ver `isServerEdition` no daemon) |
 | `verifyicon/` | Verifica se o ícone embutido no .exe == `focusguard.ico` |
 
 ## Regras específicas

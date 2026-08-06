@@ -1,7 +1,7 @@
 {
   "product": "FocusGuard",
   "company": "FocusGuard",
-  "icon": "focusguard.ico",
+  "icon": "packaging/focusguard.ico",
   "compression": "high",
   "upgrade-code": "6a87f38f-249f-437e-a729-4cb5c0734c0b",
   "info": {
@@ -71,7 +71,7 @@
       "location": "desktop",
       "target": "[#ApplicationFile1]",
       "wdir": "INSTALLDIR",
-      "icon": "focusguard.ico"
+      "icon": "packaging/focusguard.ico"
     }
   ],
   "registries": [

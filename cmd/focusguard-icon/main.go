@@ -1,13 +1,14 @@
 // Command focusguard-icon generates the FocusGuard application icon from the
-// canonical artwork (img/focusguard.png):
+// canonical artwork (packaging/artwork/focusguard.png):
 //
-//   - focusguard.ico: multi-size Windows ICO (16..256) embedded in the .exe
-//     via go-winres (RT_GROUP_ICON) — this is the icon Explorer shows for the
-//     daemon and the CLI, and the one the desktop shortcut references.
-//   - focusguard.png: 256px PNG used by the Linux desktop shortcut
+//   - packaging/focusguard.ico: multi-size Windows ICO (16..256) embedded in
+//     the .exe via go-winres (RT_GROUP_ICON) — this is the icon Explorer shows
+//     for the daemon and the CLI, and the one the desktop shortcut references.
+//   - packaging/focusguard.png: 256px PNG used by the Linux desktop shortcut
 //     (~/.local/share/icons/hicolor/256x256/apps/focusguard.png).
 //   - internal/tray/icon_source.png: 32px PNG embedded in the tray binary
-//     (Linux tray) — same artwork, so every icon stays consistent.
+//     (Linux tray) — same artwork, so every icon stays consistent. Kept inside
+//     the package because go:embed cannot reference files outside it.
 //
 // It is a build-time tool (pure stdlib + golang.org/x/image, no CGO) so the
 // release pipeline can regenerate both artifacts deterministically.
@@ -29,9 +30,9 @@ var osExit = os.Exit
 var defaultSizes = []int{16, 32, 48, 64, 128, 256}
 
 func main() {
-	src := flag.String("src", "img/focusguard.png", "caminho do PNG de origem (artwork 1024px)")
-	icoOut := flag.String("ico", "focusguard.ico", "caminho do .ico multi-tamanho gerado")
-	pngOut := flag.String("png", "focusguard.png", "caminho do .png 256px gerado")
+	src := flag.String("src", "packaging/artwork/focusguard.png", "caminho do PNG de origem (artwork 1024px)")
+	icoOut := flag.String("ico", "packaging/focusguard.ico", "caminho do .ico multi-tamanho gerado")
+	pngOut := flag.String("png", "packaging/focusguard.png", "caminho do .png 256px gerado")
 	trayOut := flag.String("tray", "internal/tray/icon_source.png", "caminho do .png 32px do tray; vazio desativa")
 	sizesFlag := flag.String("sizes", "", "tamanhos do .ico separados por vírgula (default: 16,32,48,64,128,256)")
 	flag.Parse()

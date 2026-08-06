@@ -6,14 +6,14 @@ project_name: focusguard
 before:
   hooks:
     - go mod tidy
-    # Regenera o ícone multi-tamanho a partir de img/focusguard.png
-    # (focusguard.ico/.png + ícone do tray) consumido pelo go-winres
+    # Regenera o ícone multi-tamanho a partir de packaging/artwork/focusguard.png
+    # (packaging/focusguard.ico/.png + ícone do tray) consumido pelo go-winres
     # (metadados do .exe) e pelo atalho do Desktop nos installers.
     - go run ./cmd/focusguard-icon
     # go-winres make lê versioninfo.json (--in) e emite rsrc_windows_*.syso
     # na pasta do package, embedados automaticamente pelo go build no Windows.
     # O GoReleaser executa hooks sem shell, então o condicional vai via sh -c.
-    - sh -c "if command -v go-winres >/dev/null 2>&1; then cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard-tray && go-winres make --in versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard-watchdog && go-winres make --in versioninfo.json --arch amd64,arm64; fi"
+    - sh -c "if command -v go-winres >/dev/null 2>&1; then cd cmd/focusguard-daemon && go-winres make --in ../../packaging/versioninfo-daemon.json --arch amd64,arm64 && cd ../../cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard-tray && go-winres make --in versioninfo.json --arch amd64,arm64 && cd ../../cmd/focusguard-watchdog && go-winres make --in versioninfo.json --arch amd64,arm64; fi"
     # Compila a interface web (React) e copia o dist para cmd/focusguard-web/assets
     # (embutido via go:embed). Requer Node.js no runner da release.
     - sh -c "cd focusguard-ui && npm ci && npm run build && find ../cmd/focusguard-web/assets -mindepth 1 -maxdepth 1 ! -name '.gitkeep' -exec rm -rf {} + && cp -r dist/. ../cmd/focusguard-web/assets/"
@@ -167,7 +167,7 @@ archives:
       - zip
     name_template: '{{ .ProjectName }}_{{ .Version }}_windows_{{ .Arch }}'
     files:
-      - src: install.txt
+      - src: packaging/install.txt
         dst: install.txt
       - src: scripts/install-daemon.ps1
         dst: install-daemon.ps1
@@ -184,13 +184,13 @@ archives:
     allow_different_binary_count: true
     name_template: '{{ .ProjectName }}_{{ .Version }}_linux_{{ .Arch }}'
     files:
-      - src: install.txt
+      - src: packaging/install.txt
         dst: install.txt
       - src: README.md
       - src: CHANGELOG.md
-      - src: focusguard.png
+      - src: packaging/focusguard.png
         dst: focusguard.png
-      - src: focusguard.ico
+      - src: packaging/focusguard.ico
         dst: focusguard.ico
       - src: scripts/focusguard.service
         dst: focusguard.service

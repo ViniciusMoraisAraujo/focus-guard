@@ -377,7 +377,7 @@ func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
 // and the admin manifest (RT_MANIFEST). This is what go-winres make consumes
 // to emit rsrc_windows_*.syso for the daemon and CLI executables.
 func TestVersionInfo_GoWinresFormat(t *testing.T) {
-	data, err := os.ReadFile(filepath.Join("..", "..", "versioninfo.json"))
+	data, err := os.ReadFile(filepath.Join("..", "..", "packaging", "versioninfo-daemon.json"))
 	if err != nil {
 		t.Fatalf("leitura do versioninfo.json: %v", err)
 	}

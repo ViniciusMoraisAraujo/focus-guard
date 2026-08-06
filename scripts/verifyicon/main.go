@@ -1,7 +1,7 @@
 //go:build ignore
 
 // VerifyIcon verifica se o ícone embutido num executável (bin/focusguard-tray.exe
-// por padrão) corresponde ao focusguard.ico da raiz. Como o go-winres re-embute
+// por padrão) corresponde ao packaging/focusguard.ico. Como o go-winres re-embute
 // o .ico com variações (ex.: reordena entradas ou re-encoda PNGs), a comparação
 // é semântica: mesmas dimensões por entrada e pixels idênticos por payload PNG.
 // Uso:
@@ -42,7 +42,7 @@ func run() error {
 	if err != nil {
 		return err
 	}
-	orig, err := os.ReadFile("focusguard.ico")
+	orig, err := os.ReadFile("packaging/focusguard.ico")
 	if err != nil {
 		return err
 	}

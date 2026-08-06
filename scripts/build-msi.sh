@@ -78,12 +78,12 @@ if [ -z "$WIX_BIN" ]; then
 fi
 export PATH="$WIX_BIN:$PATH"
 
-if [ ! -f "$ROOT/focusguard.ico" ]; then
-  echo "ERRO: Ícone do MSI ausente em $ROOT/focusguard.ico" >&2
+if [ ! -f "$ROOT/packaging/focusguard.ico" ]; then
+  echo "ERRO: Ícone do MSI ausente em $ROOT/packaging/focusguard.ico" >&2
   exit 1
 fi
-if [ "$PROFILE" = "server" ] && [ ! -f "$ROOT/server.role" ]; then
-  echo "ERRO: marcador da edição Server ausente em $ROOT/server.role (arquivo vazio que habilita o DNS no 1º boot em instalação limpa)." >&2
+if [ "$PROFILE" = "server" ] && [ ! -f "$ROOT/packaging/server.role" ]; then
+  echo "ERRO: marcador da edição Server ausente em $ROOT/packaging/server.role (arquivo vazio que habilita o DNS no 1º boot em instalação limpa)." >&2
   exit 1
 fi
 

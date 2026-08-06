@@ -23,16 +23,17 @@ all: build test vet
 
 build: icon build-cli build-daemon build-web
 
-# icon regenera o ícone multi-tamanho a partir do artwork img/focusguard.png:
-# o .ico Windows usado pelo go-winres (metadados .exe), o .png Linux do atalho
-# do Desktop e o .png 32px do tray (internal/tray/icon_source.png).
+# icon regenera o ícone multi-tamanho a partir do artwork
+# packaging/artwork/focusguard.png: o .ico Windows usado pelo go-winres
+# (metadados .exe), o .png Linux do atalho do Desktop e o .png 32px do tray
+# (internal/tray/icon_source.png, mantido no pacote por causa do go:embed).
 icon:
 	$(GO) run ./cmd/focusguard-icon
 
 # winres gera os resource .syso (rsrc_windows_*.syso) que o go build embeda
 # nos .exe — requer o go-winres instalado (go install github.com/tc-hib/go-winres@latest).
 winres:
-	cd cmd/focusguard-daemon && go-winres make --in ../../versioninfo.json --arch amd64,arm64
+	cd cmd/focusguard-daemon && go-winres make --in ../../packaging/versioninfo-daemon.json --arch amd64,arm64
 	cd cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64
 	cd cmd/focusguard-tray && go-winres make --in versioninfo.json --arch amd64,arm64
 	cd cmd/focusguard-watchdog && go-winres make --in versioninfo.json --arch amd64,arm64

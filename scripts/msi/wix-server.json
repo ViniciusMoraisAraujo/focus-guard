@@ -1,7 +1,7 @@
 {
   "product": "FocusGuard Server",
   "company": "FocusGuard",
-  "icon": "focusguard.ico",
+  "icon": "packaging/focusguard.ico",
   "compression": "high",
   "upgrade-code": "6a87f38f-249f-437e-a729-4cb5c0734c0b",
   "info": {
@@ -38,7 +38,7 @@
       "path": "bin/focusguard.exe"
     },
     {
-      "path": "server.role"
+      "path": "packaging/server.role"
     }
   ],
   "hooks": [
@@ -64,7 +64,7 @@
       "location": "program",
       "target": "[#ApplicationFile4]",
       "wdir": "INSTALLDIR",
-      "icon": "focusguard.ico"
+      "icon": "packaging/focusguard.ico"
     },
     {
       "name": "FocusGuard Server",
@@ -72,7 +72,7 @@
       "location": "desktop",
       "target": "[#ApplicationFile4]",
       "wdir": "INSTALLDIR",
-      "icon": "focusguard.ico"
+      "icon": "packaging/focusguard.ico"
     }
   ],
   "registries": []

@@ -1,12 +1,12 @@
 {
   "RT_GROUP_ICON": {
     "#1": {
-      "0000": "focusguard.ico"
+      "0000": "../../packaging/focusguard.ico"
     }
   },
   "RT_MANIFEST": {
     "#1": {
-      "0409": "focusguard-daemon.exe.manifest"
+      "0409": "../../packaging/focusguard-daemon.exe.manifest"
     }
   },
   "RT_VERSION": {

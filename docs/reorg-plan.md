@@ -1,9 +1,9 @@
 # Plano — Reorganização de Diretórios e Arquitetura
 
-> **Status:** documento vivo — **Fase A concluída** (2026-08-06); Fases B–D
-> pendentes. **Criado em 2026-08-06.** Escopo escolhido: **todas as 3 frentes** —
-> (A) organização de docs, (B) assets de build em diretório próprio,
-> (C) `internal/` agrupado em camadas.
+> **Status:** documento vivo — **Fases A e B concluídas** (2026-08-06); Fases
+> C–D pendentes. **Criado em 2026-08-06.** Escopo escolhido: **todas as 3
+> frentes** — (A) organização de docs, (B) assets de build em diretório
+> próprio, (C) `internal/` agrupado em camadas.
 
 ## Diagnóstico (estado atual)
 
@@ -14,8 +14,8 @@
 | `focusguard.exe`, `focusguard-daemon.exe`, `focusguard-web.exe`, `scheduler.test.exe` | Binários/lixo locais commitados ou esquecidos | **Deletar** (`.gitignore` já cobre `*.exe`/`*.test`) |
 | ~~`task.md`, `follow-up-v0.15.1.md`, `plan-new-ui-and-user.md`~~ | Planos antigos já implementados (v0.15.x / F4-F5) soltos na raiz | ~~`docs/archive/`~~ → **removidos** (decisão do mantenedor, commit `d645321`) ✅ |
 | `AGENT.md` + ~~`AGENTS.md`~~ + ~~`docs/AGENT.md`~~ | **3 guias redundantes e divergentes** (EN completo 461 linhas × TL;DR PT 37 linhas × espelho 446 linhas) | Consolidar: **1 canônico** na raiz — `AGENTS.md` removido (`d645321`) e `docs/AGENT.md` removido (Fase A) ✅ |
-| `versioninfo.json` (raiz), `focusguard-daemon.exe.manifest`, `focusguard.ico/.png`, `server.role`, `install.txt` | Assets de build espalhados na raiz | `packaging/` (ver Frente B) |
-| `img/focusguard.png` | Artwork canônico (1024px) | `packaging/artwork/` |
+| ~~`versioninfo.json` (raiz), `focusguard-daemon.exe.manifest`, `focusguard.ico/.png`, `server.role`, `install.txt`~~ | Assets de build espalhados na raiz | `packaging/` (ver Frente B) ✅ |
+| ~~`img/focusguard.png`~~ | Artwork canônico (1024px) | `packaging/artwork/` ✅ |
 | `docs/` | Já centraliza docs — manter | — |
 | `dist/`, `.idea/`, `build/` | Já ignorados | — |
 
@@ -101,13 +101,13 @@ focusguard/
 │       ├── ipc/  ipcerr/  httpapi/  metrics/  eventhub/
 │   └── system/               # processos e ciclo de vida
 │       ├── daemon/  tray/  watchdog/
-├── packaging/                # ✅ Frente B — assets de build
+├── packaging/                # ✅ Frente B — assets de build (concluída)
 │   ├── versioninfo-daemon.json      (ex-raiz)
 │   ├── focusguard-daemon.exe.manifest
 │   ├── focusguard.ico / focusguard.png
 │   ├── server.role / install.txt
-│   ├── artwork/focusguard.png       (ex-img/)
-│   └── tray/icon_source.png
+│   └── artwork/focusguard.png       (ex-img/)
+├── internal/tray/icon_source.png    # NÃO movido: go:embed exige o arquivo no pacote
 ├── scripts/                  # mantém (gen-contract, msi, verifyicon)
 ├── docs/                     # ✅ Frente A
 │   ├── archive/              # task.md, follow-up-v0.15.1.md, plan-new-ui-and-user.md
@@ -154,31 +154,40 @@ focusguard/
    `cmd/AGENT.md` e `scripts/AGENT.md` já estavam em dia (só texto, nada movido).
 - **Validação:** revisão de links; nenhum build necessário (só texto).
 
-### Fase B — Assets de build → `packaging/` (médio risco)
+### Fase B — Assets de build → `packaging/` (médio risco) — ✅ concluída (2026-08-06)
 
-1. Criar `packaging/` (e `packaging/artwork/`, `packaging/tray/`); mover:
+1. ✅ Criado `packaging/` (e `packaging/artwork/`); movidos com `git mv`:
    - `versioninfo.json` (raiz) → `packaging/versioninfo-daemon.json`
    - `focusguard-daemon.exe.manifest` → `packaging/`
    - `focusguard.ico`, `focusguard.png` → `packaging/`
    - `server.role`, `install.txt` → `packaging/`
-   - `img/focusguard.png` → `packaging/artwork/focusguard.png`
-   - `internal/tray/icon_source.png` → `packaging/tray/icon_source.png` (o
-     gerador `focusguard-icon` grava lá; o tray embute via go:embed — ajustar
-     o embed path)
-2. Atualizar as referências (checklist completo):
-   - `cmd/focusguard-icon/main.go` (flags default)
-   - `cmd/focusguard-daemon/main.go` (`serverRoleFileName` é runtime — conferir
-     se lê ao lado do exe ou da raiz; **não** mudar o comportamento runtime,
-     só o artefato de origem no build)
-   - `Makefile` (`winres --in`, `icon` target)
-   - `.goreleaser.yaml` (`src:` dos archives + hooks)
-   - `scripts/build-msi.sh` (`$ROOT/focusguard.ico`, `$ROOT/server.role`)
-   - `scripts/msi/wix.json`, `wix-server.json` (paths do ícone/role)
-   - `scripts/verifyicon/main.go` (cwd-relative → flag `-ico packaging/...`)
-   - `scripts/AGENT.md` (tabela de assets) e `.gitignore` (garantir que
-     `packaging/` NÃO é ignorado; `build/` continua ignorado)
-- **Validação:** `make icon && make winres && go build ./...` no Windows +
-  `bash -n scripts/build-msi.sh` + revisão do goreleaser (`goreleaser check`).
+   - `img/focusguard.png` → `packaging/artwork/focusguard.png` (`img/` removida)
+   - ⚠️ **`internal/tray/icon_source.png` NÃO foi movido** — `go:embed` não
+     aceita arquivos fora do diretório do pacote (`internal/tray/icon.go`),
+     e o tray depende exclusivamente do ícone embutido (sem runtime).
+     `packaging/tray/` foi descartado; o default do `focusguard-icon`
+     continua gravando em `internal/tray/`.
+2. ✅ Referências atualizadas:
+   - `cmd/focusguard-icon/main.go` (flags default → `packaging/...`)
+   - `cmd/focusguard-daemon/main.go` — `serverRoleFileName` é **runtime**
+     (lê ao lado do exe): comportamento preservado; só a origem de build
+     (`wix-server.json`) mudou para `packaging/server.role`
+   - `Makefile` (`winres --in ../../packaging/versioninfo-daemon.json`)
+   - `.goreleaser.yaml` (`src:` dos archives + hook do go-winres)
+   - `scripts/build-msi.sh` (`$ROOT/packaging/focusguard.ico`,
+     `$ROOT/packaging/server.role`)
+   - `scripts/msi/wix.json`, `wix-server.json` (paths do ícone/role —
+     resolvem por cwd, que é a raiz)
+   - `scripts/verifyicon/main.go` (lê `packaging/focusguard.ico`)
+   - `cmd/*/versioninfo.json` (4: `.ico`/manifest → `../../packaging/...`;
+     o `packaging/versioninfo-daemon.json` mantém paths json-relativos)
+   - `cmd/focusguard-daemon/main_test.go` (`TestVersionInfo_GoWinresFormat`
+     → `../../packaging/versioninfo-daemon.json`)
+   - `scripts/AGENT.md` (tabela: `packaging/server.role`) e `AGENT.md`
+     (seção 6). `.gitignore` já não ignorava `packaging/` — nada a fazer
+- **Validação:** `go build ./...` + `go vet ./...` + testes não-admin +
+  `bash -n scripts/build-msi.sh` + `make icon`/`make winres` manuais
+  (go-winres validou os paths dos 4 versioninfo).
 
 ### Fase C — `internal/` em camadas (alto risco — 28 pacotes)
 

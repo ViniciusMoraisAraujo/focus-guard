@@ -10,8 +10,10 @@ import (
 const iconSize = 32
 
 // icon_source.png é o ícone do tray (32px), gerado por cmd/focusguard-icon a
-// partir de img/focusguard.png e embutido no binário. É o mesmo artwork do
-// focusguard.ico/.png do sistema, então o tray acompanha qualquer redesign.
+// partir de packaging/artwork/focusguard.png e embutido no binário. É o mesmo
+// artwork do focusguard.ico/.png do sistema, então o tray acompanha qualquer
+// redesign. Fica neste pacote de propósito: go:embed não aceita arquivos fora
+// do diretório do package.
 //
 //go:embed icon_source.png
 var iconSourcePNG []byte

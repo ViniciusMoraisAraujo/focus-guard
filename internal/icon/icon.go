@@ -1,8 +1,9 @@
 // Package icon renders the FocusGuard artwork at any size and builds the
 // multi-size Windows .ico embedded in the executables via go-winres, plus the
 // 256px PNG used by the Linux desktop shortcut. The canonical source is the
-// high-res PNG in img/focusguard.png, resized here with CatmullRom (the best
-// quality the golang.org/x/image/draw scalers offer for large downscales).
+// high-res PNG in packaging/artwork/focusguard.png, resized here with
+// CatmullRom (the best quality the golang.org/x/image/draw scalers offer for
+// large downscales).
 package icon
 
 import (
@@ -19,8 +20,8 @@ import (
 )
 
 // LoadSource decodes a PNG source image from path — the canonical artwork
-// (img/focusguard.png). Build tooling resizes it into the .ico and desktop
-// .png, so the only source of truth is the file the designer edits.
+// (packaging/artwork/focusguard.png). Build tooling resizes it into the .ico
+// and desktop .png, so the only source of truth is the file the designer edits.
 func LoadSource(path string) (image.Image, error) {
 	f, err := os.Open(path)
 	if err != nil {
