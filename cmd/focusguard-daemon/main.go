@@ -771,6 +771,14 @@ func runDaemon() bool {
 	// "focusguard goal" e o status da TUI.
 	server.SetGoal(goal.NewStore(filepath.Join(filepath.Dir(statePath), "goal.json")))
 
+	// Fechamento specs↔registry no boot (Fase 4): todo handler registrado tem
+	// ActionSpec (user-verify isento — web-only) e todo spec tem handler.
+	// Drift vira falha de boot, não 403/404 silencioso em runtime.
+	if err := server.ValidateRegistry(); err != nil {
+		log.Printf("[FocusGuard Daemon] Registry fora do contrato specs: %v", err)
+		return false
+	}
+
 	if stopUpdate := setupUpdateIntegration(server); stopUpdate != nil {
 		defer stopUpdate()
 		// Após aplicar um update, o daemon encerra a sessão pomodoro e os
