@@ -1043,12 +1043,20 @@ func domainAllowlisted(allowlist []string, domain string) bool {
 // daemon's job. Setting the same value is a no-op.
 func (s *Scheduler) SetDNSEnabled(enabled bool) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.dnsEnabled == enabled {
+		s.mu.Unlock()
 		return nil
 	}
 	s.dnsEnabled = enabled
-	return s.store.Save(s.ramState())
+	if err := s.store.Save(s.ramState()); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	// Ajuste de configuração visível no status (DNSEnabled) — avisa o hub
+	// (Fase 7) para a UI refrescar sem polling.
+	s.notifyChange()
+	return nil
 }
 
 // DNSEnabled reports whether the DNS sinkhole server should be running
@@ -1065,12 +1073,20 @@ func (s *Scheduler) DNSEnabled() bool {
 // Setting the same value is a no-op.
 func (s *Scheduler) SetDNSUpstream(upstream string) error {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if s.dnsUpstream == upstream {
+		s.mu.Unlock()
 		return nil
 	}
 	s.dnsUpstream = upstream
-	return s.store.Save(s.ramState())
+	if err := s.store.Save(s.ramState()); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	// Ajuste de configuração visível no status (DNSUpstream) — avisa o hub
+	// (Fase 7) para a UI refrescar sem polling.
+	s.notifyChange()
+	return nil
 }
 
 // DNSUpstream reports the persisted upstream resolver ("" = daemon default).

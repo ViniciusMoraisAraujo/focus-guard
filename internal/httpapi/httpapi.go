@@ -83,6 +83,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("/api/auth/status", s.handleAuthStatus)
 	mux.HandleFunc("/api/logout", s.requireAuth(s.handleLogout))
 	mux.HandleFunc("/api/action", s.requireAuth(s.handleAction))
+	mux.HandleFunc("/api/events", s.requireAuth(s.handleEvents))
 	mux.HandleFunc("/", s.handleStatic)
 	return s.secure(gzipMiddleware(mux))
 }
@@ -131,6 +132,13 @@ func (g *gzipResponseWriter) Flush() {
 func gzipMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Add("Vary", "Accept-Encoding")
+		// O stream de eventos não é compactado de propósito: SSE + gzip é
+		// suscetível a bufferização de proxies, e o payload por ciclo é mínimo
+		// (eventos coarse sem dados).
+		if r.URL.Path == "/api/events" {
+			next.ServeHTTP(w, r)
+			return
+		}
 		if !strings.Contains(r.Header.Get("Accept-Encoding"), "gzip") {
 			next.ServeHTTP(w, r)
 			return

@@ -20,6 +20,7 @@ import (
 	"focusguard/internal/dns"
 	"focusguard/internal/dnsserver"
 	"focusguard/internal/enforcer"
+	"focusguard/internal/eventhub"
 	"focusguard/internal/goal"
 	"focusguard/internal/hostswatch"
 	"focusguard/internal/ipc"
@@ -153,10 +154,11 @@ func persistPomodoroSummary(prefs *pomodoro.Prefs, sum pomodoro.CompletionSummar
 }
 
 // watchPomodoroCompletions consumes the controller's completion summary
-// stream: logs a post-session summary (daemon log) and persists the resolved
-// work/rest/cycles as the next session's defaults. Returns a stop func; a nil
-// controller produces a no-op stop.
-func watchPomodoroCompletions(c *pomodoro.Controller, prefs *pomodoro.Prefs) func() {
+// stream: logs a post-session summary (daemon log), persists the resolved
+// work/rest/cycles as the next session's defaults and fires onComplete (the
+// event-hub publish of pomodoro-complete, Fase 7) once per finished session.
+// Returns a stop func; a nil controller produces a no-op stop.
+func watchPomodoroCompletions(c *pomodoro.Controller, prefs *pomodoro.Prefs, onComplete func()) func() {
 	if c == nil || prefs == nil {
 		return func() {}
 	}
@@ -168,6 +170,9 @@ func watchPomodoroCompletions(c *pomodoro.Controller, prefs *pomodoro.Prefs) fun
 				return
 			case sum := <-c.WatchCompletion():
 				persistPomodoroSummary(prefs, sum)
+				if onComplete != nil {
+					onComplete()
+				}
 			}
 		}
 	}()
@@ -605,6 +610,14 @@ func runDaemon() bool {
 	enf := enforcer.NewEnforcer()
 	sched := scheduler.NewScheduler(st, enf)
 
+	// Event hub (Fase 7): o daemon publica mudanças de estado coarse para o
+	// focusguard-web, que as relê (status/stats) e entrega ao navegador via
+	// SSE — no lugar do polling do frontend. O scheduler avisa em toda mutação
+	// de blocos (block/extend/batch/pânico/expiração/reconciliação); o hub tem
+	// um ring buffer (64) para um subscriber que reconecta pegar o que perdeu.
+	hub := eventhub.New(64)
+	sched.SetOnChange(func() { hub.Publish(ipc.EventBlocksChanged) })
+
 	if err := sched.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro na reconciliação: %v", err)
 		stopLifecycleComponents(components)
@@ -657,6 +670,7 @@ func runDaemon() bool {
 	server := ipc.NewServer(sched)
 	server.SetCurrentVersion(daemonVersion)
 	server.SetTamper(tamperRec)
+	server.SetEventHub(hub)
 
 	// DNS Sinkhole ("Rei da Rede"): servidor DNS local (porta 53) que responde
 	// 0.0.0.0 para domínios bloqueados e encaminha o resto ao upstream
@@ -698,6 +712,7 @@ func runDaemon() bool {
 	// terminar, são registradas no analytics para o "focusguard stats".
 	pomo := pomodoro.New(sched)
 	pomo.SetNotifier(pomodoro.NewNotifier()) // beep nas transições work/rest/done
+	pomo.SetOnChange(func() { hub.Publish(ipc.EventPomodoroChanged) })
 	server.SetPomodoro(pomo)
 
 	// Preferências do pomodoro: work/rest/cycles da última sessão (--save)
@@ -706,7 +721,7 @@ func runDaemon() bool {
 	// valores resolvidos ao fim de cada sessão (mesmo sem --save).
 	pomoPrefs := pomodoro.NewPrefs(filepath.Join(filepath.Dir(statePath), "pomodoro.json"))
 	server.SetPomodoroPrefs(pomoPrefs)
-	stopPomoWatch := watchPomodoroCompletions(pomo, pomoPrefs)
+	stopPomoWatch := watchPomodoroCompletions(pomo, pomoPrefs, func() { hub.Publish(ipc.EventPomodoroComplete) })
 	if stopPomoWatch != nil {
 		components = append(components, daemon.StopOnly(stopPomoWatch))
 	}
@@ -729,6 +744,7 @@ func runDaemon() bool {
 	// persistidas em schedules.json. O worker de background aplica as janelas
 	// vencidas a cada 30s (e no boot); o IPC expõe schedule add/list/remove.
 	scheduleMgr := schedule.NewManager(filepath.Join(filepath.Dir(statePath), "schedules.json"))
+	scheduleMgr.SetOnChange(func() { hub.Publish(ipc.EventScheduleChanged) })
 	server.SetSchedules(scheduleMgr)
 	stopSchedule := startScheduleWorker(scheduleMgr, presetResolver{store: presetStore}, sched, scheduleCheckInterval)
 	if stopSchedule != nil {

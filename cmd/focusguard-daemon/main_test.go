@@ -1471,7 +1471,7 @@ func TestPersistPomodoroSummary_SubMinuteDurations(t *testing.T) {
 // TestWatchPomodoroCompletions_NilController is a no-op (daemon with a nil
 // controller must not panic).
 func TestWatchPomodoroCompletions_NilController(t *testing.T) {
-	stop := watchPomodoroCompletions(nil, nil)
+	stop := watchPomodoroCompletions(nil, nil, nil)
 	stop() // não deve panico
 }
 

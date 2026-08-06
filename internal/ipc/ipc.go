@@ -80,12 +80,28 @@ type Request struct {
 // Event is one daemon state-change notification (event-subscribe). Events are
 // coarse and payload-free on purpose: the daemon state is the source of truth,
 // so the subscriber re-fetches the affected data when an event arrives. Type
-// is a stable token ("blocks-changed", "pomodoro-changed",
-// "pomodoro-complete", "schedule-changed").
+// is one of the Event* type tokens below.
 type Event struct {
 	Type string    `json:"type"`
 	At   time.Time `json:"at"`
 }
+
+// Event type tokens (Fase 7): published by the daemon on the event hub and
+// relayed to the web UI over SSE. Keep them stable — the UI branches on these
+// strings to decide what to re-fetch.
+const (
+	// EventBlocksChanged fires after any block-state mutation (block/extend/
+	// batch/panic/expiry/reconcile) or scheduler settings change (DNS
+	// enabled/upstream — visível no status): the UI re-fetches status/blocks.
+	EventBlocksChanged = "blocks-changed"
+	// EventPomodoroChanged fires on pomodoro start/phase/stop.
+	EventPomodoroChanged = "pomodoro-changed"
+	// EventPomodoroComplete fires when a session finishes: the UI re-fetches
+	// stats too.
+	EventPomodoroComplete = "pomodoro-complete"
+	// EventScheduleChanged fires after schedule add/remove/import.
+	EventScheduleChanged = "schedule-changed"
+)
 
 type Response struct {
 	Success bool   `json:"success"`

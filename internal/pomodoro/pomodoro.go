@@ -124,6 +124,32 @@ type Controller struct {
 	strict   bool
 	watchCh  chan CompletionSummary
 	lastSum  CompletionSummary
+	// onChange is a coarse "state changed" hook (Fase 7): the daemon wires it
+	// to publish pomodoro-changed on the event hub, so the web UI refreshes
+	// the session state without polling. Called after every observable state
+	// change (start/phase/completion) WITHOUT holding c.mu.
+	onChange func()
+}
+
+// SetOnChange registers a callback invoked (without the controller lock) after
+// every observable session-state change: start, work/rest phase transition and
+// completion. Nil disables it. The callback must not call back into the
+// controller.
+func (c *Controller) SetOnChange(fn func()) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onChange = fn
+}
+
+// notifyChange fires the change hook outside the lock (safe to call anywhere
+// the caller does not hold c.mu).
+func (c *Controller) notifyChange() {
+	c.mu.Lock()
+	fn := c.onChange
+	c.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // New returns a Controller that blocks via the given Blocker.
@@ -204,6 +230,8 @@ func (c *Controller) Start(s Session) (State, error) {
 	}
 	c.mu.Unlock()
 
+	c.notifyChange()
+
 	// done é capturado localmente (como stop): cada sessão fecha o SEU canal.
 	// Fechar c.done direto aqui criaria uma corrida com o Start de uma nova
 	// sessão — se B começasse entre o reset de estado e o close, o goroutine
@@ -270,6 +298,8 @@ func (c *Controller) run(s Session, startedAt time.Time, stop, done chan struct{
 	}
 	c.mu.Unlock()
 
+	c.notifyChange()
+
 	c.record(s, startedAt, focus)
 
 	// Entrega o resumo de forma não-bloqueante: se ninguém está assistindo
@@ -307,10 +337,11 @@ func (c *Controller) record(s Session, startedAt time.Time, focus time.Duration)
 
 func (c *Controller) setPhase(phase Phase, cycle int, s Session, d time.Duration) {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	c.state.Phase = phase
 	c.state.Cycle = cycle
 	c.state.PhaseUntil = time.Now().Add(d)
+	c.mu.Unlock()
+	c.notifyChange()
 }
 
 // wait blocks until d elapses or stop is closed, reporting whether it was the

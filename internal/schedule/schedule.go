@@ -41,6 +41,31 @@ type Manager struct {
 	mu    sync.Mutex
 	path  string
 	rules []Rule
+	// onChange is a coarse "catalog changed" hook (Fase 7): the daemon wires it
+	// to publish schedule-changed on the event hub, so the web UI refreshes the
+	// agenda without polling. Called after every successful mutation
+	// (Add/Remove/Import) WITHOUT holding m.mu.
+	onChange func()
+}
+
+// SetOnChange registers a callback invoked (without the manager lock) after
+// every successful catalog mutation: add, remove and import. Nil disables it.
+// The callback must not call back into the manager.
+func (m *Manager) SetOnChange(fn func()) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.onChange = fn
+}
+
+// notifyChange fires the change hook outside the lock (safe to call anywhere
+// the caller does not hold m.mu).
+func (m *Manager) notifyChange() {
+	m.mu.Lock()
+	fn := m.onChange
+	m.mu.Unlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 // NewManager loads (or initializes) a Manager backed by path. A missing or
@@ -111,9 +136,8 @@ func (m *Manager) List() []Rule {
 // window would re-block forever).
 func (m *Manager) Add(r Rule) (Rule, error) {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if err := validateRule(r); err != nil {
+		m.mu.Unlock()
 		return Rule{}, err
 	}
 
@@ -121,8 +145,12 @@ func (m *Manager) Add(r Rule) (Rule, error) {
 	r.Label = strings.TrimSpace(r.Label)
 	m.rules = append(m.rules, cloneRule(r))
 	if err := m.save(); err != nil {
+		m.mu.Unlock()
 		return Rule{}, err
 	}
+	m.mu.Unlock()
+
+	m.notifyChange()
 	return cloneRule(r), nil
 }
 
@@ -164,14 +192,19 @@ func validateRule(r Rule) error {
 // Remove deletes the rule with the given ID.
 func (m *Manager) Remove(id string) error {
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	for i, r := range m.rules {
 		if r.ID == id {
 			m.rules = append(m.rules[:i], m.rules[i+1:]...)
-			return m.save()
+			if err := m.save(); err != nil {
+				m.mu.Unlock()
+				return err
+			}
+			m.mu.Unlock()
+			m.notifyChange()
+			return nil
 		}
 	}
+	m.mu.Unlock()
 	return fmt.Errorf("schedule: regra %q não encontrada", id)
 }
 

@@ -1715,11 +1715,27 @@ func TestScheduler_SetOnChange_NotifiesOnMutation(t *testing.T) {
 	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
 		t.Fatalf("BlockAllInternet: %v", err)
 	}
+	// Ajustes de configuração do DNS (visíveis no status) também avisam — o
+	// review da Fase 7 apontou o gap de staleness do status DNS.
+	if err := sched.SetDNSEnabled(true); err != nil {
+		t.Fatalf("SetDNSEnabled: %v", err)
+	}
+	if err := sched.SetDNSUpstream("1.1.1.1"); err != nil {
+		t.Fatalf("SetDNSUpstream: %v", err)
+	}
+	// Repetir o mesmo valor é no-op — não notifica (sem evento espúrio).
+	before := calls
+	if err := sched.SetDNSEnabled(true); err != nil {
+		t.Fatalf("SetDNSEnabled repetido: %v", err)
+	}
+	if before != calls {
+		t.Errorf("SetDNSEnabled com o mesmo valor notificou (esperava no-op)")
+	}
 
 	mu.Lock()
 	got := calls
 	mu.Unlock()
-	if got < 4 {
-		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 4 (Block/Extend/Batch/Panic)", got)
+	if got < 6 {
+		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 6 (Block/Extend/Batch/Panic/DNS)", got)
 	}
 }
