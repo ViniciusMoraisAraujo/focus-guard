@@ -73,8 +73,13 @@ type Request struct {
 }
 
 type Response struct {
-	Success         bool             `json:"success"`
-	Message         string           `json:"message,omitempty"`
+	Success bool   `json:"success"`
+	Message string `json:"message,omitempty"`
+	// Code is a stable, machine-readable error identifier (aditivo — Fase 2 do
+	// refactor-plan.md). Empty on success and on domain errors that carry no
+	// stable code; when present the UI/CLI may branch on it instead of parsing
+	// the human message (B12). Additive: old clients simply ignore it.
+	Code            string           `json:"code,omitempty"`
 	Blocks          []policy.Block   `json:"blocks,omitempty"`
 	ExpectedDoH     bool             `json:"expected_doh,omitempty"`
 	DoHActive       bool             `json:"doh_active,omitempty"`

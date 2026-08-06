@@ -119,6 +119,7 @@ export interface ApiRequest {
 export interface ApiResponse {
   success: boolean;
   message?: string;
+  code?: string; // Code is a stable, machine-readable error identifier (aditivo — Fase 2 do
   blocks?: Block[];
   expected_doh?: boolean;
   doh_active?: boolean;

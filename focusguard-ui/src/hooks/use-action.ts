@@ -6,6 +6,8 @@ import { toast } from "@/lib/toast";
 export interface ActionResult {
   ok: boolean;
   message: string;
+  /** Código de erro estável do daemon (Response.Code) — para a UI ramificar sem depender do texto. */
+  code?: string;
   updatePendingReboot?: boolean;
 }
 

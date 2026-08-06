@@ -393,6 +393,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if err != nil || d <= 0 {
 			resp = Response{
 				Success: false,
+				Code:    CodeDurationInvalid,
 				Message: "Duration invalid. Ex: --duration 4h, 30m"}
 			break
 		}
@@ -418,7 +419,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 		if req.Domain == "" {
-			resp = Response{Success: false, Message: "Informe um domínio ou --preset para bloquear."}
+			resp = Response{Success: false, Code: CodeDomainRequired, Message: "Informe um domínio ou --preset para bloquear."}
 			break
 		}
 		// --extend: soma a duração ao bloqueio ativo (ou cria um novo se não
@@ -442,6 +443,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			if existing := s.scheduler.ActiveBlock(req.Domain); existing != nil {
 				resp = Response{
 					Success:       false,
+					Code:          CodeDomainConflict,
 					Conflict:      true,
 					ConflictBlock: existing,
 					Message: fmt.Sprintf("Domínio já bloqueado até %s. Use --extend para somar ou --replace para reiniciar.",
@@ -489,6 +491,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if err != nil || d <= 0 {
 			resp = Response{
 				Success: false,
+				Code:    CodeDurationInvalid,
 				Message: "Duration invalid. Ex: --duration 4h, 30m"}
 			break
 		}
@@ -507,7 +510,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		p := s.tamperLog
 		s.mu.RUnlock()
 		if p == nil {
-			resp = Response{Success: false, Message: "tamper-log não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "tamper-log não configurado"}
 			break
 		}
 		events, err := p.Events()
@@ -522,7 +525,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		am := s.apps
 		s.mu.RUnlock()
 		if am == nil {
-			resp = Response{Success: false, Message: "denylist de apps não configurada"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "denylist de apps não configurada"}
 			break
 		}
 		resp = Response{Success: true, Apps: am.List()}
@@ -532,7 +535,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		am := s.apps
 		s.mu.RUnlock()
 		if am == nil {
-			resp = Response{Success: false, Message: "denylist de apps não configurada"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "denylist de apps não configurada"}
 			break
 		}
 		if err := am.Add(req.AppName); err != nil {
@@ -546,7 +549,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		am := s.apps
 		s.mu.RUnlock()
 		if am == nil {
-			resp = Response{Success: false, Message: "denylist de apps não configurada"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "denylist de apps não configurada"}
 			break
 		}
 		if err := am.Remove(req.AppName); err != nil {
@@ -560,7 +563,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		m := s.users
 		s.mu.RUnlock()
 		if m == nil {
-			resp = Response{Success: false, Message: "usuários não configurados"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
 			break
 		}
 		resp = Response{Success: true, Users: m.List()}
@@ -570,14 +573,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 		m := s.users
 		s.mu.RUnlock()
 		if m == nil {
-			resp = Response{Success: false, Message: "usuários não configurados"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
 			break
 		}
 		u, ok := m.Verify(req.UserName, req.UserPassword)
 		if !ok {
 			// Mensagem única para usuário desconhecido e senha errada — não
 			// revela qual dos dois falhou (best-effort; o IPC é local).
-			resp = Response{Success: false, Message: "usuário ou senha inválidos"}
+			resp = Response{Success: false, Code: CodeInvalid, Message: "usuário ou senha inválidos"}
 			break
 		}
 		resp = Response{Success: true, UserIsAdmin: u.IsAdmin}
@@ -587,7 +590,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		m := s.users
 		s.mu.RUnlock()
 		if m == nil {
-			resp = Response{Success: false, Message: "usuários não configurados"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
 			break
 		}
 		if err := m.Add(req.UserName, req.UserPassword); err != nil {
@@ -601,7 +604,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		m := s.users
 		s.mu.RUnlock()
 		if m == nil {
-			resp = Response{Success: false, Message: "usuários não configurados"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
 			break
 		}
 		if err := m.Remove(req.UserName); err != nil {
@@ -615,7 +618,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		m := s.users
 		s.mu.RUnlock()
 		if m == nil {
-			resp = Response{Success: false, Message: "usuários não configurados"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
 			break
 		}
 		if err := m.SetPassword(req.UserName, req.UserPassword); err != nil {
@@ -629,7 +632,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		sm := s.schedules
 		s.mu.RUnlock()
 		if sm == nil {
-			resp = Response{Success: false, Message: "agendamento não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
 			break
 		}
 		resp = Response{Success: true, Schedules: sm.List()}
@@ -639,7 +642,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		sm := s.schedules
 		s.mu.RUnlock()
 		if sm == nil {
-			resp = Response{Success: false, Message: "agendamento não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
 			break
 		}
 		if r, err := sm.Add(req.ScheduleRule); err != nil {
@@ -653,15 +656,15 @@ func (s *Server) handleConnection(conn net.Conn) {
 		sm := s.schedules
 		s.mu.RUnlock()
 		if sm == nil {
-			resp = Response{Success: false, Message: "agendamento não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
 			break
 		}
 		if strings.TrimSpace(req.ICSPreset) == "" {
-			resp = Response{Success: false, Message: "Informe o preset do calendário (ex: --preset social)."}
+			resp = Response{Success: false, Code: CodeInvalid, Message: "Informe o preset do calendário (ex: --preset social)."}
 			break
 		}
 		if strings.TrimSpace(req.ICSContent) == "" {
-			resp = Response{Success: false, Message: "Arquivo .ics vazio."}
+			resp = Response{Success: false, Code: CodeInvalid, Message: "Arquivo .ics vazio."}
 			break
 		}
 		// Preset inexistente seria importado silenciosamente e nunca aplicado
@@ -690,7 +693,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		sm := s.schedules
 		s.mu.RUnlock()
 		if sm == nil {
-			resp = Response{Success: false, Message: "agendamento não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
 			break
 		}
 		if err := sm.Remove(req.ScheduleID); err != nil {
@@ -707,7 +710,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		prefs := s.pomodoroPrefs
 		s.mu.RUnlock()
 		if prefs == nil {
-			resp = Response{Success: false, Message: "preferências de pomodoro não configuradas"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "preferências de pomodoro não configuradas"}
 			break
 		}
 		// Consulta os padrões atuais: work/cycles não informados (0) e rest
@@ -726,7 +729,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		r := s.pomodoro
 		s.mu.RUnlock()
 		if r == nil {
-			resp = Response{Success: false, Message: "pomodoro não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "pomodoro não configurado"}
 			break
 		}
 		if st, err := r.Stop(); err != nil {
@@ -740,7 +743,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		g := s.goalStore
 		s.mu.RUnlock()
 		if g == nil {
-			resp = Response{Success: false, Message: "meta diária não configurada"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "meta diária não configurada"}
 			break
 		}
 		resp = Response{Success: true, Goal: g.Get()}
@@ -750,11 +753,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 		g := s.goalStore
 		s.mu.RUnlock()
 		if g == nil {
-			resp = Response{Success: false, Message: "meta diária não configurada"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "meta diária não configurada"}
 			break
 		}
 		if req.GoalMinutes <= 0 || req.GoalMinutes > 24*60 {
-			resp = Response{Success: false, Message: "meta inválida (entre 1 e 1440 minutos)"}
+			resp = Response{Success: false, Code: CodeInvalid, Message: "meta inválida (entre 1 e 1440 minutos)"}
 			break
 		}
 		if err := g.Set(time.Duration(req.GoalMinutes) * time.Minute); err != nil {
@@ -768,7 +771,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		p := s.analytics
 		s.mu.RUnlock()
 		if p == nil {
-			resp = Response{Success: false, Message: "analytics não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "analytics não configurado"}
 			break
 		}
 		sessions, err := p.Sessions()
@@ -789,7 +792,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		p := s.analytics
 		s.mu.RUnlock()
 		if p == nil {
-			resp = Response{Success: false, Message: "analytics não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "analytics não configurado"}
 			break
 		}
 		sessions, err := p.Sessions()
@@ -804,7 +807,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		p := s.analytics
 		s.mu.RUnlock()
 		if p == nil {
-			resp = Response{Success: false, Message: "analytics não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "analytics não configurado"}
 			break
 		}
 		sessions, err := p.Sessions()
@@ -819,7 +822,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		c := s.dnsCtrl
 		s.mu.RUnlock()
 		if c == nil {
-			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
 			break
 		}
 		if err := c.Start(); err != nil {
@@ -848,7 +851,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		c := s.dnsCtrl
 		s.mu.RUnlock()
 		if c == nil {
-			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
 			break
 		}
 		if err := c.Stop(); err != nil {
@@ -867,7 +870,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		c := s.dnsCtrl
 		s.mu.RUnlock()
 		if c == nil {
-			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
 			break
 		}
 		resp = Response{Success: true}
@@ -878,12 +881,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 		c := s.dnsCtrl
 		s.mu.RUnlock()
 		if c == nil {
-			resp = Response{Success: false, Message: "servidor DNS não configurado"}
+			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
 			break
 		}
 		upstream, err := normalizeUpstream(req.Upstream)
 		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
+			resp = Response{Success: false, Code: CodeInvalid, Message: err.Error()}
 			break
 		}
 		// Persiste primeiro (espelho em disco), depois aplica no listener vivo
@@ -1002,7 +1005,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			resp.Message = "Nenhuma atualização disponível."
 		}
 	default:
-		resp = Response{Success: false, Message: "Not suported action: " + req.Action}
+		resp = Response{Success: false, Code: CodeUnknownAction, Message: "Not suported action: " + req.Action}
 	}
 
 	_ = json.NewEncoder(conn).Encode(resp)
@@ -1068,7 +1071,7 @@ func handlePomodoro(s *Server, req Request) Response {
 	}
 
 	if strings.TrimSpace(req.Preset) == "" {
-		return Response{Success: false, Message: "Informe um preset (ex: --preset social)."}
+		return Response{Success: false, Code: CodeInvalid, Message: "Informe um preset (ex: --preset social)."}
 	}
 	// Tetos defensivos: time.Duration(req.WorkMin)*time.Minute faria overflow
 	// (wrap) no int64 para valores gigantes — um --work 1e9 virava uma sessão
@@ -1089,10 +1092,10 @@ func handlePomodoro(s *Server, req Request) Response {
 		work, rest, cycles = prefs.Resolve(work, rest, cycles)
 	}
 	if work <= 0 || work > maxPomodoroMinutes {
-		return Response{Success: false, Message: fmt.Sprintf("Duração de trabalho inválida (--work entre 1 e %d minutos).", maxPomodoroMinutes)}
+		return Response{Success: false, Code: CodeDurationInvalid, Message: fmt.Sprintf("Duração de trabalho inválida (--work entre 1 e %d minutos).", maxPomodoroMinutes)}
 	}
 	if rest < 0 || rest > maxPomodoroMinutes || cycles < 1 || cycles > maxPomodoroCycles {
-		return Response{Success: false, Message: fmt.Sprintf("Parâmetros de pomodoro inválidos (--rest entre 0 e %d minutos, --cycles entre 1 e %d).", maxPomodoroMinutes, maxPomodoroCycles)}
+		return Response{Success: false, Code: CodeDurationInvalid, Message: fmt.Sprintf("Parâmetros de pomodoro inválidos (--rest entre 0 e %d minutos, --cycles entre 1 e %d).", maxPomodoroMinutes, maxPomodoroCycles)}
 	}
 
 	p, err := s.catalog().Resolve(req.Preset)
