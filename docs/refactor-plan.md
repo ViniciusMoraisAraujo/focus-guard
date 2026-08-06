@@ -1,8 +1,8 @@
 # Plano de Refatoração — FocusGuard (SOLID + System Design)
 
-> **Status:** **Fases 0, 1, 2, 3, 4 e 5 concluídas** (Fase 5 em 2026-08-06, incl.
-> lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em
-> `internal/update` — B4/B10) — ver seção 5; próximas: Fase 6 (CLI por comando).
+> **Status:** **Fases 0, 1, 2, 3, 4, 5 e 6 concluídas** (Fase 6 em 2026-08-06:
+> CLI por comando — B5) — ver seção 5; próximas: Fase 7 (eventos em tempo
+> real / `/ws`).
 > **Revisão (2026-08-05):** prioridades reordenadas — o frontend (antiga Fase 6)
 > passa a ser executado antes do núcleo Go (ver seção 5).
 > **Revisão (2026-08-05):** execução da Fase 0 (caracterização — vitest, 19
@@ -73,7 +73,7 @@ CLI/Tray/Web ── IPC (JSON over socket; Request/Response universais) ──�
 | Artefato | Tamanho | Papel |
 |---|---|---|
 | `internal/ipc/server.go` | 1127 linhas, **34 `case`** | Roteador + executor de TODAS as ações |
-| `cmd/focusguard/main.go` | 1447 linhas, **41 `case`** | CLI: parse + implementação de todos os comandos |
+| `cmd/focusguard/` (14 arquivos) | `main.go` ~40 linhas + tabela `commands.go` (23 comandos) | CLI: parse + dispatch pela tabela; um arquivo por comando (B5) |
 | `cmd/focusguard-daemon/main.go` | ~900 linhas | Composition root + orquestração de update + workers |
 | `internal/scheduler/scheduler.go` | ~900 linhas | Ciclo de vida de blocos + cache DNS + snapshot + refresh + DNS settings |
 | `internal/httpapi/httpapi.go` + `auth.go` | ~700 linhas | Web server: estático + proxy IPC + auth + rate limit |
@@ -194,8 +194,9 @@ func runDaemon(ctx context.Context) error {
 
 ### 4.4 CLI (cmd/focusguard)
 
-- `main.go` (1447 linhas) → `commands/` com **um arquivo por comando** (`block.go`, `pomodoro.go`, `schedule.go`, `user.go`, `web.go`, `update.go`...), cada um com teste próprio.
-- Tabela de comandos `map[string]Command{Name, Run(ctx, args), Usage}` — comando novo = novo arquivo + registro (OCP).
+- ✅ **Feito (Fase 6)**: `main.go` (1447 linhas, 41 `case`) → **um arquivo por comando** em `cmd/focusguard/` (`block.go`, `pomodoro.go`, `schedule.go`, `apps.go`, `dns.go`, `web.go`, `update.go`, `install.go`...) + `commands.go` com a tabela `map[string]Command{Name, Run, Usage}` — comando novo = novo arquivo + uma entrada na tabela (e no `usageOrder`) (OCP).
+- O `printUsage` gera a seção "Uso:" do help a partir da própria tabela (o `Usage` de cada comando) — comando novo aparece no help automaticamente.
+- Decisão: a extração ficou em arquivos do mesmo pacote `main` (não um subpacote `commands/`), porque os 90 testes de `main_test.go` chamam os handlers não-exportados — migrá-los para um subpacote seria churn sem ganho de comportamento.
 
 ### 4.5 Contrato IPC v2 (compatível)
 
@@ -227,7 +228,7 @@ func runDaemon(ctx context.Context) error {
 | **3. Registry de ações** ✅ | `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`spec.go`); `ipc.Server` vira roteador (registry-first + fallback legado); `httpapi` consome `SpecFor` (B2/B6/B7) | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
 | **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
 | **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP); lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em `internal/update` (B4/B10) | Alto | médio | G |
-| **6. CLI por comando** | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
+| **6. CLI por comando** ✅ | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
 | **7. Eventos em tempo real** | `/ws` ou SSE no lugar do polling — **depende do event hub no daemon** (F3 do ui-plan) | Médio (F5) | médio | G |
 | **8. Observabilidade** (opcional) | Métricas de latência por ação IPC/HTTP, logs estruturados leves | Médio (C3) | baixo | P |
 
@@ -265,7 +266,7 @@ Por fase (manter as regras do AGENT.md §5):
 | Métrica | Hoje | Alvo |
 |---|---|---|
 | `internal/ipc/server.go` | 1127 linhas / 34 casos | < 350 (roteador + registry) |
-| `cmd/focusguard/main.go` | 1447 linhas / 41 casos | < 200 (parse + tabela) |
+| `cmd/focusguard/main.go` | ~40 linhas (parse + dispatch) / tabela com 23 comandos | < 200 (parse + tabela) ✅ |
 | `cmd/focusguard-daemon/main.go` | ~900 linhas | < 300 (boot enxuto) |
 | Linhas para adicionar uma ação nova | 6+ arquivos (Go ×3, TS ×2, docs) | 1 handler + 1 registro (+ codegen automático) |
 | Contrato Go↔TS | manual | gerado por `make contract` |
@@ -984,9 +985,40 @@ handlers vivem nos pacotes de domínio e o daemon os registra no boot:
    referência). 17 call sites de teste migrados. Validação: suíte interna
    verde, `contract-check` em dia.
 
+### Fase 6 — CLI por comando (✅ concluída em 2026-08-06)
+
+`cmd/focusguard/main.go` (1447 linhas, switch de 41 `case`) virou **parse +
+dispatch fino** (~40 linhas) sobre uma **tabela de comandos** (B5/OCP):
+
+1. **`commands.go`** — `type Command{Name, Run(*ipc.Client, []string), Usage
+   []string}` + `commands map[string]Command` (23 entradas; aliases `missions`/
+   `mission` apontam para o mesmo Command) + `usageOrder []string` (ordem de
+   exibição do help — mapas não têm ordem).
+2. **Um arquivo por comando** em `cmd/focusguard/` (todos `package main`):
+   `block.go`, `presets.go`, `pomodoro.go`, `schedule.go`, `apps.go`, `dns.go`,
+   `stats.go` (stats/report/mission/tamper-log), `goal.go`, `status.go`,
+   `update.go`, `web.go` (comando + helpers de spawn/sonda/navegador),
+   `install.go` (install/uninstall/watchdog/tray) e `usage.go`.
+3. **`printUsage` passou a ser gerado pela tabela**: a seção "Uso:" do help
+   itera `usageOrder` e imprime o `Usage` de cada comando (linhas verbatim do
+   texto anterior — saída inalterada, coberta pelos 90 testes de
+   `main_test.go`, intocados).
+4. **Comportamento preservado**: mensagens, exit codes, flags, dispatch por
+   alias e a abertura da web sem argumentos — tudo 1:1; os 90 testes do CLI
+   verdes sem mudança.
+5. **Decisão deliberada**: a extração ficou em arquivos do mesmo pacote
+   `main` (não um subpacote `commands/`), porque os testes de `main_test.go`
+   chamam os handlers não-exportados diretamente — migrar 2266 linhas de
+   testes para um subpacote seria churn sem ganho de comportamento. A
+   arquitetura-alvo (um arquivo por comando + tabela) está de pé.
+
+Validação: `go build`/`vet` verdes, suíte Go completa verde,
+`contract-check` em dia, `gofmt` limpo (novos arquivos). Commits:
+- `refactor(cli): split main.go into one file per command with a table (B5)`
+
 ### Próximo passo
 
-1. **Fase 6 — CLI por comando**: `cmd/focusguard/main.go` → `commands/` com um
-   arquivo por comando + tabela (B5).
+1. **Fase 7 — Eventos em tempo real**: `/ws` ou SSE no lugar do polling do
+   frontend (F5) — **depende do event hub no daemon** (ver seção 5).
 2. Cada fase vira uma issue/PR separada seguindo `docs/release.md` se for
    cortar release entre fases.

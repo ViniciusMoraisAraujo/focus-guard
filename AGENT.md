@@ -53,7 +53,10 @@ maintain focus, operating at the system level (`hosts` file + firewall
 rules). It's a client-server application:
 
 - **CLI** (`focusguard`) — command-line interface; with no arguments it
-  opens the web UI in the browser.
+  opens the web UI in the browser. `cmd/focusguard/` has **one file per
+  command** + a `Command` table (`commands.go`): a new command is a new file
+  + one entry in the table (and `usageOrder` for the help order) — the help
+  is generated from the table (B5).
 - **Daemon** (`focusguard-daemon`) — background service that applies and
   maintains blocks; talks to the CLI via IPC (Unix socket).
 - **Tray** (`focusguard-tray`) — system tray icon with quick actions.
