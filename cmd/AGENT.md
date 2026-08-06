@@ -13,7 +13,7 @@ renderiza a resposta. A lógica real vive em `internal/`.
 | Binário | Papel | Recursos Windows |
 |---|---|---|
 | `focusguard/` | CLI (sem args → abre a web via `focusguard-web`) | `versioninfo.json` próprio (ícone, sem manifest) |
-| `focusguard-daemon/` | Serviço em background (privilegiado) | `versioninfo.json` da raiz + manifest `requireAdministrator` |
+| `focusguard-daemon/` | Serviço em background (privilegiado) | `packaging/versioninfo-daemon.json` + manifest `requireAdministrator` |
 | `focusguard-tray/` | Bandeja do sistema | `versioninfo.json` **só ícone — nunca manifest** |
 | `focusguard-watchdog/` | Health-check / Smart Recovery | `versioninfo.json` próprio (ícone + versão, sem manifest) |
 | `focusguard-web/` | Serve a UI + proxy das ações IPC (user-space) | **sem manifest** — nunca adicionar admin |

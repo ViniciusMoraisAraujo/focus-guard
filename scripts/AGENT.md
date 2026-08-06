@@ -85,4 +85,5 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 - `bash -n scripts/build-msi.sh scripts/install-linux.sh` — sintaxe.
 - PowerShell: `powershell -NoProfile -ExecutionPolicy Bypass -File
   install-daemon.ps1 status` (o install/uninstall exigem admin).
-- `go run ./scripts/verifyicon` após `make icon && make winres`.
+- `go run ./scripts/verifyicon/main.go` após `make icon && make winres` (o
+  script tem `//go:build ignore`, então passe o arquivo explicitamente).

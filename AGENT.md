@@ -146,7 +146,7 @@ Web (focusguard-web) ────┘                                        │
 | Binary | Role | Windows resources |
 |---|---|---|
 | `focusguard` | CLI (commands; no args opens the web UI) | `cmd/focusguard/versioninfo.json` (icon only, no manifest) |
-| `focusguard-daemon` | Background service | root `versioninfo.json` + `focusguard-daemon.exe.manifest` (**`requireAdministrator`**) |
+| `focusguard-daemon` | Background service | `packaging/versioninfo-daemon.json` + `packaging/focusguard-daemon.exe.manifest` (**`requireAdministrator`**) |
 | `focusguard-tray` | System tray | `cmd/focusguard-tray/versioninfo.json` (**icon only — NEVER manifest/admin**) |
 | `focusguard-watchdog` | Health-check / Smart Recovery | `cmd/focusguard-watchdog/versioninfo.json` (icon + version, no manifest) |
 | `focusguard-web` | Serves the web UI + proxies IPC actions (user-space, on demand) | No manifest — **never** add admin |
@@ -272,7 +272,8 @@ go test ./... -count=1 -timeout=60s   # make test
 
 - Package-specific tests: `go test ./internal/<pkg>/... -v`.
 - After touching icon/versioninfo: `make icon && make winres` and verify
-  the embedded icon with `go run ./scripts/verifyicon`.
+  the embedded icon with `go run ./scripts/verifyicon/main.go` (the script
+  carries a `//go:build ignore` tag, so pass the file explicitly).
 - After touching `install-daemon.ps1`: validate the syntax with the
   PowerShell parser and **confirm the BOM (EF BB BF) was preserved**.
 - ⚠️ Windows: `go test ./cmd/focusguard-daemon/...` requires an **elevated**
