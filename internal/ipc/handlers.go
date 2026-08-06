@@ -8,11 +8,11 @@ import (
 	"focusguard/internal/preset"
 )
 
-// registerHandlers wires the migrated actions into the registry (Fase 3). O
-// Server mantém os Set* como fonte das dependências — os handlers leem os
-// campos sob o mutex no momento do Handle (o daemon pode configurá-los depois
-// de NewServer). A Fase 4 move cada handler para o pacote de domínio com
-// interfaces estreitas (DIP) e o registro para o composition root.
+// registerHandlers wires the actions into the registry. O Server mantém os
+// Set* como fonte das dependências — os handlers leem os campos sob o mutex no
+// momento do Handle (o daemon pode configurá-los depois de NewServer). A Fase
+// 5 move cada handler para o pacote de domínio com interfaces estreitas (DIP)
+// e o registro para o composition root.
 //
 // Regra do estrangler: o corpo de cada handler reproduz 1:1 o case antigo
 // (mensagens, códigos e ordem inalterados) — comportamento preservado.
@@ -27,6 +27,30 @@ func (s *Server) registerHandlers() {
 	s.registry.Register(funcHandler{action: "tamper-log", handle: s.handleTamperLog})
 	s.registry.Register(funcHandler{action: "goal-get", handle: s.handleGoalGet})
 	s.registry.Register(funcHandler{action: "goal-set", handle: s.handleGoalSet})
+	s.registry.Register(funcHandler{action: "stats", handle: s.handleStats})
+	s.registry.Register(funcHandler{action: "missions", handle: s.handleMissions})
+	s.registry.Register(funcHandler{action: "sessions", handle: s.handleSessions})
+	s.registry.Register(funcHandler{action: "schedule-list", handle: s.handleScheduleList})
+	s.registry.Register(funcHandler{action: "schedule-add", handle: s.handleScheduleAdd})
+	s.registry.Register(funcHandler{action: "schedule-import", handle: s.handleScheduleImport})
+	s.registry.Register(funcHandler{action: "schedule-remove", handle: s.handleScheduleRemove})
+	s.registry.Register(funcHandler{action: "pomodoro", handle: s.handlePomodoroStart})
+	s.registry.Register(funcHandler{action: "pomodoro-defaults", handle: s.handlePomodoroDefaults})
+	s.registry.Register(funcHandler{action: "pomodoro-stop", handle: s.handlePomodoroStop})
+	s.registry.Register(funcHandler{action: "update", handle: s.handleUpdate})
+	s.registry.Register(funcHandler{action: "update-check", handle: s.handleUpdateCheck})
+	s.registry.Register(funcHandler{action: "block", handle: s.handleBlock})
+	s.registry.Register(funcHandler{action: "block-all", handle: s.handleBlockAll})
+	s.registry.Register(funcHandler{action: "status", handle: s.handleStatus})
+	s.registry.Register(funcHandler{action: "user-list", handle: s.handleUserList})
+	s.registry.Register(funcHandler{action: "user-verify", handle: s.handleUserVerify})
+	s.registry.Register(funcHandler{action: "user-add", handle: s.handleUserAdd})
+	s.registry.Register(funcHandler{action: "user-remove", handle: s.handleUserRemove})
+	s.registry.Register(funcHandler{action: "user-set-password", handle: s.handleUserSetPassword})
+	s.registry.Register(funcHandler{action: "dns-start", handle: s.handleDNSStart})
+	s.registry.Register(funcHandler{action: "dns-stop", handle: s.handleDNSStop})
+	s.registry.Register(funcHandler{action: "dns-status", handle: s.handleDNSStatus})
+	s.registry.Register(funcHandler{action: "dns-set-upstream", handle: s.handleDNSSetUpstream})
 }
 
 // appsManager, tamperProvider e goalManager são accessors com lock, espelho do

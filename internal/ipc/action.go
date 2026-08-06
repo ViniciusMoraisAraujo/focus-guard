@@ -5,16 +5,14 @@ import (
 	"encoding/json"
 	"errors"
 	"net"
+
+	"focusguard/internal/ipcerr"
 )
 
 // Handler executes ONE action, registered in the Registry. Validate is pure
 // (payload × action checks, no dependencies or side effects) and runs before
 // Handle; Handle performs the work with the dependencies it received by
 // constructor (DIP). The router converts errors via writeError.
-//
-// Fase 3: low-risk actions are migrated as funcHandler adapters over the
-// Server's existing interfaces; Fase 4 moves each one to a domain package
-// with explicit structs and narrow dependency interfaces.
 type Handler interface {
 	Action() string
 	Validate(*Request) error
@@ -38,19 +36,26 @@ func Err(code, message string) *ActionError {
 }
 
 // writeError encodes an error into a Response on conn. ActionError keeps its
-// stable code; any other error keeps its message (success:false).
+// stable code; *ipcerr.Error (the shared code carried by the domain services
+// that cannot import ipc — analytics, pomodoro, schedule, tamper) is mapped to
+// the same wire shape; any other error keeps its message (success:false).
 func writeError(conn net.Conn, err error) {
 	var ae *ActionError
 	if errors.As(err, &ae) {
 		_ = json.NewEncoder(conn).Encode(&Response{Success: false, Code: ae.Code, Message: ae.Message})
 		return
 	}
+	var se *ipcerr.Error
+	if errors.As(err, &se) {
+		_ = json.NewEncoder(conn).Encode(&Response{Success: false, Code: se.Code, Message: se.Message})
+		return
+	}
 	_ = json.NewEncoder(conn).Encode(&Response{Success: false, Message: err.Error()})
 }
 
-// funcHandler adapts plain functions to the Handler interface — the Fase 3
-// adapter used by the server's in-package handlers before they migrate to
-// domain packages (Fase 4).
+// funcHandler adapts plain functions to the Handler interface — the adapter
+// used by the server's in-package handlers (Fase 5 moves each one to a domain
+// package with explicit structs).
 type funcHandler struct {
 	action   string
 	validate func(*Request) error

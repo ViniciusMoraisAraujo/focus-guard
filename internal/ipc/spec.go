@@ -93,7 +93,7 @@ func SpecFor(action string) (ActionSpec, bool) {
 
 // SpecActions returns the spec'd action names, sorted — used by boot
 // validation and tests to detect drift between the spec table and the
-// registry (Fase 4 closes the loop: every spec must have a handler).
+// registry (every spec must have a handler).
 func SpecActions() []string {
 	out := make([]string, 0, len(specs))
 	for a := range specs {

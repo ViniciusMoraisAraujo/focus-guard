@@ -8,8 +8,8 @@ import (
 
 // Registry holds the action handlers by action name. The daemon registers
 // every handler at boot (Fase 5 moves the registration to the composition
-// root); the Server's router dispatches through it with the legacy switch as
-// fallback until every action migrates (Fase 4).
+// root); the Server's router dispatches through it, with a CodeUnknownAction
+// response for actions without a handler.
 type Registry struct {
 	mu   sync.RWMutex
 	byID map[string]Handler
@@ -51,9 +51,9 @@ func (r *Registry) Actions() []string {
 // ValidateSpecs checks the registry→specs closure: every registered handler
 // must have an ActionSpec (otherwise the web proxy would 403 it silently — a
 // handler forgotten in the spec table is a boot-time bug, not a runtime
-// surprise). The reverse direction (every spec has a handler) is enforced
-// once the legacy switch empties in Fase 4; web-only actions the daemon still
-// serves (user-verify) are exempt.
+// surprise). The reverse direction (every spec has a handler) is enforced by
+// TestServer_SpecsAllHaveHandlers; web-only actions the daemon still serves
+// (user-verify) are exempt.
 func (r *Registry) ValidateSpecs(webOnly ...string) error {
 	exempt := make(map[string]bool, len(webOnly))
 	for _, a := range webOnly {

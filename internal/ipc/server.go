@@ -27,20 +27,11 @@ import (
 // (cada conexão IPC roda na própria goroutine, então pings não são bloqueados).
 const updateTimeout = 120 * time.Second
 
-// errUpdateNotConfigured is returned when no update checker is wired up
-// (dev builds).
-var errUpdateNotConfigured = errors.New("auto-update não configurado")
-
-// maxSessionsReturned caps the "sessions" IPC response so the UI never
-// receives the whole analytics file (a long-time user can have thousands of
-// lines).
-const maxSessionsReturned = 50
-
 type Server struct {
 	scheduler *scheduler.Scheduler
-	// registry holds the action handlers (Fase 3): o roteador despacha por
-	// registry.Get → Validate → Handle; as ações ainda não migradas caem no
-	// dispatchLegacy (switch legado) até a Fase 4 eliminá-lo.
+	// registry holds the action handlers: o roteador despacha por
+	// registry.Get → Validate → Handle; ação desconhecida vira
+	// CodeUnknownAction (wire protocol preservado do switch legado).
 	registry        *Registry
 	listener        net.Listener
 	updateChecker   UpdateChecker
@@ -60,6 +51,11 @@ type Server struct {
 
 	mu           sync.RWMutex
 	updateStatus UpdateStatus
+	// updateApplied é o latch armado quando a ação "update" aplica um binário
+	// novo; o roteador o consome (takeUpdateApplied) APÓS escrever a resposta
+	// para disparar o onUpdateApplied (restart do daemon) — mesma ordem do
+	// switch legado.
+	updateApplied bool
 }
 
 // PresetManager is the preset catalog used by the block/pomodoro/presets
@@ -274,6 +270,22 @@ func NewServer(sched *scheduler.Scheduler) *Server {
 	return s
 }
 
+// ValidateRegistry closes the specs↔registry contract at boot: every
+// registered handler must have an ActionSpec (user-verify is web-only and
+// exempt) and every spec must have a handler. The daemon calls it after wiring
+// the dependencies; a drift is a boot-time bug, not a runtime surprise.
+func (s *Server) ValidateRegistry() error {
+	if err := s.registry.ValidateSpecs("user-verify"); err != nil {
+		return err
+	}
+	for _, action := range SpecActions() {
+		if _, ok := s.registry.Get(action); !ok {
+			return fmt.Errorf("spec sem handler: %q (registre o handler)", action)
+		}
+	}
+	return nil
+}
+
 func (s *Server) SetUpdateChecker(c UpdateChecker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -329,27 +341,6 @@ func (s *Server) RefreshUpdateStatus(ctx context.Context) (UpdateStatus, error) 
 	return st, nil
 }
 
-// runUpdateCheck runs the update checker for the given channel, caches the
-// result (so the status action surfaces it) and returns it. apply=true also
-// applies the update to the binaries. Shared by the "update" and
-// "update-check" IPC actions.
-func (s *Server) runUpdateCheck(ctx context.Context, apply bool, channel string) (UpdateStatus, error) {
-	s.mu.RLock()
-	c := s.updateChecker
-	s.mu.RUnlock()
-	if c == nil {
-		return UpdateStatus{}, errUpdateNotConfigured
-	}
-	st, err := c.Check(ctx, apply, channel)
-	if err != nil {
-		return st, err
-	}
-	s.mu.Lock()
-	s.updateStatus = st
-	s.mu.Unlock()
-	return st, nil
-}
-
 func (s *Server) Start() error {
 	l, err := Listen()
 	if err != nil {
@@ -390,11 +381,11 @@ func (s *Server) handleConnection(conn net.Conn) {
 		return
 	}
 
-	// Roteador fino (Fase 3): ações migradas para o registry passam por
-	// registry.Get → Validate → Handle; as demais caem no switch legado até a
-	// Fase 4 migrá-las para handlers (strangler). Wire protocol inalterado.
-	// Defensivo: um Server construído sem NewServer (registry nil) degrada para
-	// o dispatchLegacy em vez de panico.
+	// Roteador: registry.Get → Validate → Handle. O switch legado foi
+	// eliminado (Fase 4) — toda ação conhecida tem handler registrado, e a
+	// desconhecida cai no 404 abaixo. Wire protocol inalterado.
+	// Defensivo: um Server construído sem NewServer (registry nil) degrada
+	// para a resposta de ação desconhecida em vez de pânico.
 	if s.registry != nil {
 		if h, ok := s.registry.Get(req.Action); ok {
 			if err := h.Validate(&req); err != nil {
@@ -407,546 +398,22 @@ func (s *Server) handleConnection(conn net.Conn) {
 				return
 			}
 			_ = json.NewEncoder(conn).Encode(resp)
-			return // handlers migrados nunca aplicam update — o hook fica para o legado
+			// Hook de restart pós-resposta (mesma ordem do legado): o update é
+			// o único handler que arma o latch — para os demais é um no-op.
+			if s.takeUpdateApplied() {
+				s.dispatchUpdateHook()
+			}
+			return
 		}
 	}
 
-	legacy, updateApplied := s.dispatchLegacy(req)
-	_ = json.NewEncoder(conn).Encode(&legacy)
-
-	// Notifica o hook de restart APÓS a resposta já ter sido escrita no socket
-	// (o CLI foca no fflush antes do daemon sair do processo). O hook faz o
-	// daemon encerrar para o systemd/watchdog subirem o binário novo — sem
-	// isso ficaria o "daemon zumbi" rodando a versão antiga em RAM.
-	if updateApplied {
-		s.mu.RLock()
-		fn := s.onUpdateApplied
-		s.mu.RUnlock()
-		if fn != nil {
-			go fn()
-		}
-	}
-}
-
-// dispatchLegacy executa as ações ainda não migradas para o registry
-// (strangler: o switch encolhe a cada migração e a Fase 4 o elimina).
-// Devolve a resposta e se um update foi aplicado — o roteador dispara o hook
-// de restart só depois de a resposta ser escrita no socket.
-func (s *Server) dispatchLegacy(req Request) (resp Response, updateApplied bool) {
-	switch req.Action {
-	case "block":
-		d, err := time.ParseDuration(req.Duration)
-		// d <= 0 também é rejeitado: um bloqueio de 0s expiraria imediatamente
-		// (bloqueio sem efeito que ainda aplica/remove regras de firewall).
-		if err != nil || d <= 0 {
-			resp = Response{
-				Success: false,
-				Code:    CodeDurationInvalid,
-				Message: "Duration invalid. Ex: --duration 4h, 30m"}
-			break
-		}
-		if req.Preset != "" {
-			p, perr := s.catalog().Resolve(req.Preset)
-			if perr != nil {
-				resp = Response{Success: false, Message: perr.Error()}
-				break
-			}
-			blocks, berr := s.scheduler.BlockDomains(p.Domains, d)
-			if berr != nil {
-				resp = Response{Success: false, Message: berr.Error()}
-			} else if len(blocks) == 0 {
-				// Defensivo: nunca indexar blocks[0] — evita pânico no servidor se
-				// o scheduler um dia retornar sucesso sem blocos.
-				resp = Response{Success: true, Message: fmt.Sprintf("Preset %s: nenhum domínio novo bloqueado", p.Name)}
-			} else {
-				resp = Response{
-					Success: true,
-					Message: fmt.Sprintf("Preset %s bloqueado (%d domínios) até %s", p.Name, len(blocks), blocks[0].ExpiresAt.Local().Format("15:04:05 02/01/2006")),
-				}
-			}
-			break
-		}
-		if req.Domain == "" {
-			resp = Response{Success: false, Code: CodeDomainRequired, Message: "Informe um domínio ou --preset para bloquear."}
-			break
-		}
-		// --extend: soma a duração ao bloqueio ativo (ou cria um novo se não
-		// houver). Não passa pela detecção de conflito.
-		if req.Extend {
-			block, err := s.scheduler.ExtendBlock(req.Domain, d)
-			if err != nil {
-				resp = Response{Success: false, Message: err.Error()}
-			} else {
-				resp = Response{
-					Success: true,
-					Message: fmt.Sprintf("Domain %s extended until %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006")),
-				}
-			}
-			break
-		}
-		// Comportamento padrão (ask-first): um domínio já bloqueado é um
-		// CONFLITO a ser resolvido pelo usuário (somar/substituir), não um
-		// sobrescrita silenciosa. --replace pula o conflito e reinicia a janela.
-		if !req.Replace {
-			if existing := s.scheduler.ActiveBlock(req.Domain); existing != nil {
-				resp = Response{
-					Success:       false,
-					Code:          CodeDomainConflict,
-					Conflict:      true,
-					ConflictBlock: existing,
-					Message: fmt.Sprintf("Domínio já bloqueado até %s. Use --extend para somar ou --replace para reiniciar.",
-						existing.ExpiresAt.Local().Format("15:04:05 02/01/2006")),
-				}
-				break
-			}
-		}
-		block, err := s.scheduler.Block(req.Domain, d)
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{
-				Success: true,
-				Message: fmt.Sprintf("Domain %s blocked  %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006")),
-			}
-		}
-
-	case "block-all":
-		d, err := time.ParseDuration(req.Duration)
-		if err != nil || d <= 0 {
-			resp = Response{
-				Success: false,
-				Code:    CodeDurationInvalid,
-				Message: "Duration invalid. Ex: --duration 4h, 30m"}
-			break
-		}
-		block, err := s.scheduler.BlockAllInternet(req.Allowlist, d)
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{
-				Success: true,
-				Message: fmt.Sprintf("Internet bloqueada até %s%s", block.ExpiresAt.Local().Format("15:04:05 02/01/2006"), blockAllModeSuffix(req.Allowlist)),
-			}
-		}
-
-	case "user-list":
-		s.mu.RLock()
-		m := s.users
-		s.mu.RUnlock()
-		if m == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
-			break
-		}
-		resp = Response{Success: true, Users: m.List()}
-
-	case "user-verify":
-		s.mu.RLock()
-		m := s.users
-		s.mu.RUnlock()
-		if m == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
-			break
-		}
-		u, ok := m.Verify(req.UserName, req.UserPassword)
-		if !ok {
-			// Mensagem única para usuário desconhecido e senha errada — não
-			// revela qual dos dois falhou (best-effort; o IPC é local).
-			resp = Response{Success: false, Code: CodeInvalid, Message: "usuário ou senha inválidos"}
-			break
-		}
-		resp = Response{Success: true, UserIsAdmin: u.IsAdmin}
-
-	case "user-add":
-		s.mu.RLock()
-		m := s.users
-		s.mu.RUnlock()
-		if m == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
-			break
-		}
-		if err := m.Add(req.UserName, req.UserPassword); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Usuário %s criado", req.UserName)}
-		}
-
-	case "user-remove":
-		s.mu.RLock()
-		m := s.users
-		s.mu.RUnlock()
-		if m == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
-			break
-		}
-		if err := m.Remove(req.UserName); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Usuário %s removido", req.UserName)}
-		}
-
-	case "user-set-password":
-		s.mu.RLock()
-		m := s.users
-		s.mu.RUnlock()
-		if m == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "usuários não configurados"}
-			break
-		}
-		if err := m.SetPassword(req.UserName, req.UserPassword); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Senha de %s atualizada", req.UserName)}
-		}
-
-	case "schedule-list":
-		s.mu.RLock()
-		sm := s.schedules
-		s.mu.RUnlock()
-		if sm == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
-			break
-		}
-		resp = Response{Success: true, Schedules: sm.List()}
-
-	case "schedule-add":
-		s.mu.RLock()
-		sm := s.schedules
-		s.mu.RUnlock()
-		if sm == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
-			break
-		}
-		if r, err := sm.Add(req.ScheduleRule); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Regra %s criada: %s das %s às %s", r.ID, r.Preset, r.Start, r.End)}
-		}
-
-	case "schedule-import":
-		s.mu.RLock()
-		sm := s.schedules
-		s.mu.RUnlock()
-		if sm == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
-			break
-		}
-		if strings.TrimSpace(req.ICSPreset) == "" {
-			resp = Response{Success: false, Code: CodeInvalid, Message: "Informe o preset do calendário (ex: --preset social)."}
-			break
-		}
-		if strings.TrimSpace(req.ICSContent) == "" {
-			resp = Response{Success: false, Code: CodeInvalid, Message: "Arquivo .ics vazio."}
-			break
-		}
-		// Preset inexistente seria importado silenciosamente e nunca aplicado
-		// (o worker pula presets que não resolvem) — valida cedo via catálogo.
-		if _, err := s.catalog().Resolve(req.ICSPreset); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		added, err := sm.ImportICS([]byte(req.ICSContent), req.ICSPreset)
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		if len(added) == 0 {
-			resp = Response{Success: false, Message: "Nenhum evento semanal encontrado no calendário."}
-			break
-		}
-		resp = Response{
-			Success:   true,
-			Schedules: added,
-			Message:   fmt.Sprintf("%d regras importadas do calendário (preset %s)", len(added), req.ICSPreset),
-		}
-
-	case "schedule-remove":
-		s.mu.RLock()
-		sm := s.schedules
-		s.mu.RUnlock()
-		if sm == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "agendamento não configurado"}
-			break
-		}
-		if err := sm.Remove(req.ScheduleID); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: fmt.Sprintf("Regra %s removida", req.ScheduleID)}
-		}
-
-	case "pomodoro":
-		resp = handlePomodoro(s, req)
-
-	case "pomodoro-defaults":
-		s.mu.RLock()
-		prefs := s.pomodoroPrefs
-		s.mu.RUnlock()
-		if prefs == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "preferências de pomodoro não configuradas"}
-			break
-		}
-		// Consulta os padrões atuais: work/cycles não informados (0) e rest
-		// não informado (-1) — 0 é um valor legítimo para rest (sem descanso).
-		work, rest, cycles := prefs.Resolve(0, -1, 0)
-		resp = Response{
-			Success:       true,
-			PomodoroWork:  work,
-			PomodoroRest:  rest,
-			PomodoroCycle: cycles,
-			Message:       fmt.Sprintf("Padrões atuais: %dm trabalho / %dm descanso / %d ciclos", work, rest, cycles),
-		}
-
-	case "pomodoro-stop":
-		s.mu.RLock()
-		r := s.pomodoro
-		s.mu.RUnlock()
-		if r == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "pomodoro não configurado"}
-			break
-		}
-		if st, err := r.Stop(); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Message: "Pomodoro encerrado", Pomodoro: &st}
-		}
-
-	case "stats":
-		s.mu.RLock()
-		p := s.analytics
-		s.mu.RUnlock()
-		if p == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "analytics não configurado"}
-			break
-		}
-		sessions, err := p.Sessions()
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		var st *analytics.Stats
-		if req.Mission != "" {
-			st = analytics.SummarizeByLabel(sessions, req.Mission, 7, time.Now())
-		} else {
-			st = analytics.Summarize(sessions, 7, time.Now())
-		}
-		resp = Response{Success: true, Stats: st}
-
-	case "missions":
-		s.mu.RLock()
-		p := s.analytics
-		s.mu.RUnlock()
-		if p == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "analytics não configurado"}
-			break
-		}
-		sessions, err := p.Sessions()
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		resp = Response{Success: true, LabelStats: analytics.SummarizeLabels(sessions)}
-
-	case "sessions":
-		s.mu.RLock()
-		p := s.analytics
-		s.mu.RUnlock()
-		if p == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "analytics não configurado"}
-			break
-		}
-		sessions, err := p.Sessions()
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		resp = Response{Success: true, Sessions: analytics.RecentSessions(sessions, maxSessionsReturned)}
-
-	case "dns-start":
-		s.mu.RLock()
-		c := s.dnsCtrl
-		s.mu.RUnlock()
-		if c == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
-			break
-		}
-		if err := c.Start(); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		// Persiste o flag só depois de o listener subir; se a gravação falhar,
-		// desliga o servidor para o estado nunca ficar "ligado mas não
-		// persistido" (no próximo boot voltaria desligado).
-		if err := s.scheduler.SetDNSEnabled(true); err != nil {
-			_ = c.Stop()
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		s.mu.RLock()
-		fn := s.onDNSStarted
-		s.mu.RUnlock()
-		if fn != nil {
-			fn()
-		}
-		resp = Response{Success: true, Message: "Servidor DNS iniciado em " + c.Status().Addr}
-		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
-
-	case "dns-stop":
-		s.mu.RLock()
-		c := s.dnsCtrl
-		s.mu.RUnlock()
-		if c == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
-			break
-		}
-		if err := c.Stop(); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		if err := s.scheduler.SetDNSEnabled(false); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		resp = Response{Success: true, Message: "Servidor DNS desligado"}
-		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
-
-	case "dns-status":
-		s.mu.RLock()
-		c := s.dnsCtrl
-		s.mu.RUnlock()
-		if c == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
-			break
-		}
-		resp = Response{Success: true}
-		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
-
-	case "dns-set-upstream":
-		s.mu.RLock()
-		c := s.dnsCtrl
-		s.mu.RUnlock()
-		if c == nil {
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: "servidor DNS não configurado"}
-			break
-		}
-		upstream, err := normalizeUpstream(req.Upstream)
-		if err != nil {
-			resp = Response{Success: false, Code: CodeInvalid, Message: err.Error()}
-			break
-		}
-		// Persiste primeiro (espelho em disco), depois aplica no listener vivo
-		// (restart se estiver ligado). Um restart que falhe deixa o servidor
-		// parado com o erro no dns-status — e o próximo boot usa o valor
-		// persistido (mesmo padrão do dns-start com bind ocupado).
-		if err := s.scheduler.SetDNSUpstream(upstream); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		if err := c.SetUpstream(upstream); err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-			break
-		}
-		resp = Response{Success: true, Message: fmt.Sprintf("Upstream DNS alterado para %s", upstream)}
-		mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
-
-	case "status":
-		blocks, err := s.scheduler.ListBlocks()
-		if err != nil {
-			resp = Response{Success: false, Message: err.Error()}
-		} else {
-			resp = Response{Success: true, Blocks: blocks}
-		}
-		if ps, err := s.scheduler.ProtectionStatus(); err == nil {
-			resp.ExpectedDoH = ps.ExpectedDoH
-			resp.DoHActive = ps.DoHActive
-			resp.FirewallRules = ps.FirewallRules
-		} else {
-			resp.ProtectionError = err.Error()
-		}
-		s.mu.RLock()
-		us := s.updateStatus
-		pg := s.pomodoro
-		gs := s.goalStore
-		cur := s.currentVersion
-		c := s.dnsCtrl
-		s.mu.RUnlock()
-		resp.UpdateAvailable = us.Available
-		resp.UpdateVersion = us.NewVersion
-		resp.CurrentVersion = us.CurrentVersion
-		if pg != nil {
-			st := pg.Status()
-			resp.Pomodoro = &st
-		}
-		if gs != nil {
-			resp.Goal = gs.Get()
-		}
-		if resp.CurrentVersion == "" {
-			resp.CurrentVersion = cur
-		}
-		// DNS sinkhole: enabled vem do scheduler (persistido); o restante vem
-		// do controller (estado vivo + contadores). Sem controller (dev), o
-		// status ainda informa o flag persistido.
-		if c != nil {
-			mergeDNS(&resp, c.Status(), s.scheduler.DNSEnabled())
-		} else {
-			resp.DNSEnabled = s.scheduler.DNSEnabled()
-		}
-
-	case "update":
-		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
-		st, err := s.runUpdateCheck(ctx, true, req.Channel)
-		cancel()
-		if err != nil {
-			// O único erro conhecido aqui é o checker ausente (dev builds) — a
-			// semântica exata de CodeNotConfigured.
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: err.Error()}
-			break
-		}
-		resp = Response{
-			Success:             true,
-			UpdateAvailable:     st.Available,
-			UpdateVersion:       st.NewVersion,
-			CurrentVersion:      st.CurrentVersion,
-			UpdatePendingReboot: st.PendingReboot,
-		}
-		if st.Applied {
-			updateApplied = true
-			resp.Message = fmt.Sprintf("Atualização aplicada: %s → %s. O daemon será reiniciado automaticamente.", st.CurrentVersion, st.NewVersion)
-		} else if st.PendingReboot {
-			// Fallback move-on-reboot: a troca completa no próximo boot — o
-			// daemon NÃO reinicia (updateApplied fica false) e segue servindo.
-			resp.Message = fmt.Sprintf("Atualização será concluída no próximo reinício do computador: %s → %s", st.CurrentVersion, st.NewVersion)
-		} else if st.Available {
-			resp.Message = fmt.Sprintf("Atualização disponível: %s → %s", st.CurrentVersion, st.NewVersion)
-		} else {
-			resp.Message = "Nenhuma atualização disponível."
-		}
-
-	case "update-check":
-		// Verificação explícita (sem aplicar): usada pela UI no botão
-		// "Verificar" para consultar o GitHub na hora, em vez de ler o cache
-		// do status (que só atualiza a cada 24h).
-		ctx, cancel := context.WithTimeout(context.Background(), updateTimeout)
-		st, err := s.runUpdateCheck(ctx, false, req.Channel)
-		cancel()
-		if err != nil {
-			// Mesmo caso do "update": checker ausente em dev builds.
-			resp = Response{Success: false, Code: CodeNotConfigured, Message: err.Error()}
-			break
-		}
-		resp = Response{
-			Success:         true,
-			UpdateAvailable: st.Available,
-			UpdateVersion:   st.NewVersion,
-			CurrentVersion:  st.CurrentVersion,
-		}
-		if st.Available {
-			resp.Message = fmt.Sprintf("Atualização disponível: %s → %s", st.CurrentVersion, st.NewVersion)
-		} else {
-			resp.Message = "Nenhuma atualização disponível."
-		}
-	default:
-		resp = Response{Success: false, Code: CodeUnknownAction, Message: "Not suported action: " + req.Action}
-	}
-	return resp, updateApplied
+	// Ação desconhecida (ou Server sem registry — dev build): mensagem do
+	// switch legado preservada (wire protocol inalterado).
+	_ = json.NewEncoder(conn).Encode(&Response{
+		Success: false,
+		Code:    CodeUnknownAction,
+		Message: "Not suported action: " + req.Action,
+	})
 }
 
 // normalizeUpstream validates a user-supplied upstream resolver and returns it
@@ -982,74 +449,4 @@ func blockAllModeSuffix(allowlist []string) string {
 		return " (toda a internet)"
 	}
 	return fmt.Sprintf(" (apenas %s permitido)", strings.Join(allowlist, ", "))
-}
-
-// handlePomodoro validates a pomodoro request, resolves the preset to domains
-// and hands the session to the runner.
-func handlePomodoro(s *Server, req Request) Response {
-	s.mu.RLock()
-	r := s.pomodoro
-	prefs := s.pomodoroPrefs
-	s.mu.RUnlock()
-	if r == nil {
-		return Response{Success: false, Message: "pomodoro não configurado"}
-	}
-
-	if strings.TrimSpace(req.Preset) == "" {
-		return Response{Success: false, Code: CodeInvalid, Message: "Informe um preset (ex: --preset social)."}
-	}
-	// Tetos defensivos: time.Duration(req.WorkMin)*time.Minute faria overflow
-	// (wrap) no int64 para valores gigantes — um --work 1e9 virava uma sessão
-	// de ~147 anos em vez de erro. O mesmo vale para o acumulador focus do
-	// controller (focus += s.Work por ciclo): um --cycles 1e9 transbordaria o
-	// tempo registrado no analytics. Uma semana por fase / 1k ciclos já é
-	// absurdo para um pomodoro, então estes tetos nunca atrapalham o uso real.
-	const (
-		maxPomodoroMinutes = 7 * 24 * 60 // 7 dias por fase
-		maxPomodoroCycles  = 1000
-	)
-
-	// Resolve defaults salvos: a CLI envia 0 (não informado) para work/cycles
-	// e -1 (não informado) para rest — 0 é um valor legítimo para rest (sem
-	// descanso). Sem prefs configuradas, caem no clássico 25/5/4.
-	work, rest, cycles := req.WorkMin, req.RestMin, req.Cycles
-	if prefs != nil {
-		work, rest, cycles = prefs.Resolve(work, rest, cycles)
-	}
-	if work <= 0 || work > maxPomodoroMinutes {
-		return Response{Success: false, Code: CodeDurationInvalid, Message: fmt.Sprintf("Duração de trabalho inválida (--work entre 1 e %d minutos).", maxPomodoroMinutes)}
-	}
-	if rest < 0 || rest > maxPomodoroMinutes || cycles < 1 || cycles > maxPomodoroCycles {
-		return Response{Success: false, Code: CodeDurationInvalid, Message: fmt.Sprintf("Parâmetros de pomodoro inválidos (--rest entre 0 e %d minutos, --cycles entre 1 e %d).", maxPomodoroMinutes, maxPomodoroCycles)}
-	}
-
-	p, err := s.catalog().Resolve(req.Preset)
-	if err != nil {
-		return Response{Success: false, Message: err.Error()}
-	}
-
-	sess := pomodoro.Session{
-		Preset:  p.Name,
-		Label:   req.Label,
-		Domains: p.Domains,
-		Work:    time.Duration(work) * time.Minute,
-		Rest:    time.Duration(rest) * time.Minute,
-		Cycles:  cycles,
-		Strict:  req.Strict,
-	}
-	st, err := r.Start(sess)
-	if err != nil {
-		return Response{Success: false, Message: err.Error()}
-	}
-
-	msg := fmt.Sprintf("Pomodoro %s iniciado: %d ciclos de %dm trabalho / %dm descanso", p.Name, sess.Cycles, work, rest)
-	if req.Save && prefs != nil {
-		prefs.Remember(work, rest, cycles)
-		msg += " (padrões salvos para a próxima sessão)"
-	}
-	return Response{
-		Success:  true,
-		Message:  msg,
-		Pomodoro: &st,
-	}
 }
