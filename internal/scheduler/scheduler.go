@@ -223,6 +223,32 @@ type Scheduler struct {
 	// with minimal lock contention even while a writer is mid-Block.
 	snapshot      atomic.Pointer[[]policy.Block]
 	snapshotDirty atomic.Bool
+	// onChange is a coarse "state changed" hook (Fase 7): the daemon wires it
+	// to publish blocks-changed on the event hub, so the web UI can refresh
+	// without polling. Called after every mutation (block/extend/batch/panic/
+	// expiry/reconcile) WITHOUT holding s.mu — the callback must never call
+	// back into the scheduler.
+	onChange func()
+}
+
+// SetOnChange registers a callback invoked (without the scheduler lock) after
+// every block-state mutation. Nil disables it. The callback must not call back
+// into the scheduler (it runs on the mutating goroutine).
+func (s *Scheduler) SetOnChange(fn func()) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onChange = fn
+}
+
+// notifyChange fires the change hook outside the lock (safe to call anywhere
+// the caller does not hold s.mu).
+func (s *Scheduler) notifyChange() {
+	s.mu.RLock()
+	fn := s.onChange
+	s.mu.RUnlock()
+	if fn != nil {
+		fn()
+	}
 }
 
 func NewScheduler(st stateStore, enf enforcer.Enforcer) *Scheduler {
@@ -530,6 +556,13 @@ func (s *Scheduler) Reconcile() error {
 	}
 	s.mu.Unlock()
 
+	// Boot/tamper pode ter adicionado/removido blocos — avisa o hub (Fase 7)
+	// para a UI refrescar (o SSE conecta depois do boot e o since=0 já pega o
+	// ring; aqui cobre reconciliações por tamper em runtime).
+	if changed {
+		s.notifyChange()
+	}
+
 	return nil
 }
 
@@ -635,6 +668,7 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	s.setupTimerLocked(block)
 	s.mu.Unlock()
 
+	s.notifyChange()
 	return &block, nil
 }
 
@@ -674,6 +708,7 @@ func (s *Scheduler) ExtendBlock(domain string, duration time.Duration) (*policy.
 		}
 		s.setupTimerLocked(existing)
 		s.mu.Unlock()
+		s.notifyChange()
 		return &existing, nil
 	}
 	s.mu.Unlock()
@@ -762,6 +797,7 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 	}
 	s.mu.Unlock()
 
+	s.notifyChange()
 	return blocks, nil
 }
 
@@ -836,6 +872,7 @@ func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Du
 	s.setupTimerLocked(block)
 	s.mu.Unlock()
 
+	s.notifyChange()
 	return &block, nil
 }
 
@@ -944,6 +981,7 @@ func (s *Scheduler) onExpire(domain string) {
 	if remaining == 0 {
 		_ = s.enforcer.UnblockDoH()
 	}
+	s.notifyChange()
 }
 
 func (s *Scheduler) HasActiveBlocks() bool {

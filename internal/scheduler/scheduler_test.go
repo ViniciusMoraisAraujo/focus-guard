@@ -1679,3 +1679,47 @@ func TestScheduler_Reconcile_MatchNoOp(t *testing.T) {
 			callsAfterBootstrap, enf.syncCalls)
 	}
 }
+
+// TestScheduler_SetOnChange_NotifiesOnMutation verifica o hook de mudança
+// (Fase 7 — event hub): cada mutação de blocos (Block, ExtendBlock,
+// BlockDomains, BlockAllInternet) dispara o callback registrado.
+func TestScheduler_SetOnChange_NotifiesOnMutation(t *testing.T) {
+	sched, _, _ := setupTestScheduler(t)
+
+	// O caminho em lote (BlockDomains) resolve via resolveFuncCtx; os demais
+	// via resolveFunc — stub os dois para não tocar DNS real.
+	origResolve := resolveFunc
+	resolveFunc = func(string) ([]string, error) { return []string{"1.2.3.4"}, nil }
+	t.Cleanup(func() { resolveFunc = origResolve })
+	origResolveCtx := resolveFuncCtx
+	resolveFuncCtx = func(_ context.Context, _ string) ([]string, error) { return []string{"1.2.3.4"}, nil }
+	t.Cleanup(func() { resolveFuncCtx = origResolveCtx })
+
+	var mu sync.Mutex
+	var calls int
+	sched.SetOnChange(func() {
+		mu.Lock()
+		calls++
+		mu.Unlock()
+	})
+
+	if _, err := sched.Block("example.com", time.Hour); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+	if _, err := sched.ExtendBlock("example.com", time.Hour); err != nil {
+		t.Fatalf("ExtendBlock: %v", err)
+	}
+	if _, err := sched.BlockDomains([]string{"a.com", "b.com"}, time.Hour); err != nil {
+		t.Fatalf("BlockDomains: %v", err)
+	}
+	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
+		t.Fatalf("BlockAllInternet: %v", err)
+	}
+
+	mu.Lock()
+	got := calls
+	mu.Unlock()
+	if got < 4 {
+		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 4 (Block/Extend/Batch/Panic)", got)
+	}
+}

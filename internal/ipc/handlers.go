@@ -2,6 +2,9 @@ package ipc
 
 import (
 	"context"
+	"errors"
+
+	"focusguard/internal/eventhub"
 )
 
 // registerHandlers wires the server-level actions into the registry: transport
@@ -31,6 +34,41 @@ func (s *Server) registerHandlers() {
 	s.registry.Register(funcHandler{action: "update", handle: s.handleUpdate})
 	s.registry.Register(funcHandler{action: "update-check", handle: s.handleUpdateCheck})
 	s.registry.Register(funcHandler{action: "status", handle: s.handleStatus})
+	s.registry.Register(funcHandler{action: "event-subscribe", handle: s.handleEventSubscribe})
+}
+
+// eventHubProvider é o accessor com lock do hub de eventos (o daemon o
+// configura depois de NewServer via SetEventHub).
+func (s *Server) eventHubProvider() *eventhub.Hub {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.eventHub
+}
+
+// handleEventSubscribe implementa o long-poll de eventos (Fase 7): bloqueia
+// até um evento com seq > req.Since ser publicado ou o orçamento interno
+// (eventSubscribeTimeout) expirar. Timeout vira uma resposta vazia
+// bem-sucedida (o ciclo de keepalive que mantém o SSE vivo); hub não
+// configurado é um erro estável (CodeNotConfigured).
+func (s *Server) handleEventSubscribe(ctx context.Context, req *Request) (*Response, error) {
+	hub := s.eventHubProvider()
+	if hub == nil {
+		return nil, Err(CodeNotConfigured, "eventos não configurados")
+	}
+	waitCtx, cancel := context.WithTimeout(ctx, eventSubscribeTimeout)
+	defer cancel()
+	evs, rev, err := hub.Wait(waitCtx, req.Since)
+	if err != nil {
+		if errors.Is(err, context.DeadlineExceeded) {
+			return &Response{Success: true, Rev: rev}, nil
+		}
+		return nil, err
+	}
+	wire := make([]Event, 0, len(evs))
+	for _, e := range evs {
+		wire = append(wire, Event{Type: e.Type, At: e.At})
+	}
+	return &Response{Success: true, Rev: rev, Events: wire}, nil
 }
 
 // tamperProvider is o accessor com lock do provedor de eventos de burla

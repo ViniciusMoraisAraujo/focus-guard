@@ -11,6 +11,7 @@ import (
 
 	"focusguard/internal/analytics"
 	"focusguard/internal/dnsserver"
+	"focusguard/internal/eventhub"
 	"focusguard/internal/pomodoro"
 	"focusguard/internal/preset"
 	"focusguard/internal/schedule"
@@ -24,6 +25,12 @@ import (
 // apertado em conexões lentas; 120s cobre download + apply sem travar o daemon
 // (cada conexão IPC roda na própria goroutine, então pings não são bloqueados).
 const updateTimeout = 120 * time.Second
+
+// eventSubscribeTimeout is how long the event-subscribe long-poll blocks
+// before answering an empty cycle (no changes) — the heartbeat that keeps the
+// SSE connection alive. The web proxy's spec timeout (30s) is ≥ this, so a
+// quiet cycle is never reported as "daemon indisponível".
+const eventSubscribeTimeout = 20 * time.Second
 
 type Server struct {
 	scheduler *scheduler.Scheduler
@@ -41,6 +48,7 @@ type Server struct {
 	goalStore       GoalManager
 	tamperLog       TamperProvider
 	dnsCtrl         DNSController
+	eventHub        *eventhub.Hub
 	onUpdateApplied func()
 	currentVersion  string
 
@@ -277,6 +285,17 @@ func (s *Server) ValidateRegistry() error {
 	return nil
 }
 
+// SetEventHub wires the daemon's event hub (Fase 7) into the server. Nil
+// (tests and dev builds) makes event-subscribe fail with "não configurado".
+// The daemon publishes blocks-changed/pomodoro-*/schedule-changed into the
+// same hub; the web proxy relays the long-poll to the browser over SSE.
+func (s *Server) SetEventHub(h *eventhub.Hub) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.eventHub = h
+}
+
+// SetUpdateChecker wires the update checker into the server.
 func (s *Server) SetUpdateChecker(c UpdateChecker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

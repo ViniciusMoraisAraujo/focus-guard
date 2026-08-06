@@ -77,6 +77,7 @@ var specs = map[string]ActionSpec{
 	"stats":             {Action: "stats", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"missions":          {Action: "missions", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"sessions":          {Action: "sessions", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"event-subscribe":   {Action: "event-subscribe", Permission: PermAuthenticated, Timeout: 30 * time.Second},
 	"dns-start":         {Action: "dns-start", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"dns-stop":          {Action: "dns-stop", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"dns-status":        {Action: "dns-status", Permission: PermAuthenticated, Timeout: 5 * time.Second},

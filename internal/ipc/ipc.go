@@ -70,6 +70,21 @@ type Request struct {
 	// keep their silent upsert and never send these.
 	Extend  bool `json:"extend,omitempty"`
 	Replace bool `json:"replace,omitempty"`
+	// Since drives the event-subscribe long-poll (Fase 7): the last event
+	// sequence (rev) the client saw. The daemon blocks until an event with a
+	// higher sequence is published (or its internal budget expires) and
+	// returns the newer events plus the new rev.
+	Since int64 `json:"since,omitempty"`
+}
+
+// Event is one daemon state-change notification (event-subscribe). Events are
+// coarse and payload-free on purpose: the daemon state is the source of truth,
+// so the subscriber re-fetches the affected data when an event arrives. Type
+// is a stable token ("blocks-changed", "pomodoro-changed",
+// "pomodoro-complete", "schedule-changed").
+type Event struct {
+	Type string    `json:"type"`
+	At   time.Time `json:"at"`
 }
 
 type Response struct {
@@ -114,6 +129,12 @@ type Response struct {
 	// ConflictBlock carries the existing block that caused the conflict, so the
 	// UI/CLI can show its expiry without an extra round-trip.
 	ConflictBlock *policy.Block `json:"conflict_block,omitempty"`
+	// Rev/Events come from the event-subscribe long-poll (Fase 7): Rev is the
+	// latest event sequence (the client echoes it back as Request.Since) and
+	// Events are the notifications newer than the requested sequence, oldest
+	// first (empty when the internal budget expired with no changes).
+	Rev    int64   `json:"rev,omitempty"`
+	Events []Event `json:"events,omitempty"`
 	// Users lists the web UI usernames (user-list) — names only, never hashes.
 	Users []string `json:"users,omitempty"`
 	// UserIsAdmin reports whether the user-verify credentials belong to the

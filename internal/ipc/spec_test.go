@@ -77,6 +77,7 @@ func TestSpec_Timeouts(t *testing.T) {
 		{action: "apps-list", want: 5 * time.Second},
 		{action: "stats", want: 5 * time.Second},
 		{action: "ping", want: 5 * time.Second},
+		{action: "event-subscribe", want: 30 * time.Second},
 	}
 	for _, tc := range cases {
 		spec, ok := SpecFor(tc.action)
@@ -106,6 +107,7 @@ func TestSpecActions_CoversProxyableActions(t *testing.T) {
 		"goal-get": true, "goal-set": true,
 		"stats": true, "missions": true, "sessions": true,
 		"dns-start": true, "dns-stop": true, "dns-status": true, "dns-set-upstream": true,
+		"event-subscribe": true,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("SpecActions = %d ações (%v), want %d", len(got), got, len(want))
@@ -128,6 +130,14 @@ func TestSpec_ProxyBudgetAtLeastDaemonInternal(t *testing.T) {
 	if spec, ok := SpecFor("update"); ok {
 		if spec.Timeout < updateTimeout {
 			t.Errorf("spec.update.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, updateTimeout)
+		}
+	}
+	// O mesmo invariante vale para o long-poll de eventos (Fase 7): o proxy
+	// espera até eventSubscribeTimeout por um ciclo quieto; um spec menor
+	// viraria "daemon indisponível" falso a cada heartbeat.
+	if spec, ok := SpecFor("event-subscribe"); ok {
+		if spec.Timeout < eventSubscribeTimeout {
+			t.Errorf("spec.event-subscribe.Timeout=%v deve ser >= orçamento interno (%v)", spec.Timeout, eventSubscribeTimeout)
 		}
 	}
 	if spec, ok := SpecFor("update-check"); ok {
