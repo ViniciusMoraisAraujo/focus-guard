@@ -33,40 +33,14 @@ const DefaultAddr = "127.0.0.1:48902"
 // SendWithTimeout discipline: a hung daemon must never hang the UI.
 const proxyTimeout = 5 * time.Second
 
-// statusTimeout bounds the status action, which can enumerate the firewall
-// (netsh show rule name=all) when the enforcer's rule cache is cold. A 5s
-// budget here made the UI report the daemon as "desligado" while it was
-// simply slow to enumerate the rules.
-const statusTimeout = 15 * time.Second
-
-// mutationTimeout bounds the block/block-all/pomodoro actions, which resolve
-// DNS (2-10s with a slow resolver) and apply hosts + firewall rules before
-// answering. Rushing them made real blocks fail with a misleading 503.
-const mutationTimeout = 30 * time.Second
-
-// updateTimeout bounds the update/update-check actions, which can take minutes:
-// they make the daemon download the release archive, extract it and swap the
-// binaries. It must be at least as generous as the daemon's own IPC budget
-// (internal/ipc.updateTimeout) so a slow-but-successful update is not reported
-// as "daemon indisponível".
-const updateTimeout = 150 * time.Second
-
-// actionTimeoutFor maps each action to its proxy budget. The daemon serves
-// every IPC connection in its own goroutine, so giving slow actions a bigger
-// budget never blocks the fast probes (ping keeps its short timeout and stays
-// the connectivity signal).
-func actionTimeoutFor(req ipc.Request) time.Duration {
-	switch req.Action {
-	case "update", "update-check":
-		return updateTimeout
-	case "status":
-		return statusTimeout
-	case "block", "block-all", "pomodoro", "pomodoro-stop":
-		return mutationTimeout
-	default:
-		return proxyTimeout
-	}
-}
+// Os orçamentos por ação (status 15s, block/block-all/pomodoro 30s,
+// update/update-check 150s, demais 5s) vivem na tabela declarativa
+// ipc.SpecFor — a MESMA fonte que o daemon conhece (B7). O proxy só precisa
+// esperar a resposta; cada conexão IPC roda na própria goroutine do daemon,
+// então um orçamento maior para ações lentas nunca bloqueia os probes rápidos
+// (ping mantém o timeout curto e continua sendo o sinal de conectividade).
+// O orçamento do spec é sempre ≥ o interno do daemon, para um update
+// lento-mas-bem-sucedido não virar "daemon indisponível".
 
 // maxBodyBytes caps the action payload. Actions carry a handful of fields
 // (domains, durations); anything bigger is a local process misbehaving.
@@ -229,36 +203,39 @@ func (s *Server) handleAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Gate de permissão por ação (o requireAuth já garantiu a sessão). A
-	// gestão de usuários é do admin; um usuário comum só troca a própria
-	// senha. O daemon não repete esta checagem — ele confia no IPC local
-	// (mesmo nível do CLI/tray), a autorização vive na camada web.
+	// Autorização por ação vem da tabela declarativa ipc.SpecFor (B6) — a
+	// mesma fonte usada pelo daemon. O daemon não repete esta checagem: ele
+	// confia no IPC local (mesmo nível do CLI/tray), a autorização vive na
+	// camada web. user-verify e ações desconhecidas NÃO têm spec (allowlist):
+	// o proxy não as encaminha (403) — user-verify só é legítimo pelo
+	// /api/login (que fala direto com o daemon); encaminhá-lo daria a qualquer
+	// usuário autenticado um oráculo de senha SEM o rate limit do login.
 	sess, ok := sessionFrom(r.Context())
 	if !ok {
 		writeJSONError(w, http.StatusUnauthorized, "não autenticado — faça login")
 		return
 	}
-	switch req.Action {
-	case "user-list", "user-add", "user-remove":
+	spec, ok := ipc.SpecFor(req.Action)
+	if !ok {
+		writeJSONError(w, http.StatusForbidden, "use /api/login para autenticar")
+		return
+	}
+	switch spec.Permission {
+	case ipc.PermAdmin:
 		if !sess.isAdmin {
 			writeJSONError(w, http.StatusForbidden, "apenas o administrador gerencia usuários")
 			return
 		}
-	case "user-set-password":
+	case ipc.PermSelf:
 		if !sess.isAdmin && !strings.EqualFold(req.UserName, sess.username) {
 			writeJSONError(w, http.StatusForbidden, "você só pode alterar a própria senha")
 			return
 		}
-	case "user-verify":
-		// user-verify só é legítimo pelo /api/login (que fala direto com o
-		// daemon). Permitir aqui daria a qualquer usuário autenticado um
-		// oráculo de senha SEM o rate limit do login — brute force do admin.
-		writeJSONError(w, http.StatusForbidden, "use /api/login para autenticar")
-		return
 	}
 
-	timeout := actionTimeoutFor(req)
-	resp, err := s.client.SendWithTimeout(req, timeout)
+	// Timeout por ação vem do spec (B7): o mesmo orçamento que o daemon
+	// conhece, sem tabela duplicada (antes: actionTimeoutFor).
+	resp, err := s.client.SendWithTimeout(req, spec.Timeout)
 	if err != nil {
 		writeJSONError(w, http.StatusServiceUnavailable,
 			"daemon indisponível — verifique se o serviço FocusGuard está rodando")

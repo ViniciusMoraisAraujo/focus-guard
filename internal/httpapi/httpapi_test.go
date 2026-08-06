@@ -83,6 +83,17 @@ func doJSON(t *testing.T, h http.Handler, cookie *http.Cookie, method, path, con
 	return rec
 }
 
+// specTimeout is a test helper: the proxy budget declared for an action in
+// the ipc spec table (the single source of truth for B7).
+func specTimeout(t *testing.T, action string) time.Duration {
+	t.Helper()
+	spec, ok := ipc.SpecFor(action)
+	if !ok {
+		t.Fatalf("sem spec para %q", action)
+	}
+	return spec.Timeout
+}
+
 func decodeResp(t *testing.T, rec *httptest.ResponseRecorder) map[string]any {
 	t.Helper()
 	var m map[string]any
@@ -177,8 +188,8 @@ func TestActionForwardsRequestAndReturnsResponse(t *testing.T) {
 	if sc.lastReq.Action != "block" || sc.lastReq.Domain != "youtube.com" || sc.lastReq.Duration != "4h" {
 		t.Fatalf("request não repassado: %+v", sc.lastReq)
 	}
-	if sc.withTimeout != mutationTimeout {
-		t.Fatalf("timeout = %v, want %v", sc.withTimeout, mutationTimeout)
+	if sc.withTimeout != specTimeout(t, "block") {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, specTimeout(t, "block"))
 	}
 	if m := decodeResp(t, rec); m["success"] != true {
 		t.Fatalf("resposta = %v, want success", m)
@@ -201,8 +212,8 @@ func TestActionUpdateUsesLongTimeout(t *testing.T) {
 	if sc.lastReq.Action != "update" || sc.lastReq.Channel != "stable" {
 		t.Fatalf("request não repassado: %+v", sc.lastReq)
 	}
-	if sc.withTimeout != updateTimeout {
-		t.Fatalf("timeout = %v, want %v", sc.withTimeout, updateTimeout)
+	if sc.withTimeout != specTimeout(t, "update") {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, specTimeout(t, "update"))
 	}
 }
 
@@ -218,8 +229,8 @@ func TestActionUpdateCheckUsesLongTimeout(t *testing.T) {
 	if sc.lastReq.Action != "update-check" {
 		t.Fatalf("request não repassado: %+v", sc.lastReq)
 	}
-	if sc.withTimeout != updateTimeout {
-		t.Fatalf("timeout = %v, want %v", sc.withTimeout, updateTimeout)
+	if sc.withTimeout != specTimeout(t, "update-check") {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, specTimeout(t, "update-check"))
 	}
 }
 
@@ -236,8 +247,8 @@ func TestActionStatusUsesStatusTimeout(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
 	}
-	if sc.withTimeout != statusTimeout {
-		t.Fatalf("timeout = %v, want %v", sc.withTimeout, statusTimeout)
+	if sc.withTimeout != specTimeout(t, "status") {
+		t.Fatalf("timeout = %v, want %v", sc.withTimeout, specTimeout(t, "status"))
 	}
 }
 
@@ -255,8 +266,8 @@ func TestActionMutationUsesMutationTimeout(t *testing.T) {
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want 200 (%s)", rec.Code, rec.Body.String())
 			}
-			if sc.withTimeout != mutationTimeout {
-				t.Fatalf("timeout = %v, want %v", sc.withTimeout, mutationTimeout)
+			if sc.withTimeout != specTimeout(t, action) {
+				t.Fatalf("timeout = %v, want %v", sc.withTimeout, specTimeout(t, action))
 			}
 		})
 	}
