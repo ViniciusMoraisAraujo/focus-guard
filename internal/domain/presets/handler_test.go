@@ -5,7 +5,7 @@ import (
 	"testing"
 
 	"focusguard/internal/ipc"
-	"focusguard/internal/preset"
+	"focusguard/internal/domain/preset"
 )
 
 type fakeCatalog struct {

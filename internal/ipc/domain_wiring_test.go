@@ -16,17 +16,17 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/apps"
-	"focusguard/internal/blocks"
+	"focusguard/internal/domain/apps"
+	"focusguard/internal/domain/blocks"
 	"focusguard/internal/dns"
 	"focusguard/internal/dnsserver"
-	"focusguard/internal/goal"
+	"focusguard/internal/domain/goal"
 	"focusguard/internal/ipc"
-	"focusguard/internal/policy"
-	"focusguard/internal/preset"
-	"focusguard/internal/presets"
-	"focusguard/internal/user"
-	"focusguard/internal/users"
+	"focusguard/internal/domain/policy"
+	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/presets"
+	"focusguard/internal/domain/user"
+	"focusguard/internal/domain/users"
 )
 
 type fakeBlocker struct {

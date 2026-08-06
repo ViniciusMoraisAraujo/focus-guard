@@ -9,7 +9,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 	"focusguard/internal/tamper"
 )
 

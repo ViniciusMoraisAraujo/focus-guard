@@ -31,7 +31,7 @@ import (
 	"strings"
 	"time"
 
-	"focusguard/internal/preset"
+	"focusguard/internal/domain/preset"
 )
 
 // refDeps são as dependências dos adapters de referência que o Server não

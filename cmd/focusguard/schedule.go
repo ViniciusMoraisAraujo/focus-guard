@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 
 	"focusguard/internal/ipc"
-	"focusguard/internal/schedule"
+	"focusguard/internal/domain/schedule"
 )
 
 // handleScheduleCommand dispatches the schedule subcommands

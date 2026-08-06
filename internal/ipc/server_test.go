@@ -11,13 +11,13 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/analytics"
+	"focusguard/internal/domain/analytics"
 	"focusguard/internal/enforcer"
-	"focusguard/internal/pomodoro"
+	"focusguard/internal/domain/pomodoro"
 
-	"focusguard/internal/preset"
-	"focusguard/internal/schedule"
-	"focusguard/internal/scheduler"
+	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/schedule"
+	"focusguard/internal/domain/scheduler"
 	"focusguard/internal/store"
 	"focusguard/internal/tamper"
 )

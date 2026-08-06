@@ -6,7 +6,7 @@ import (
 	"testing"
 
 	"focusguard/internal/ipcerr"
-	"focusguard/internal/preset"
+	"focusguard/internal/domain/preset"
 )
 
 type fakeStore struct {

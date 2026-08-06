@@ -3,7 +3,7 @@ package ipc
 import (
 	"context"
 
-	"focusguard/internal/pomodoro"
+	"focusguard/internal/domain/pomodoro"
 )
 
 // pomodoroRunner returns the configured pomodoro runner under the lock —

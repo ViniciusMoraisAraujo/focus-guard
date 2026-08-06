@@ -9,7 +9,7 @@ import (
 	"time"
 
 	"focusguard/internal/enforcer"
-	"focusguard/internal/scheduler"
+	"focusguard/internal/domain/scheduler"
 	"focusguard/internal/store"
 )
 

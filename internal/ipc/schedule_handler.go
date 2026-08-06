@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"focusguard/internal/schedule"
+	"focusguard/internal/domain/schedule"
 )
 
 // scheduleManager returns the configured schedule manager under the lock —

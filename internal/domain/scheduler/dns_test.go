@@ -5,7 +5,7 @@ import (
 	"time"
 
 	"focusguard/internal/enforcer"
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 	"focusguard/internal/store"
 )
 

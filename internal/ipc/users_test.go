@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"focusguard/internal/user"
+	"focusguard/internal/domain/user"
 )
 
 // fakeUserManager is a stubbable UserManager used to test the server's user

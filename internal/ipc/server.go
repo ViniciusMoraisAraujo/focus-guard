@@ -10,16 +10,16 @@ import (
 	"sync"
 	"time"
 
-	"focusguard/internal/analytics"
+	"focusguard/internal/domain/analytics"
 	"focusguard/internal/dnsserver"
 	"focusguard/internal/eventhub"
 	"focusguard/internal/metrics"
-	"focusguard/internal/pomodoro"
-	"focusguard/internal/preset"
-	"focusguard/internal/schedule"
-	"focusguard/internal/scheduler"
+	"focusguard/internal/domain/pomodoro"
+	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/schedule"
+	"focusguard/internal/domain/scheduler"
 	"focusguard/internal/tamper"
-	"focusguard/internal/user"
+	"focusguard/internal/domain/user"
 )
 
 // updateTimeout bounds the update/update-check IPC actions. Aplicar uma

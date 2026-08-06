@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/analytics"
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/analytics"
+	"focusguard/internal/domain/policy"
 )
 
 // fakeBeep writes beep markers to a strings.Builder so tests can assert the

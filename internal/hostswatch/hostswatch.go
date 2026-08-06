@@ -13,7 +13,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 
 	"focusguard/internal/fsutil"
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 	"focusguard/internal/tamper"
 )
 

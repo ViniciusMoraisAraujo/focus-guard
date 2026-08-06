@@ -11,7 +11,7 @@ import (
 	"time"
 
 	"focusguard/internal/ipc"
-	"focusguard/internal/recovery"
+	"focusguard/internal/domain/recovery"
 )
 
 const (

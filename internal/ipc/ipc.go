@@ -4,12 +4,12 @@ import (
 	"context"
 	"time"
 
-	"focusguard/internal/analytics"
+	"focusguard/internal/domain/analytics"
 	"focusguard/internal/metrics"
-	"focusguard/internal/policy"
-	"focusguard/internal/pomodoro"
-	"focusguard/internal/preset"
-	"focusguard/internal/schedule"
+	"focusguard/internal/domain/policy"
+	"focusguard/internal/domain/pomodoro"
+	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/schedule"
 	"focusguard/internal/tamper"
 )
 

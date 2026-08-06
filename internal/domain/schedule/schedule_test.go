@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 )
 
 func TestManager_AddGeneratesIDAndPersists(t *testing.T) {

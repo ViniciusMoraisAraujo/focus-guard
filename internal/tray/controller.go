@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"focusguard/internal/ipc"
-	"focusguard/internal/policy"
-	"focusguard/internal/pomodoro"
+	"focusguard/internal/domain/policy"
+	"focusguard/internal/domain/pomodoro"
 )
 
 const (

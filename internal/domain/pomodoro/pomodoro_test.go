@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/analytics"
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/analytics"
+	"focusguard/internal/domain/policy"
 )
 
 // mockBlocker records every BlockDomains call (mutex-protected — the run loop

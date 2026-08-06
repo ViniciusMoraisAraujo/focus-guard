@@ -3,7 +3,7 @@ package store
 import (
 	"encoding/json"
 
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 	"os"
 	"path/filepath"
 	"strings"

@@ -8,7 +8,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"focusguard/internal/analytics"
+	"focusguard/internal/domain/analytics"
 	"focusguard/internal/ipc"
 	"focusguard/internal/tamper"
 )

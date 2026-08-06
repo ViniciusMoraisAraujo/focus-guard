@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 )
 
 // Rule is a recurring block window. Days are time.Weekday (0=Sunday).

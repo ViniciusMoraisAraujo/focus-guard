@@ -9,7 +9,7 @@ import (
 	"fmt"
 
 	"focusguard/internal/ipc"
-	"focusguard/internal/preset"
+	"focusguard/internal/domain/preset"
 )
 
 // Catalog is the preset surface the presets actions need.

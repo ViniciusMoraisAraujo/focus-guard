@@ -12,8 +12,8 @@ import (
 	"sync"
 	"time"
 
-	"focusguard/internal/analytics"
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/analytics"
+	"focusguard/internal/domain/policy"
 )
 
 // Phase is the current pomodoro cycle phase.

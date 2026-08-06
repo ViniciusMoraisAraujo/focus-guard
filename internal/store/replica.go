@@ -11,7 +11,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 )
 
 // hardwareID is stubbable in tests; the real implementations live in

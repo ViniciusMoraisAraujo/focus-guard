@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/analytics"
+	"focusguard/internal/domain/analytics"
 )
 
 // blockingRecorder enters Record, signals blocked once, then waits until

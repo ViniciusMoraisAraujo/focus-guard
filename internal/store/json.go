@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 )
 
 type State struct {

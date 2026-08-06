@@ -3,7 +3,7 @@ package ipc
 import (
 	"context"
 
-	"focusguard/internal/analytics"
+	"focusguard/internal/domain/analytics"
 )
 
 // analyticsProvider returns the configured analytics provider under the lock —

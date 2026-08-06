@@ -7,8 +7,8 @@ import (
 	"time"
 
 	"focusguard/internal/ipc"
-	"focusguard/internal/policy"
-	"focusguard/internal/preset"
+	"focusguard/internal/domain/policy"
+	"focusguard/internal/domain/preset"
 )
 
 type fakeBlocker struct {

@@ -7,7 +7,7 @@ import (
 	"time"
 
 	"focusguard/internal/fsutil"
-	"focusguard/internal/policy"
+	"focusguard/internal/domain/policy"
 )
 
 // benchState builds a state with numDomains active blocks (two IPs each),
