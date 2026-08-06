@@ -298,10 +298,9 @@ func TestStatusAction_DNSEnabledPersistedWithoutController(t *testing.T) {
 }
 
 func TestDNSStart_CallsOnDNSStartedHookAfterPersist(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetDNS(newFakeDNS())
 	var hookCalled bool
-	server.SetOnDNSStarted(func() { hookCalled = true })
+	server := setupTestServerWithDeps(t, &refDeps{onDNSStarted: func() { hookCalled = true }})
+	server.SetDNS(newFakeDNS())
 
 	resp := executeRequest(t, server, Request{Action: "dns-start"})
 	if !resp.Success {

@@ -48,7 +48,20 @@ func (m *mockEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
 
+// setupTestServer monta um servidor de teste com os adapters de referência e
+// deps vazias (apps/users/hook desconfigurados — as ações falham com "não
+// configurado"). Use setupTestServerWithDeps para injetar fakes.
 func setupTestServer(t *testing.T) *Server {
+	return setupTestServerWithDeps(t, nil)
+}
+
+// setupTestServerWithDeps é o setupTestServer com as deps de referência
+// (apps/users/onDNSStarted) explícitas. Os Set* correspondentes foram
+// removidos do Server (Fase 5) — os testes que precisam de um fake passam por
+// aqui, espelhando o construtor dos handlers reais de domínio no composition
+// root do daemon. deps nil = apps/users/hook desconfigurados (as ações falham
+// com "não configurado").
+func setupTestServerWithDeps(t *testing.T, deps *refDeps) *Server {
 	t.Helper()
 
 	tmpDir := t.TempDir()
@@ -63,7 +76,7 @@ func setupTestServer(t *testing.T) *Server {
 	// registra com os handlers dos pacotes de domínio (composition root — Fase
 	// 5); aqui os testes internos usam os adapters de referência
 	// (handlers_ref_test.go), que reproduzem 1:1 o comportamento legado.
-	registerDomainReferenceHandlers(s)
+	registerDomainReferenceHandlers(s, deps)
 	return s
 }
 
@@ -1303,8 +1316,7 @@ func (f *fakeAppsManager) Remove(name string) error {
 }
 
 func TestServer_AppsList_ReturnsDenylist(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetApps(&fakeAppsManager{list: []string{"steam", "discord"}})
+	server := setupTestServerWithDeps(t, &refDeps{apps: &fakeAppsManager{list: []string{"steam", "discord"}}})
 
 	resp := executeRequest(t, server, Request{Action: "apps-list"})
 	if !resp.Success {
@@ -1324,9 +1336,8 @@ func TestServer_AppsList_WithoutManager(t *testing.T) {
 }
 
 func TestServer_AppsAdd_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeAppsManager{}
-	server.SetApps(fake)
+	server := setupTestServerWithDeps(t, &refDeps{apps: fake})
 
 	resp := executeRequest(t, server, Request{Action: "apps-add", AppName: "spotify"})
 	if !resp.Success {
@@ -1338,8 +1349,7 @@ func TestServer_AppsAdd_Success(t *testing.T) {
 }
 
 func TestServer_AppsAdd_ManagerError(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetApps(&fakeAppsManager{addErr: errors.New("apps: nome inválido")})
+	server := setupTestServerWithDeps(t, &refDeps{apps: &fakeAppsManager{addErr: errors.New("apps: nome inválido")}})
 
 	resp := executeRequest(t, server, Request{Action: "apps-add", AppName: ""})
 	if resp.Success {
@@ -1351,9 +1361,8 @@ func TestServer_AppsAdd_ManagerError(t *testing.T) {
 }
 
 func TestServer_AppsRemove_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeAppsManager{}
-	server.SetApps(fake)
+	server := setupTestServerWithDeps(t, &refDeps{apps: fake})
 
 	resp := executeRequest(t, server, Request{Action: "apps-remove", AppName: "steam"})
 	if !resp.Success {
@@ -1365,8 +1374,7 @@ func TestServer_AppsRemove_Success(t *testing.T) {
 }
 
 func TestServer_AppsRemove_ManagerError(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetApps(&fakeAppsManager{remErr: errors.New("apps: não encontrado")})
+	server := setupTestServerWithDeps(t, &refDeps{apps: &fakeAppsManager{remErr: errors.New("apps: não encontrado")}})
 
 	resp := executeRequest(t, server, Request{Action: "apps-remove", AppName: "zzz"})
 	if resp.Success {

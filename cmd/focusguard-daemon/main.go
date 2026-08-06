@@ -185,7 +185,9 @@ func startProcessGuard(sched processguard.ActivityChecker, denylist []string) pr
 
 // guardApps wires the persisted apps store to the live process guard: every
 // apps-add/apps-remove refreshes the guard's denylist so the change takes
-// effect on the next scan. Satisfies the ipc.AppsManager interface.
+// effect on the next scan. Satisfies the interface of the apps domain handlers
+// (apps.NewList/NewAdd/NewRemove) — o ipc.Server não carrega mais a denylist
+// (SetApps removido na Fase 5).
 type guardApps struct {
 	store *apps.Store
 	guard interface{ SetDenylist([]string) }

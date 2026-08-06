@@ -39,12 +39,9 @@ type Server struct {
 	presets         PresetManager
 	schedules       ScheduleManager
 	goalStore       GoalManager
-	apps            AppsManager
 	tamperLog       TamperProvider
-	users           UserManager
 	dnsCtrl         DNSController
 	onUpdateApplied func()
-	onDNSStarted    func()
 	currentVersion  string
 
 	mu           sync.RWMutex
@@ -121,20 +118,16 @@ func (s *Server) SetSchedules(m ScheduleManager) {
 
 // AppsManager is the process-app denylist used by the apps-* actions. The
 // daemon wires a *apps.Store that also refreshes the live process guard.
+//
+// NOTA: o Server não carrega mais a instância (SetApps foi removido na Fase
+// 5) — os handlers reais de apps-* vivem em internal/apps e recebem a
+// dependência por construtor no composition root do daemon. A interface
+// permanece aqui porque os adapters de referência dos testes internos
+// (handlers_ref_test.go) a usam.
 type AppsManager interface {
 	List() []string
 	Add(name string) error
 	Remove(name string) error
-}
-
-// SetApps wires the process denylist into the server. Nil makes the apps-*
-// actions fail with a clear message. Retained for the in-package test
-// reference handlers (handlers_ref_test.go) — the daemon registers the real
-// domain handlers at the composition root.
-func (s *Server) SetApps(m AppsManager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.apps = m
 }
 
 // TamperProvider supplies the detected tamper events for the tamper-log
@@ -154,22 +147,18 @@ func (s *Server) SetTamper(p TamperProvider) {
 // UserManager is the credential store backing the user-* actions (web login
 // and user management). The daemon wires a *user.Store; when no manager is
 // configured the actions fail with a clear message (tests and dev builds).
+//
+// NOTA: o Server não carrega mais a instância (SetUsers foi removido na Fase
+// 5) — os handlers reais de user-* vivem em internal/users e recebem a
+// dependência por construtor no composition root do daemon. A interface
+// permanece aqui porque os adapters de referência dos testes internos
+// (handlers_ref_test.go) a usam.
 type UserManager interface {
 	List() []string
 	Verify(username, password string) (user.User, bool)
 	Add(username, password string) error
 	Remove(username string) error
 	SetPassword(username, password string) error
-}
-
-// SetUsers wires the credential store into the server. Nil makes the user-*
-// actions fail with a clear message. Retained for the in-package test
-// reference handlers (handlers_ref_test.go) — the daemon registers the real
-// domain handlers at the composition root.
-func (s *Server) SetUsers(m UserManager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.users = m
 }
 
 // DNSController drives the DNS sinkhole server lifecycle used by the
@@ -302,15 +291,6 @@ func (s *Server) SetOnUpdateApplied(fn func()) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.onUpdateApplied = fn
-}
-
-// SetOnDNSStarted registers a hook invoked after the DNS sinkhole server
-// started and its enabled flag was persisted. The daemon uses it to apply the
-// DoH firewall block (so browsers cannot bypass the sinkhole over port 853).
-func (s *Server) SetOnDNSStarted(fn func()) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.onDNSStarted = fn
 }
 
 // SetCurrentVersion registra a versão do sistema, permitindo que o status a

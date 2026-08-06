@@ -51,13 +51,12 @@ func (f *fakeUserManager) SetPassword(username, _ string) error {
 }
 
 func TestServer_UserList_ReturnsNames(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{
 		users: []user.User{
 			{Username: "admin", IsAdmin: true},
 			{Username: "maria"},
 		},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "user-list"})
 	if !resp.Success {
@@ -80,11 +79,10 @@ func TestServer_UserList_WithoutManager(t *testing.T) {
 }
 
 func TestServer_UserVerify_Success_Admin(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{
 		verifyUser: user.User{Username: "admin", IsAdmin: true},
 		verifyOK:   true,
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "user-verify", UserName: "admin", UserPassword: "x"})
 	if !resp.Success {
@@ -96,11 +94,10 @@ func TestServer_UserVerify_Success_Admin(t *testing.T) {
 }
 
 func TestServer_UserVerify_Success_NonAdmin(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{
 		verifyUser: user.User{Username: "maria"},
 		verifyOK:   true,
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "user-verify", UserName: "maria", UserPassword: "x"})
 	if !resp.Success {
@@ -112,8 +109,7 @@ func TestServer_UserVerify_Success_NonAdmin(t *testing.T) {
 }
 
 func TestServer_UserVerify_InvalidCredentials(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{verifyOK: false})
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{verifyOK: false}})
 
 	resp := executeRequest(t, server, Request{Action: "user-verify", UserName: "maria", UserPassword: "errada"})
 	if resp.Success {
@@ -134,9 +130,8 @@ func TestServer_UserVerify_WithoutManager(t *testing.T) {
 }
 
 func TestServer_UserAdd_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeUserManager{}
-	server.SetUsers(fake)
+	server := setupTestServerWithDeps(t, &refDeps{users: fake})
 
 	resp := executeRequest(t, server, Request{Action: "user-add", UserName: "maria", UserPassword: "senha-forte-1"})
 	if !resp.Success {
@@ -148,8 +143,7 @@ func TestServer_UserAdd_Success(t *testing.T) {
 }
 
 func TestServer_UserAdd_ValidationError(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{addErr: errors.New("user: a senha precisa de ao menos 8 caracteres")})
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{addErr: errors.New("user: a senha precisa de ao menos 8 caracteres")}})
 
 	resp := executeRequest(t, server, Request{Action: "user-add", UserName: "maria", UserPassword: "curta"})
 	if resp.Success {
@@ -169,9 +163,8 @@ func TestServer_UserAdd_WithoutManager(t *testing.T) {
 }
 
 func TestServer_UserRemove_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeUserManager{}
-	server.SetUsers(fake)
+	server := setupTestServerWithDeps(t, &refDeps{users: fake})
 
 	resp := executeRequest(t, server, Request{Action: "user-remove", UserName: "maria"})
 	if !resp.Success {
@@ -191,8 +184,7 @@ func TestServer_UserRemove_WithoutManager(t *testing.T) {
 }
 
 func TestServer_UserRemove_Error(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{remErr: errors.New("user: o usuário admin não pode ser removido")})
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{remErr: errors.New("user: o usuário admin não pode ser removido")}})
 
 	resp := executeRequest(t, server, Request{Action: "user-remove", UserName: "admin"})
 	if resp.Success {
@@ -201,9 +193,8 @@ func TestServer_UserRemove_Error(t *testing.T) {
 }
 
 func TestServer_UserSetPassword_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeUserManager{}
-	server.SetUsers(fake)
+	server := setupTestServerWithDeps(t, &refDeps{users: fake})
 
 	resp := executeRequest(t, server, Request{Action: "user-set-password", UserName: "maria", UserPassword: "nova-senha-123"})
 	if !resp.Success {
@@ -223,8 +214,7 @@ func TestServer_UserSetPassword_WithoutManager(t *testing.T) {
 }
 
 func TestServer_UserSetPassword_Error(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetUsers(&fakeUserManager{setErr: errors.New("user: usuário \"x\" não encontrado")})
+	server := setupTestServerWithDeps(t, &refDeps{users: &fakeUserManager{setErr: errors.New("user: usuário \"x\" não encontrado")}})
 
 	resp := executeRequest(t, server, Request{Action: "user-set-password", UserName: "x", UserPassword: "nova-senha-123"})
 	if resp.Success {
@@ -242,13 +232,12 @@ func TestUserPackage_InterfaceCompliance(t *testing.T) {
 // store real em disco (sem fake): senha correta passa, errada falha, o
 // IsAdmin reflete o admin semeado e o user.json só guarda hashes.
 func TestServer_UserVerify_RealStore(t *testing.T) {
-	server := setupTestServer(t)
 	path := t.TempDir() + "/user.json"
 	st := user.NewStore(path)
 	if err := st.EnsureAdmin(); err != nil {
 		t.Fatalf("EnsureAdmin: %v", err)
 	}
-	server.SetUsers(st)
+	server := setupTestServerWithDeps(t, &refDeps{users: st})
 
 	resp := executeRequest(t, server, Request{Action: "user-verify", UserName: "admin", UserPassword: "SP02cfasm#"})
 	if !resp.Success {

@@ -13,6 +13,13 @@ package ipc
 // estes adapters de referência, que reproduzem 1:1 o comportamento do switch
 // legado. Os testes dos pacotes de domínio cobrem os handlers reais; o teste
 // externo domain_wiring_test.go compõe os reais com o roteador.
+//
+// As dependências de apps/user/dns (denylist, credenciais, hook DoH) NÃO
+// vivem mais no Server (SetApps/SetUsers/SetOnDNSStarted foram removidos na
+// Fase 5) — chegam via refDeps, espelhando o construtor dos handlers reais de
+// domínio no composition root do daemon. As demais (presets, goal, dns
+// controller, scheduler) continuam no Server (SetPresets/SetGoal/SetDNS
+// permanecem — o status e os adapters de pomodoro/schedule as leem).
 // ---------------------------------------------------------------------------
 
 import (
@@ -27,27 +34,43 @@ import (
 	"focusguard/internal/preset"
 )
 
+// refDeps são as dependências dos adapters de referência que o Server não
+// carrega mais. s aponta para o servidor que registrou os handlers (o
+// dns-start precisa do controller + scheduler).
+type refDeps struct {
+	s            *Server
+	apps         AppsManager
+	users        UserManager
+	onDNSStarted func()
+}
+
 // registerDomainReferenceHandlers registra as ações de domínio com os adapters
 // de referência — chamado pelo setupTestServer para o servidor de teste ter o
 // mesmo conjunto de ações que o daemon real (34 handlers, specs↔registry
-// fechado).
-func registerDomainReferenceHandlers(s *Server) {
+// fechado). deps nil equivale a deps vazias (apps/users/hook desconfigurados).
+func registerDomainReferenceHandlers(s *Server, deps *refDeps) {
+	if deps == nil {
+		deps = &refDeps{}
+	}
+	if deps.s == nil {
+		deps.s = s
+	}
 	s.registry.Register(funcHandler{action: "presets", handle: s.handlePresets})
 	s.registry.Register(funcHandler{action: "preset-add", handle: s.handlePresetAdd})
 	s.registry.Register(funcHandler{action: "preset-remove", handle: s.handlePresetRemove})
-	s.registry.Register(funcHandler{action: "apps-list", handle: s.handleAppsList})
-	s.registry.Register(funcHandler{action: "apps-add", handle: s.handleAppsAdd})
-	s.registry.Register(funcHandler{action: "apps-remove", handle: s.handleAppsRemove})
+	s.registry.Register(funcHandler{action: "apps-list", handle: deps.handleAppsList})
+	s.registry.Register(funcHandler{action: "apps-add", handle: deps.handleAppsAdd})
+	s.registry.Register(funcHandler{action: "apps-remove", handle: deps.handleAppsRemove})
 	s.registry.Register(funcHandler{action: "goal-get", handle: s.handleGoalGet})
 	s.registry.Register(funcHandler{action: "goal-set", handle: s.handleGoalSet})
 	s.registry.Register(funcHandler{action: "block", handle: s.handleBlock})
 	s.registry.Register(funcHandler{action: "block-all", handle: s.handleBlockAll})
-	s.registry.Register(funcHandler{action: "user-list", handle: s.handleUserList})
-	s.registry.Register(funcHandler{action: "user-verify", handle: s.handleUserVerify})
-	s.registry.Register(funcHandler{action: "user-add", handle: s.handleUserAdd})
-	s.registry.Register(funcHandler{action: "user-remove", handle: s.handleUserRemove})
-	s.registry.Register(funcHandler{action: "user-set-password", handle: s.handleUserSetPassword})
-	s.registry.Register(funcHandler{action: "dns-start", handle: s.handleDNSStart})
+	s.registry.Register(funcHandler{action: "user-list", handle: deps.handleUserList})
+	s.registry.Register(funcHandler{action: "user-verify", handle: deps.handleUserVerify})
+	s.registry.Register(funcHandler{action: "user-add", handle: deps.handleUserAdd})
+	s.registry.Register(funcHandler{action: "user-remove", handle: deps.handleUserRemove})
+	s.registry.Register(funcHandler{action: "user-set-password", handle: deps.handleUserSetPassword})
+	s.registry.Register(funcHandler{action: "dns-start", handle: deps.handleDNSStart})
 	s.registry.Register(funcHandler{action: "dns-stop", handle: s.handleDNSStop})
 	s.registry.Register(funcHandler{action: "dns-status", handle: s.handleDNSStatus})
 	s.registry.Register(funcHandler{action: "dns-set-upstream", handle: s.handleDNSSetUpstream})
@@ -87,30 +110,9 @@ func (s *Server) handlePresetRemove(_ context.Context, req *Request) (*Response,
 // apps-*
 // ---------------------------------------------------------------------------
 
-// appsManager, goalManager e usersManager são accessors com lock, espelho do
-// padrão catalog() — usados apenas pelos adapters de referência abaixo (os
-// handlers reais de domínio recebem as dependências por construtor).
-func (s *Server) appsManager() AppsManager {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.apps
-}
-
-func (s *Server) goalManager() GoalManager {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.goalStore
-}
-
-func (s *Server) usersManager() UserManager {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.users
-}
-
 // handleAppsList lista a denylist de processos.
-func (s *Server) handleAppsList(_ context.Context, _ *Request) (*Response, error) {
-	am := s.appsManager()
+func (d *refDeps) handleAppsList(_ context.Context, _ *Request) (*Response, error) {
+	am := d.apps
 	if am == nil {
 		return nil, Err(CodeNotConfigured, "denylist de apps não configurada")
 	}
@@ -118,8 +120,8 @@ func (s *Server) handleAppsList(_ context.Context, _ *Request) (*Response, error
 }
 
 // handleAppsAdd adiciona um processo à denylist.
-func (s *Server) handleAppsAdd(_ context.Context, req *Request) (*Response, error) {
-	am := s.appsManager()
+func (d *refDeps) handleAppsAdd(_ context.Context, req *Request) (*Response, error) {
+	am := d.apps
 	if am == nil {
 		return nil, Err(CodeNotConfigured, "denylist de apps não configurada")
 	}
@@ -130,8 +132,8 @@ func (s *Server) handleAppsAdd(_ context.Context, req *Request) (*Response, erro
 }
 
 // handleAppsRemove remove um processo da denylist.
-func (s *Server) handleAppsRemove(_ context.Context, req *Request) (*Response, error) {
-	am := s.appsManager()
+func (d *refDeps) handleAppsRemove(_ context.Context, req *Request) (*Response, error) {
+	am := d.apps
 	if am == nil {
 		return nil, Err(CodeNotConfigured, "denylist de apps não configurada")
 	}
@@ -144,6 +146,15 @@ func (s *Server) handleAppsRemove(_ context.Context, req *Request) (*Response, e
 // ---------------------------------------------------------------------------
 // goal-get / goal-set
 // ---------------------------------------------------------------------------
+
+// goalManager devolve a meta diária configurada (com lock), espelho do padrão
+// catalog() — usada apenas pelos adapters de referência abaixo (os handlers
+// reais de domínio recebem as dependências por construtor).
+func (s *Server) goalManager() GoalManager {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.goalStore
+}
 
 // handleGoalGet devolve a meta diária de foco atual.
 func (s *Server) handleGoalGet(_ context.Context, _ *Request) (*Response, error) {
@@ -275,9 +286,11 @@ func (s *Server) dnsController() DNSController {
 	return s.dnsCtrl
 }
 
-// handleDNSStart sobe o sinkhole e persiste o flag "ligado".
-func (s *Server) handleDNSStart(_ context.Context, _ *Request) (*Response, error) {
-	c := s.dnsController()
+// handleDNSStart sobe o sinkhole e persiste o flag "ligado". O hook
+// onDNSStarted (bloqueio DoH do daemon) vem das refDeps — o daemon o injeta
+// no handler real (dns.NewStart) por construtor.
+func (d *refDeps) handleDNSStart(_ context.Context, _ *Request) (*Response, error) {
+	c := d.s.dnsController()
 	if c == nil {
 		return nil, Err(CodeNotConfigured, "servidor DNS não configurado")
 	}
@@ -287,18 +300,15 @@ func (s *Server) handleDNSStart(_ context.Context, _ *Request) (*Response, error
 	// Persiste o flag só depois de o listener subir; se a gravação falhar,
 	// desliga o servidor para o estado nunca ficar "ligado mas não
 	// persistido" (no próximo boot voltaria desligado).
-	if err := s.scheduler.SetDNSEnabled(true); err != nil {
+	if err := d.s.scheduler.SetDNSEnabled(true); err != nil {
 		_ = c.Stop()
 		return nil, err
 	}
-	s.mu.RLock()
-	fn := s.onDNSStarted
-	s.mu.RUnlock()
-	if fn != nil {
+	if fn := d.onDNSStarted; fn != nil {
 		fn()
 	}
 	resp := &Response{Success: true, Message: "Servidor DNS iniciado em " + c.Status().Addr}
-	mergeDNS(resp, c.Status(), s.scheduler.DNSEnabled())
+	mergeDNS(resp, c.Status(), d.s.scheduler.DNSEnabled())
 	return resp, nil
 }
 
@@ -387,8 +397,8 @@ func normalizeUpstream(in string) (string, error) {
 // ---------------------------------------------------------------------------
 
 // handleUserList lista os usuários cadastrados.
-func (s *Server) handleUserList(_ context.Context, _ *Request) (*Response, error) {
-	m := s.usersManager()
+func (d *refDeps) handleUserList(_ context.Context, _ *Request) (*Response, error) {
+	m := d.users
 	if m == nil {
 		return nil, Err(CodeNotConfigured, "usuários não configurados")
 	}
@@ -398,8 +408,8 @@ func (s *Server) handleUserList(_ context.Context, _ *Request) (*Response, error
 // handleUserVerify valida credenciais (web-only: sem ActionSpec, isento do
 // fechamento specs↔registry — o proxy web nunca o encaminha, evitando um
 // oracle de senha sem o rate limit do login).
-func (s *Server) handleUserVerify(_ context.Context, req *Request) (*Response, error) {
-	m := s.usersManager()
+func (d *refDeps) handleUserVerify(_ context.Context, req *Request) (*Response, error) {
+	m := d.users
 	if m == nil {
 		return nil, Err(CodeNotConfigured, "usuários não configurados")
 	}
@@ -413,8 +423,8 @@ func (s *Server) handleUserVerify(_ context.Context, req *Request) (*Response, e
 }
 
 // handleUserAdd cria um usuário.
-func (s *Server) handleUserAdd(_ context.Context, req *Request) (*Response, error) {
-	m := s.usersManager()
+func (d *refDeps) handleUserAdd(_ context.Context, req *Request) (*Response, error) {
+	m := d.users
 	if m == nil {
 		return nil, Err(CodeNotConfigured, "usuários não configurados")
 	}
@@ -425,8 +435,8 @@ func (s *Server) handleUserAdd(_ context.Context, req *Request) (*Response, erro
 }
 
 // handleUserRemove remove um usuário.
-func (s *Server) handleUserRemove(_ context.Context, req *Request) (*Response, error) {
-	m := s.usersManager()
+func (d *refDeps) handleUserRemove(_ context.Context, req *Request) (*Response, error) {
+	m := d.users
 	if m == nil {
 		return nil, Err(CodeNotConfigured, "usuários não configurados")
 	}
@@ -437,8 +447,8 @@ func (s *Server) handleUserRemove(_ context.Context, req *Request) (*Response, e
 }
 
 // handleUserSetPassword altera a senha de um usuário.
-func (s *Server) handleUserSetPassword(_ context.Context, req *Request) (*Response, error) {
-	m := s.usersManager()
+func (d *refDeps) handleUserSetPassword(_ context.Context, req *Request) (*Response, error) {
+	m := d.users
 	if m == nil {
 		return nil, Err(CodeNotConfigured, "usuários não configurados")
 	}

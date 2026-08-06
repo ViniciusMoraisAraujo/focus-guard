@@ -8,7 +8,7 @@ import (
 )
 
 // scheduleManager returns the configured schedule manager under the lock —
-// espelho do padrão catalog()/appsManager() usado pelos demais handlers (o
+// espelho do padrão catalog() usado pelos demais handlers (o
 // daemon pode configurá-lo depois de NewServer).
 func (s *Server) scheduleManager() ScheduleManager {
 	s.mu.RLock()

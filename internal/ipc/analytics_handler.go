@@ -7,7 +7,7 @@ import (
 )
 
 // analyticsProvider returns the configured analytics provider under the lock —
-// espelho do padrão catalog()/appsManager() usado pelos demais handlers (o
+// espelho do padrão catalog() usado pelos demais handlers (o
 // daemon pode configurá-lo depois de NewServer).
 func (s *Server) analyticsProvider() AnalyticsProvider {
 	s.mu.RLock()
