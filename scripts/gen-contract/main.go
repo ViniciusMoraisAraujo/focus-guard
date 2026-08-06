@@ -55,6 +55,7 @@ var targets = []target{
 	{"internal/tamper/tamper.go", "tamper", "Event", "TamperEvent"},
 	{"internal/ipc/ipc.go", "ipc", "Request", "ApiRequest"},
 	{"internal/ipc/ipc.go", "ipc", "Response", "ApiResponse"},
+	{"internal/ipc/ipc.go", "ipc", "Event", "Event"},
 }
 
 // fieldHints adds short annotations that the Go source does not carry but the

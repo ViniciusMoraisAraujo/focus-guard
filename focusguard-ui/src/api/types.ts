@@ -123,6 +123,7 @@ export interface ApiRequest {
   upstream?: string; // Upstream drives the dns-set-upstream action: the resolver (host[:port])
   extend?: boolean; // Extend/Replace resolve the conflict of the user-driven block action:
   replace?: boolean;
+  since?: number; // Since drives the event-subscribe long-poll (Fase 7): the last event
 }
 
 export interface ApiResponse {
@@ -151,6 +152,8 @@ export interface ApiResponse {
   tamper_log?: TamperEvent[]; // TamperLog lists detected tamper attempts (tamper-log).
   conflict?: boolean; // Conflict marks a failed "block" request that hit an already-active block
   conflict_block?: Block; // ConflictBlock carries the existing block that caused the conflict, so the
+  rev?: number; // Rev/Events come from the event-subscribe long-poll (Fase 7): Rev is the
+  events?: Event[];
   users?: string[]; // Users lists the web UI usernames (user-list) — names only, never hashes.
   user_is_admin?: boolean; // UserIsAdmin reports whether the user-verify credentials belong to the
   update_pending_reboot?: boolean; // UpdatePendingReboot marks an update that could not replace the running
@@ -161,5 +164,11 @@ export interface ApiResponse {
   dns_queries?: number;
   dns_blocked?: number;
   dns_bind_error?: string;
+}
+
+// Event is one daemon state-change notification (event-subscribe). Events are
+export interface Event {
+  type: string;
+  at: string; // RFC3339
 }
 

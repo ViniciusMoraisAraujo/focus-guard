@@ -3,7 +3,7 @@
 // (Probe) lê o estado pela superfície pública via useApp, que continua
 // existindo após a refatoração (compat: useAuth + useData combinados).
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { cleanup, fireEvent, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, waitFor } from "@testing-library/react";
 import { AppProvider, useApp } from "@/context";
 
 type Handler = (init?: RequestInit) => { status?: number; body: unknown };
@@ -20,6 +20,47 @@ function route(handlers: Record<string, Handler>) {
       headers: { "Content-Type": "application/json" },
     });
   };
+}
+
+// FakeEventSource: substituto determinístico do EventSource (o jsdom tentaria
+// uma conexão real a /api/events e poluiria os testes). O DataProvider (Fase
+// 7) abre uma conexão quando autenticado; o fake registra os listeners e os
+// testes disparam eventos/abertura/falha por ele.
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  url: string;
+  onopen: (() => void) | null = null;
+  onerror: ((ev: Event) => void) | null = null;
+  closed = false;
+  private listeners = new Map<string, Array<(ev: unknown) => void>>();
+
+  constructor(url: string) {
+    this.url = url;
+    FakeEventSource.instances.push(this);
+  }
+
+  addEventListener(type: string, cb: (ev: unknown) => void) {
+    const list = this.listeners.get(type) ?? [];
+    list.push(cb);
+    this.listeners.set(type, list);
+  }
+
+  close() {
+    this.closed = true;
+  }
+
+  /** helpers de teste */
+  emit(type: string) {
+    for (const cb of this.listeners.get(type) ?? []) cb({ type });
+  }
+
+  open() {
+    this.onopen?.();
+  }
+
+  fail() {
+    this.onerror?.(new Event("error"));
+  }
 }
 
 const fetchMock = vi.fn();
@@ -53,6 +94,7 @@ function Probe() {
 function renderApp(fetchImpl: (url: string, init?: RequestInit) => Response) {
   fetchMock.mockImplementation(fetchImpl);
   vi.stubGlobal("fetch", fetchMock);
+  vi.stubGlobal("EventSource", FakeEventSource);
   return render(
     <AppProvider>
       <Probe />
@@ -63,6 +105,8 @@ function renderApp(fetchImpl: (url: string, init?: RequestInit) => Response) {
 afterEach(() => {
   cleanup();
   fetchMock.mockReset();
+  FakeEventSource.instances = [];
+  vi.useRealTimers();
   vi.unstubAllGlobals();
 });
 
@@ -89,6 +133,7 @@ describe("AppProvider — boot (checagem de sessão)", () => {
           const body = JSON.parse(String(init?.body)) as { action: string };
           if (body.action === "status") return statusOk();
           if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
           throw new Error(`action inesperada: ${body.action}`);
         },
       }),
@@ -98,6 +143,7 @@ describe("AppProvider — boot (checagem de sessão)", () => {
     await waitFor(() => expect(text("status-ok")).toBe("true"));
     await waitFor(() => expect(text("presets")).toBe("1"));
     expect(text("username")).toBe("admin");
+    expect(FakeEventSource.instances.length).toBe(1); // SSE aberto com sessão
   });
 });
 
@@ -112,6 +158,7 @@ describe("AppProvider — login e logout", () => {
           const body = JSON.parse(String(init?.body)) as { action: string };
           if (body.action === "status") return statusOk();
           if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
           throw new Error(`action inesperada: ${body.action}`);
         },
       }),
@@ -129,7 +176,13 @@ describe("AppProvider — login e logout", () => {
         "/api/auth/status": authenticated,
         "/api/ping": daemonUp,
         "/api/logout": () => ok({ success: true }),
-        "/api/action": () => statusOk(),
+        "/api/action": (init) => {
+          const body = JSON.parse(String(init?.body)) as { action: string };
+          if (body.action === "status") return statusOk();
+          if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
+          throw new Error(`action inesperada: ${body.action}`);
+        },
       }),
     );
 
@@ -146,7 +199,13 @@ describe("AppProvider — sessão expirada e daemon offline", () => {
       route({
         "/api/auth/status": authenticated,
         "/api/ping": daemonUp,
-        "/api/action": () => statusOk(),
+        "/api/action": (init) => {
+          const body = JSON.parse(String(init?.body)) as { action: string };
+          if (body.action === "status") return statusOk();
+          if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
+          throw new Error(`action inesperada: ${body.action}`);
+        },
       }),
     );
 
@@ -171,6 +230,121 @@ describe("AppProvider — sessão expirada e daemon offline", () => {
 
     await waitFor(() => expect(text("daemonUp")).toBe("false"));
     expect(text("status-ok")).toBe("null");
+  });
+});
+
+describe("AppProvider — eventos em tempo real (Fase 7)", () => {
+  it("blocks-changed dispara o refresh de status (sem polling de 10s)", async () => {
+    let statusCalls = 0;
+    renderApp(
+      route({
+        "/api/auth/status": authenticated,
+        "/api/ping": daemonUp,
+        "/api/action": (init) => {
+          const body = JSON.parse(String(init?.body)) as { action: string };
+          if (body.action === "status") {
+            statusCalls++;
+            return ok({
+              success: true,
+              blocks: statusCalls > 1 ? [{ domain: "x.com" }] : [],
+            });
+          }
+          if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
+          throw new Error(`action inesperada: ${body.action}`);
+        },
+      }),
+    );
+
+    await waitFor(() => expect(text("auth")).toBe("true"));
+    await waitFor(() => expect(text("status-ok")).toBe("true"));
+    expect(statusCalls).toBe(1); // carga inicial apenas — sem polling ativo
+
+    const es = FakeEventSource.instances.at(-1);
+    expect(es).toBeDefined();
+    es?.open(); // SSE conectado
+    es?.emit("blocks-changed");
+
+    await waitFor(() => expect(statusCalls).toBe(2));
+    expect(text("status-ok")).toBe("true");
+  });
+
+  it("pomodoro-complete recarrega stats (a sessão mudou o histórico)", async () => {
+    let statsCalls = 0;
+    renderApp(
+      route({
+        "/api/auth/status": authenticated,
+        "/api/ping": daemonUp,
+        "/api/action": (init) => {
+          const body = JSON.parse(String(init?.body)) as { action: string };
+          if (body.action === "status") return statusOk();
+          if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") {
+            statsCalls++;
+            return ok({ success: true });
+          }
+          throw new Error(`action inesperada: ${body.action}`);
+        },
+      }),
+    );
+
+    await waitFor(() => expect(text("auth")).toBe("true"));
+    await waitFor(() => expect(text("stats")).toBe("set"));
+    expect(statsCalls).toBe(1); // baseline de 60s (carga imediata)
+
+    const es = FakeEventSource.instances.at(-1);
+    es?.emit("pomodoro-complete");
+
+    await waitFor(() => expect(statsCalls).toBe(2));
+  });
+
+  it("stream quebrado liga o polling de fallback (30s) até reconectar", async () => {
+    let statusCalls = 0;
+    renderApp(
+      route({
+        "/api/auth/status": authenticated,
+        "/api/ping": daemonUp,
+        "/api/action": (init) => {
+          const body = JSON.parse(String(init?.body)) as { action: string };
+          if (body.action === "status") {
+            statusCalls++;
+            return statusOk();
+          }
+          if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
+          throw new Error(`action inesperada: ${body.action}`);
+        },
+      }),
+    );
+
+    await waitFor(() => expect(text("auth")).toBe("true"));
+    await waitFor(() => expect(text("status-ok")).toBe("true"));
+    expect(statusCalls).toBe(1);
+
+    const es = FakeEventSource.instances.at(-1);
+    es?.open(); // conectado — sem fallback
+
+    // O fallback só roda com timers falsos; a carga inicial e o SSE já
+    // aconteceram com timers reais (waitFor não conflita). O fail() vem
+    // DEPOIS do useFakeTimers para o intervalo de fallback nascer falso.
+    vi.useFakeTimers();
+    try {
+      es?.fail(); // stream caiu → fallback de 30s
+      await act(async () => {
+        vi.advanceTimersByTime(31_000);
+      });
+      expect(statusCalls).toBeGreaterThanOrEqual(2);
+
+      // Reconectou → fallback desliga (não vira polling permanente).
+      es?.open();
+      const before = statusCalls;
+      await act(async () => {
+        vi.advanceTimersByTime(31_000);
+      });
+      expect(statusCalls).toBe(before);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
