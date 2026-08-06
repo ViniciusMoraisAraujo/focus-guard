@@ -226,7 +226,7 @@ func runDaemon(ctx context.Context) error {
 | **1. Frontend — responsabilidades** ✅ ⭐ | `AuthProvider`/`DataProvider` + hooks (`useAuth`, `useData`) + `useAction()` compartilhado + toast em módulo | Alto (F1/F3) | **baixo** (independe do núcleo Go; valida com `tsc`) | M |
 | **2. Frontend — contrato assistido** ✅ | Codegen Go→TS (`make contract` + checagem no CI) + códigos de erro aditivos (`Response.Code`) | Alto (F2/B12/C1) | baixo (aditivo, retrocompat) | M |
 | **3. Registry de ações** ✅ | `Handler` + `Registry` + `ActionSpec`/`Permission` declarativos (`spec.go`); `ipc.Server` vira roteador (registry-first + fallback legado); `httpapi` consome `SpecFor` (B2/B6/B7) | Alto (OCP B2/B6/B7) | **baixo** (mesmo contrato; testes por ação) | M |
-| **4. Serviços de domínio** | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
+| **4. Serviços de domínio** ✅ | Migrar cada `case` → serviço coeso (strangler, um por commit) | Alto (SRP B1/B3) | médio (mexe em lógica quente: block) | G |
 | **5. Composition root** ✅ | Handlers de domínio registrados no daemon (composition root) — `ipc.Server` vira transport (B3, OCP); lifecycle `internal/daemon` + `Run(ctx)` e orquestração de update em `internal/update` (B4/B10) | Alto | médio | G |
 | **6. CLI por comando** ✅ | `commands/` com um arquivo por comando + tabela | Médio (B5) | baixo | M |
 | **7. Eventos em tempo real** ✅ | Event hub no daemon + long-poll `event-subscribe` (IPC) + SSE no `httpapi` (`/api/events`) + EventSource no frontend com fallback de polling (F5/F3) | Médio (F5) | médio | G |
@@ -815,7 +815,7 @@ func TestBlock_ConflitoAskFirst(t *testing.T) {
 
 - `focusguard-ui/vitest.config.ts` + devDeps de teste (vitest 2, jsdom, RTL).
 - `focusguard-ui/src/api/client.test.ts` (13 testes) + `focusguard-ui/src/context/context.test.tsx` (6 testes) — 19 testes **verdes antes e depois** da Fase 1 (comportamento congelado).
-- Falta: caracterização dos `case` do `ipc.Server` (backend — junto da Fase 3).
+- Backend: a caracterização dos `case` do `ipc.Server` foi coberta na execução das Fases 3/4 — o switch foi eliminado com testes por ação preservando comportamento (server_test.go, `handlers_ref_test.go`, `domain_wiring_test.go`).
 
 ### Fase 1 — Frontend: responsabilidades (✅ concluída em 2026-08-05)
 
