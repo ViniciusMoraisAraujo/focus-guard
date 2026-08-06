@@ -1,6 +1,5 @@
 import { useState } from "react";
 import { Folder, FolderPlus, Trash2 } from "lucide-react";
-import { execAction } from "@/api/client";
 import type { Preset } from "@/api/types";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -20,15 +19,17 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
+import { useAction } from "@/hooks/use-action";
+import { toast } from "@/lib/toast";
 
 export function Presets() {
-  const { presets, refresh, toast, daemonUp } = useApp();
+  const { presets, refresh, daemonUp } = useData();
+  const { busy, run } = useAction();
 
   const [name, setName] = useState("");
   const [label, setLabel] = useState("");
   const [domains, setDomains] = useState("");
-  const [busy, setBusy] = useState(false);
   const [toRemove, setToRemove] = useState<Preset | null>(null);
 
   const add = async () => {
@@ -41,45 +42,31 @@ export function Presets() {
       toast("Informe o nome e ao menos um domínio.", "err");
       return;
     }
-    setBusy(true);
-    try {
-      const res = await execAction({
+    const res = await run(
+      {
         action: "preset-add",
         preset_name: n,
         preset_label: label.trim() || name.trim(),
         preset_domains: doms,
-      });
-      toast(res.message || (res.ok ? "Preset criado!" : "Falha ao criar."), res.ok ? "ok" : "err");
-      if (res.ok) {
-        await refresh();
-        setName("");
-        setLabel("");
-        setDomains("");
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao criar o preset.", "err");
-    } finally {
-      setBusy(false);
+      },
+      { success: "Preset criado!", error: "Falha ao criar." },
+    );
+    if (res.ok) {
+      await refresh();
+      setName("");
+      setLabel("");
+      setDomains("");
     }
   };
 
   const remove = async () => {
     if (!toRemove) return;
-    setBusy(true);
-    try {
-      const res = await execAction({ action: "preset-remove", preset_name: toRemove.name });
-      toast(
-        res.message ||
-          (res.ok ? "Preset removido." : "Presets embutidos não podem ser removidos."),
-        res.ok ? "ok" : "err",
-      );
-      if (res.ok) await refresh();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao remover.", "err");
-    } finally {
-      setBusy(false);
-      setToRemove(null);
-    }
+    const res = await run(
+      { action: "preset-remove", preset_name: toRemove.name },
+      { success: "Preset removido.", error: "Presets embutidos não podem ser removidos." },
+    );
+    if (res.ok) await refresh();
+    setToRemove(null);
   };
 
   return (

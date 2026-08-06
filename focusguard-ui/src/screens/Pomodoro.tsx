@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Play, Square, Timer } from "lucide-react";
-import { api, execAction } from "@/api/client";
+import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -23,11 +23,14 @@ import {
 } from "@/components/ui/select";
 import { CircularTimer } from "@/components/circular-timer";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
 import { formatClock, useCountdown } from "@/hooks/useCountdown";
+import { useAction } from "@/hooks/use-action";
+import { toast } from "@/lib/toast";
 
 export function Pomodoro() {
-  const { status, presets, refresh, toast, daemonUp } = useApp();
+  const { status, presets, refresh, daemonUp } = useData();
+  const { busy, run } = useAction();
 
   const [defaults, setDefaults] = useState<{
     work: number;
@@ -41,7 +44,6 @@ export function Pomodoro() {
   const [strict, setStrict] = useState(false);
   const [save, setSave] = useState(false);
   const [label, setLabel] = useState("");
-  const [busy, setBusy] = useState(false);
   const [confirmStop, setConfirmStop] = useState(false);
 
   useEffect(() => {
@@ -81,9 +83,8 @@ export function Pomodoro() {
       toast("Escolha uma categoria (preset).", "err");
       return;
     }
-    setBusy(true);
-    try {
-      const res = await execAction({
+    const res = await run(
+      {
         action: "pomodoro",
         preset,
         work_min: Number(work) || undefined,
@@ -92,28 +93,16 @@ export function Pomodoro() {
         strict,
         save,
         label: label.trim() || undefined,
-      });
-      toast(res.message || (res.ok ? "Pomodoro iniciado!" : "Falha ao iniciar."), res.ok ? "ok" : "err");
-      if (res.ok) await refresh();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao iniciar o pomodoro.", "err");
-    } finally {
-      setBusy(false);
-    }
+      },
+      { success: "Pomodoro iniciado!", error: "Falha ao iniciar." },
+    );
+    if (res.ok) await refresh();
   };
 
   const stop = async () => {
-    setBusy(true);
-    try {
-      const res = await execAction({ action: "pomodoro-stop" });
-      toast(res.message || "Sessão encerrada.", res.ok ? "ok" : "err");
-      if (res.ok) await refresh();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao encerrar a sessão.", "err");
-    } finally {
-      setBusy(false);
-      setConfirmStop(false);
-    }
+    const res = await run({ action: "pomodoro-stop" }, { success: "Sessão encerrada." });
+    if (res.ok) await refresh();
+    setConfirmStop(false);
   };
 
   return (

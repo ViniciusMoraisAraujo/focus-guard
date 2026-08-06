@@ -14,7 +14,8 @@ import {
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 const DURATIONS = [
@@ -25,7 +26,7 @@ const DURATIONS = [
 ];
 
 export function Panico() {
-  const { toast, daemonUp, refresh, status } = useApp();
+  const { daemonUp, refresh, status } = useData();
   const [duration, setDuration] = useState("30m");
   const [allow, setAllow] = useState("");
   const [confirmOpen, setConfirmOpen] = useState(false);

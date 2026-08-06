@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { CalendarPlus, Trash2, Upload } from "lucide-react";
-import { api, execAction } from "@/api/client";
+import { api } from "@/api/client";
 import type { ScheduleRule } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -29,7 +29,9 @@ import {
 } from "@/components/ui/tooltip";
 import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
 import { WeeklyGrid } from "@/components/weekly-grid";
-import { useApp } from "@/context";
+import { useData } from "@/context";
+import { useAction } from "@/hooks/use-action";
+import { toast } from "@/lib/toast";
 
 const DAY_NAMES = ["dom", "seg", "ter", "qua", "qui", "sex", "sab"];
 
@@ -46,10 +48,10 @@ function windowLabel(r: ScheduleRule): string {
 }
 
 export function Agenda() {
-  const { presets, toast, daemonUp } = useApp();
+  const { presets, daemonUp } = useData();
+  const { busy, run } = useAction();
 
   const [schedules, setSchedules] = useState<ScheduleRule[] | null>(null);
-  const [busy, setBusy] = useState(false);
   const [toRemove, setToRemove] = useState<ScheduleRule | null>(null);
 
   // formulário de nova regra
@@ -89,54 +91,44 @@ export function Agenda() {
       toast("Escolha a categoria e ao menos um dia.", "err");
       return;
     }
-    setBusy(true);
-    try {
-      const rule: ScheduleRule = {
-        id: "",
-        preset,
-        days: [...days].sort((a, b) => a - b),
-        start: "",
-        end: "",
-        enabled: true,
-        label: label.trim() || undefined,
-      };
-      if (windows.trim()) {
-        rule.windows = windows
-          .split(",")
-          .map((w) => w.trim())
-          .filter(Boolean);
-      } else {
-        rule.start = start;
-        rule.end = end;
-      }
-      const res = await execAction({ action: "schedule-add", schedule_rule: rule });
-      toast(res.message || (res.ok ? "Agendamento criado!" : "Falha ao criar."), res.ok ? "ok" : "err");
-      if (res.ok) {
-        load();
-        setDays([]);
-        setWindows("");
-        setLabel("");
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao criar o agendamento.", "err");
-    } finally {
-      setBusy(false);
+    const rule: ScheduleRule = {
+      id: "",
+      preset,
+      days: [...days].sort((a, b) => a - b),
+      start: "",
+      end: "",
+      enabled: true,
+      label: label.trim() || undefined,
+    };
+    if (windows.trim()) {
+      rule.windows = windows
+        .split(",")
+        .map((w) => w.trim())
+        .filter(Boolean);
+    } else {
+      rule.start = start;
+      rule.end = end;
+    }
+    const res = await run(
+      { action: "schedule-add", schedule_rule: rule },
+      { success: "Agendamento criado!", error: "Falha ao criar." },
+    );
+    if (res.ok) {
+      load();
+      setDays([]);
+      setWindows("");
+      setLabel("");
     }
   };
 
   const remove = async () => {
     if (!toRemove) return;
-    setBusy(true);
-    try {
-      const res = await execAction({ action: "schedule-remove", schedule_id: toRemove.id });
-      toast(res.message || (res.ok ? "Agendamento removido." : "Falha ao remover."), res.ok ? "ok" : "err");
-      if (res.ok) load();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao remover.", "err");
-    } finally {
-      setBusy(false);
-      setToRemove(null);
-    }
+    const res = await run(
+      { action: "schedule-remove", schedule_id: toRemove.id },
+      { success: "Agendamento removido.", error: "Falha ao remover." },
+    );
+    if (res.ok) load();
+    setToRemove(null);
   };
 
   const importIcs = async () => {
@@ -144,19 +136,14 @@ export function Agenda() {
       toast("Selecione um arquivo .ics.", "err");
       return;
     }
-    setBusy(true);
-    try {
-      const text = await icsFile.text();
-      const res = await execAction({ action: "schedule-import", ics_content: text, ics_preset: icsPreset });
-      toast(res.message || (res.ok ? "Calendário importado!" : "Falha ao importar."), res.ok ? "ok" : "err");
-      if (res.ok) {
-        load();
-        setIcsFile(null);
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao importar o calendário.", "err");
-    } finally {
-      setBusy(false);
+    const text = await icsFile.text();
+    const res = await run(
+      { action: "schedule-import", ics_content: text, ics_preset: icsPreset },
+      { success: "Calendário importado!", error: "Falha ao importar." },
+    );
+    if (res.ok) {
+      load();
+      setIcsFile(null);
     }
   };
 

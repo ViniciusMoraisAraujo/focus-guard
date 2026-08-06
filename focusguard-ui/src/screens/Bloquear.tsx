@@ -15,8 +15,9 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
 import { formatClock } from "@/hooks/useCountdown";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 const DURATIONS = [
@@ -36,7 +37,7 @@ interface ConflictState {
 }
 
 export function Bloquear() {
-  const { presets, toast, daemonUp, refresh } = useApp();
+  const { presets, daemonUp, refresh } = useData();
   const [mode, setMode] = useState<"preset" | "domain">("preset");
   const [preset, setPreset] = useState<string>("");
   const [domain, setDomain] = useState<string>("");

@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
 import { formatClock, formatMinutes } from "@/hooks/useCountdown";
 
 function download(filename: string, content: string, mime: string) {
@@ -33,7 +33,7 @@ function csvCell(v: string): string {
 }
 
 export function Estatisticas() {
-  const { stats, daemonUp } = useApp();
+  const { stats, daemonUp } = useData();
   const [missions, setMissions] = useState<LabelStat[] | null>(null);
   const [sessions, setSessions] = useState<FocusSession[] | null>(null);
 

@@ -34,8 +34,9 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useAuth, useData } from "@/context";
 import { formatMinutes } from "@/hooks/useCountdown";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 const GOALS = [
   { label: "2 h", minutes: 120 },
@@ -45,7 +46,8 @@ const GOALS = [
 ];
 
 export function Configuracoes() {
-  const { status, toast, daemonUp, refresh, auth } = useApp();
+  const { status, daemonUp, refresh } = useData();
+  const { auth } = useAuth();
   const [customGoal, setCustomGoal] = useState("");
   const [busy, setBusy] = useState(false);
   const [channel, setChannel] = useState("stable");
@@ -338,7 +340,7 @@ function Row({ label, children }: { label: string; children: React.ReactNode }) 
 // troca senhas de qualquer usuário; um usuário comum só vê a própria conta
 // (a troca de senha própria também passa pelo user-set-password).
 function UsersCard() {
-  const { auth, toast } = useApp();
+  const { auth } = useAuth();
   const isAdmin = auth?.isAdmin === true;
   const self = auth?.username ?? "";
 

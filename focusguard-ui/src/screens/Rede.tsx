@@ -15,7 +15,8 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
+import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
 // Rede.tsx — servidor DNS sinkhole ("Rei da Rede"). Controla o dns-start/stop
@@ -23,7 +24,7 @@ import { cn } from "@/lib/utils";
 // o estado ao vivo (listening, upstream, consultas, bloqueios e diagnóstico
 // de porta 53).
 export function Rede() {
-  const { daemonUp, status, refresh, toast } = useApp();
+  const { daemonUp, status, refresh } = useData();
   const [busy, setBusy] = useState<null | "start" | "stop">(null);
   const [upstreamBusy, setUpstreamBusy] = useState<string | null>(null);
   const [customUpstream, setCustomUpstream] = useState("");

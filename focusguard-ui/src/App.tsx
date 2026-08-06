@@ -41,7 +41,7 @@ import {
 import { TooltipProvider } from "./components/ui/tooltip";
 import { Toaster } from "./components/ui/sonner";
 import { ThemeToggle } from "./components/theme-toggle";
-import { AppProvider, useApp, type Screen } from "./context";
+import { AppProvider, useAuth, useData, type Screen } from "./context";
 import { cn } from "./lib/utils";
 
 const NAV: { id: Screen; label: string; icon: typeof Shield }[] = [
@@ -75,7 +75,7 @@ export function App() {
  * O focusguard-web serve a SPA sem exigir sessão — quem decide é este gate.
  */
 function Shell() {
-  const { auth } = useApp();
+  const { auth } = useAuth();
 
   if (auth === null) {
     return <SessionCheck />;
@@ -99,7 +99,7 @@ function SessionCheck() {
 
 function MainShell() {
   const [screen, setScreen] = useState<Screen>("dashboard");
-  const { daemonUp } = useApp();
+  const { daemonUp } = useData();
 
   return (
     <div className="flex min-h-screen bg-background text-foreground">
@@ -152,7 +152,8 @@ function SidebarContent({
   screen: Screen;
   onNavigate: (s: Screen) => void;
 }) {
-  const { status, auth } = useApp();
+  const { status } = useData();
+  const { auth } = useAuth();
   const username = auth?.username;
 
   return (
@@ -282,7 +283,7 @@ function MobileHeader({
 
 /** Botão de sair: invalida a sessão e devolve o usuário à tela de login. */
 function LogoutButton({ className }: { className?: string }) {
-  const { logout } = useApp();
+  const { logout } = useAuth();
   const [busy, setBusy] = useState(false);
 
   return (
@@ -312,7 +313,7 @@ function DaemonStatus({
   pill?: boolean;
   className?: string;
 }) {
-  const { daemonUp } = useApp();
+  const { daemonUp } = useData();
   const label = daemonUp
     ? "daemon ativo"
     : daemonUp === null

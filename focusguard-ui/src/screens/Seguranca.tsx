@@ -7,7 +7,7 @@ import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
 
 function fmtDate(at: string): string {
   const d = new Date(at);
@@ -22,7 +22,7 @@ function fmtDate(at: string): string {
 }
 
 export function Seguranca() {
-  const { daemonUp } = useApp();
+  const { daemonUp } = useData();
   const [events, setEvents] = useState<TamperEvent[] | null>(null);
 
   const load = () => {

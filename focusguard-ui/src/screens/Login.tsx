@@ -14,14 +14,15 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { useApp } from "@/context";
+import { useAuth, useData } from "@/context";
 import { cn } from "@/lib/utils";
 
 // Login.tsx — porta de entrada da UI. O focusguard-web entrega a SPA sem
 // exigir sessão (o gate vive aqui): enquanto não houver cookie fg_session
 // válido, esta tela é o único conteúdo renderizado.
 export function LoginScreen() {
-  const { daemonUp, login } = useApp();
+  const { daemonUp } = useData();
+  const { login } = useAuth();
   const [username, setUsername] = useState("");
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);

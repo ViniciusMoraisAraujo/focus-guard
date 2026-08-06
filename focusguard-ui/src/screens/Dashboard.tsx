@@ -26,14 +26,14 @@ import {
 import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
-import { useApp, type Screen as ScreenId } from "@/context";
+import { useData, type Screen as ScreenId } from "@/context";
 import { formatClock, formatMinutes, formatMs, useCountdown } from "@/hooks/useCountdown";
 import { cn } from "@/lib/utils";
 
 const ALL_INTERNET = "*all-internet*";
 
 export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
-  const { daemonUp, status, stats } = useApp();
+  const { daemonUp, status, stats } = useData();
 
   const blocks = useMemo(() => {
     const list = (status?.blocks ?? []).filter((b) => b.domain !== ALL_INTERNET);
@@ -238,7 +238,7 @@ function BlockCard({ block }: { block: Block }) {
 
 /** Card do servidor DNS: status resumido + atalho para a tela Rede. */
 function DnsCard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
-  const { status } = useApp();
+  const { status } = useData();
   const enabled = status?.dns_enabled === true;
   const listening = status?.dns_listening === true;
   const queries = status?.dns_queries ?? 0;

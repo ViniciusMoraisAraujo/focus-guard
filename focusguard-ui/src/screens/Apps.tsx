@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { Ban, Plus, Trash2 } from "lucide-react";
-import { api, execAction } from "@/api/client";
+import { api } from "@/api/client";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -11,13 +11,15 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { EmptyCard, Screen, ScreenHeader, SectionTitle } from "@/components/screen";
-import { useApp } from "@/context";
+import { useData } from "@/context";
+import { useAction } from "@/hooks/use-action";
+import { toast } from "@/lib/toast";
 
 export function Apps() {
-  const { daemonUp, toast } = useApp();
+  const { daemonUp } = useData();
+  const { busy, run } = useAction();
   const [apps, setApps] = useState<string[] | null>(null);
   const [name, setName] = useState("");
-  const [busy, setBusy] = useState(false);
 
   const load = () => {
     api
@@ -36,32 +38,22 @@ export function Apps() {
       toast("Informe o nome do processo (ex: spotify.exe).", "err");
       return;
     }
-    setBusy(true);
-    try {
-      const res = await execAction({ action: "apps-add", app_name: proc });
-      toast(res.message || (res.ok ? "Processo adicionado!" : "Falha ao adicionar."), res.ok ? "ok" : "err");
-      if (res.ok) {
-        load();
-        setName("");
-      }
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao adicionar.", "err");
-    } finally {
-      setBusy(false);
+    const res = await run(
+      { action: "apps-add", app_name: proc },
+      { success: "Processo adicionado!", error: "Falha ao adicionar." },
+    );
+    if (res.ok) {
+      load();
+      setName("");
     }
   };
 
   const remove = async (proc: string) => {
-    setBusy(true);
-    try {
-      const res = await execAction({ action: "apps-remove", app_name: proc });
-      toast(res.message || (res.ok ? "Processo removido." : "Falha ao remover."), res.ok ? "ok" : "err");
-      if (res.ok) load();
-    } catch (e) {
-      toast(e instanceof Error ? e.message : "Erro ao remover.", "err");
-    } finally {
-      setBusy(false);
-    }
+    const res = await run(
+      { action: "apps-remove", app_name: proc },
+      { success: "Processo removido.", error: "Falha ao remover." },
+    );
+    if (res.ok) load();
   };
 
   return (
