@@ -14,7 +14,7 @@ import (
 	"context"
 	"time"
 
-	"focusguard/internal/transport/ipcerr"
+	"focusguard/internal/domain/ipcerr"
 )
 
 // maxSessionsReturned caps the "sessions" IPC response so the UI never

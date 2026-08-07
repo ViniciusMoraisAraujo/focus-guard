@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"focusguard/internal/transport/ipcerr"
+	"focusguard/internal/domain/ipcerr"
 )
 
 // Handler executes ONE action, registered in the Registry. Validate is pure

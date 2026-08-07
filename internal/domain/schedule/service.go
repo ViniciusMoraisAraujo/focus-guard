@@ -15,8 +15,8 @@ import (
 	"errors"
 	"strings"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/preset"
-	"focusguard/internal/transport/ipcerr"
 )
 
 // RuleStore is the recurring-rule catalog the service reads and mutates.

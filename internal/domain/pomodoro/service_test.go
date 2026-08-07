@@ -6,8 +6,8 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/preset"
-	"focusguard/internal/transport/ipcerr"
 )
 
 // fakeRunner records Start/Stop calls and returns canned results.

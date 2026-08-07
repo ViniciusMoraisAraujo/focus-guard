@@ -18,8 +18,8 @@ import (
 	"strings"
 	"time"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/preset"
-	"focusguard/internal/transport/ipcerr"
 )
 
 // Tetos defensivos: time.Duration(work)*time.Minute faria overflow (wrap) no
