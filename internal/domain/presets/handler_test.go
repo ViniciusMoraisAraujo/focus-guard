@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"focusguard/internal/domain/preset"
-	"focusguard/internal/transport/ipc"
 )
 
 type fakeCatalog struct {
@@ -29,11 +28,11 @@ func (f *fakeCatalog) Remove(name string) error {
 
 func TestPresetsList_OK(t *testing.T) {
 	h := NewList(&fakeCatalog{list: []preset.Preset{{Name: "social"}}})
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "presets"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || len(resp.Presets) != 1 {
+	if len(resp.Presets) != 1 {
 		t.Fatalf("esperava 1 preset, got %+v", resp)
 	}
 }
@@ -41,14 +40,11 @@ func TestPresetsList_OK(t *testing.T) {
 func TestPresetAdd_OK(t *testing.T) {
 	c := &fakeCatalog{}
 	h := NewAdd(c)
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		Action: "preset-add", PresetName: "trabalho", PresetDomains: []string{"jira.com"},
+	resp, err := h.Handle(context.Background(), &AddInput{
+		PresetName: "trabalho", PresetDomains: []string{"jira.com"},
 	})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !resp.Success {
-		t.Fatalf("esperava sucesso, got %+v", resp)
 	}
 	if resp.Message != "Preset trabalho criado (1 domínios)" {
 		t.Fatalf("mensagem inesperada: %q", resp.Message)
@@ -60,7 +56,7 @@ func TestPresetAdd_OK(t *testing.T) {
 
 func TestPresetAdd_SemCatalog(t *testing.T) {
 	h := NewAdd(nil)
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "preset-add", PresetName: "x"})
+	_, err := h.Handle(context.Background(), &AddInput{PresetName: "x"})
 	if err == nil {
 		t.Fatal("esperava erro de catálogo ausente")
 	}
@@ -69,12 +65,12 @@ func TestPresetAdd_SemCatalog(t *testing.T) {
 func TestPresetRemove_OK(t *testing.T) {
 	c := &fakeCatalog{list: []preset.Preset{{Name: "trabalho"}}}
 	h := NewRemove(c)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "preset-remove", PresetName: "trabalho"})
+	resp, err := h.Handle(context.Background(), &RemoveInput{PresetName: "trabalho"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success {
-		t.Fatalf("esperava sucesso, got %+v", resp)
+	if resp.Message == "" {
+		t.Fatalf("esperava mensagem de sucesso, got %+v", resp)
 	}
 	if len(c.list) != 0 {
 		t.Fatalf("Remove não removeu, got %+v", c.list)

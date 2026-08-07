@@ -776,11 +776,58 @@ func runDaemon() bool {
 	// que o ValidateRegistry abaixo verifica no boot.
 	server.Register(blocks.New(sched, presetStore))
 	server.Register(blocks.NewBlockAll(sched))
-	server.Register(presets.NewList(presetStore))
-	server.Register(presets.NewAdd(presetStore))
-	server.Register(presets.NewRemove(presetStore))
-	server.Register(goal.NewGet(goalStore))
-	server.Register(goal.NewSet(goalStore))
+
+	// presets/goal via ipc.DomainAction (handlers de domínio com tipos
+	// próprios, adaptados ao wire — pós-reorg item 2).
+	hPresetsList := presets.NewList(presetStore)
+	server.Register(ipc.DomainAction[presets.NoInput, presets.ListResult]{
+		Name:   hPresetsList.Action(),
+		Decode: ipc.NoInputDecode[presets.NoInput](),
+		Handle: hPresetsList.Handle,
+		Encode: func(out *presets.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Presets: out.Presets}, nil
+		},
+	}.Handler())
+	hPresetsAdd := presets.NewAdd(presetStore)
+	server.Register(ipc.DomainAction[presets.AddInput, presets.AddResult]{
+		Name: hPresetsAdd.Action(),
+		Decode: func(r *ipc.Request) (*presets.AddInput, error) {
+			return &presets.AddInput{PresetName: r.PresetName, PresetLabel: r.PresetLabel, PresetDomains: r.PresetDomains}, nil
+		},
+		Handle: hPresetsAdd.Handle,
+		Encode: func(out *presets.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hPresetsRemove := presets.NewRemove(presetStore)
+	server.Register(ipc.DomainAction[presets.RemoveInput, presets.RemoveResult]{
+		Name: hPresetsRemove.Action(),
+		Decode: func(r *ipc.Request) (*presets.RemoveInput, error) {
+			return &presets.RemoveInput{PresetName: r.PresetName}, nil
+		},
+		Handle: hPresetsRemove.Handle,
+		Encode: func(out *presets.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hGoalGet := goal.NewGet(goalStore)
+	server.Register(ipc.DomainAction[goal.NoInput, goal.GetResult]{
+		Name:   hGoalGet.Action(),
+		Decode: ipc.NoInputDecode[goal.NoInput](),
+		Handle: hGoalGet.Handle,
+		Encode: func(out *goal.GetResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Goal: out.Goal}, nil
+		},
+	}.Handler())
+	hGoalSet := goal.NewSet(goalStore)
+	server.Register(ipc.DomainAction[goal.SetInput, goal.SetResult]{
+		Name:   hGoalSet.Action(),
+		Decode: func(r *ipc.Request) (*goal.SetInput, error) { return &goal.SetInput{GoalMinutes: r.GoalMinutes}, nil },
+		Handle: hGoalSet.Handle,
+		Encode: func(out *goal.SetResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Goal: out.Goal, Message: out.Message}, nil
+		},
+	}.Handler())
 	server.Register(dns.NewStart(dnsSrv, sched, dohHook))
 	server.Register(dns.NewStop(dnsSrv, sched))
 	server.Register(dns.NewStatus(dnsSrv, sched))

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/transport/ipc"
+	"focusguard/internal/domain/ipcerr"
 )
 
 type fakeStore struct {
@@ -18,9 +18,9 @@ func (f *fakeStore) Set(d time.Duration) error { f.goal = d; return nil }
 
 func assertActionError(t *testing.T, err error, wantCode string) {
 	t.Helper()
-	var ae *ipc.ActionError
+	var ae *ipcerr.Error
 	if !errors.As(err, &ae) {
-		t.Fatalf("esperava ActionError, got %v", err)
+		t.Fatalf("esperava ipcerr.Error, got %v", err)
 	}
 	if ae.Code != wantCode {
 		t.Fatalf("esperava código %q, got %q (%v)", wantCode, ae.Code, err)
@@ -29,29 +29,29 @@ func assertActionError(t *testing.T, err error, wantCode string) {
 
 func TestGoalGet_OK(t *testing.T) {
 	h := NewGet(&fakeStore{goal: 4 * time.Hour})
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "goal-get"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || resp.Goal != 4*time.Hour {
+	if resp.Goal != 4*time.Hour {
 		t.Fatalf("esperava meta de 4h, got %+v", resp)
 	}
 }
 
 func TestGoalGet_SemStore(t *testing.T) {
 	h := NewGet(nil)
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "goal-get"})
-	assertActionError(t, err, ipc.CodeNotConfigured)
+	_, err := h.Handle(context.Background(), &NoInput{})
+	assertActionError(t, err, ipcerr.CodeNotConfigured)
 }
 
 func TestGoalSet_OK(t *testing.T) {
 	st := &fakeStore{}
 	h := NewSet(st)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "goal-set", GoalMinutes: 240})
+	resp, err := h.Handle(context.Background(), &SetInput{GoalMinutes: 240})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || resp.Goal != 4*time.Hour {
+	if resp.Goal != 4*time.Hour {
 		t.Fatalf("esperava sucesso + meta de 4h, got %+v", resp)
 	}
 	if st.goal != 4*time.Hour {
@@ -65,8 +65,8 @@ func TestGoalSet_OK(t *testing.T) {
 func TestGoalSet_Invalido(t *testing.T) {
 	h := NewSet(&fakeStore{})
 	for _, m := range []int{0, -5, 24*60 + 1} {
-		_, err := h.Handle(context.Background(), &ipc.Request{Action: "goal-set", GoalMinutes: m})
-		assertActionError(t, err, ipc.CodeInvalid)
+		_, err := h.Handle(context.Background(), &SetInput{GoalMinutes: m})
+		assertActionError(t, err, ipcerr.CodeInvalid)
 	}
 }
 
@@ -74,6 +74,6 @@ func TestGoalSet_SemStore_AntesDoRange(t *testing.T) {
 	h := NewSet(nil)
 	// Ordem do switch legado: store não configurado é verificado antes do
 	// range da meta — mesmo com valor inválido o erro é o de configuração.
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "goal-set", GoalMinutes: 0})
-	assertActionError(t, err, ipc.CodeNotConfigured)
+	_, err := h.Handle(context.Background(), &SetInput{GoalMinutes: 0})
+	assertActionError(t, err, ipcerr.CodeNotConfigured)
 }

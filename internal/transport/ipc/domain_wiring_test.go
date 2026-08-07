@@ -138,11 +138,56 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 
 	s.Register(blocks.New(blk, cat))
 	s.Register(blocks.NewBlockAll(blk))
-	s.Register(presets.NewList(cat))
-	s.Register(presets.NewAdd(cat))
-	s.Register(presets.NewRemove(cat))
-	s.Register(goal.NewGet(goalStore))
-	s.Register(goal.NewSet(goalStore))
+	// presets/goal via ipc.DomainAction (mesmo padrão do composition root).
+	hPresetsList := presets.NewList(cat)
+	s.Register(ipc.DomainAction[presets.NoInput, presets.ListResult]{
+		Name:   hPresetsList.Action(),
+		Decode: ipc.NoInputDecode[presets.NoInput](),
+		Handle: hPresetsList.Handle,
+		Encode: func(out *presets.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Presets: out.Presets}, nil
+		},
+	}.Handler())
+	hPresetsAdd := presets.NewAdd(cat)
+	s.Register(ipc.DomainAction[presets.AddInput, presets.AddResult]{
+		Name: hPresetsAdd.Action(),
+		Decode: func(r *ipc.Request) (*presets.AddInput, error) {
+			return &presets.AddInput{PresetName: r.PresetName, PresetLabel: r.PresetLabel, PresetDomains: r.PresetDomains}, nil
+		},
+		Handle: hPresetsAdd.Handle,
+		Encode: func(out *presets.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hPresetsRemove := presets.NewRemove(cat)
+	s.Register(ipc.DomainAction[presets.RemoveInput, presets.RemoveResult]{
+		Name: hPresetsRemove.Action(),
+		Decode: func(r *ipc.Request) (*presets.RemoveInput, error) {
+			return &presets.RemoveInput{PresetName: r.PresetName}, nil
+		},
+		Handle: hPresetsRemove.Handle,
+		Encode: func(out *presets.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hGoalGet := goal.NewGet(goalStore)
+	s.Register(ipc.DomainAction[goal.NoInput, goal.GetResult]{
+		Name:   hGoalGet.Action(),
+		Decode: ipc.NoInputDecode[goal.NoInput](),
+		Handle: hGoalGet.Handle,
+		Encode: func(out *goal.GetResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Goal: out.Goal}, nil
+		},
+	}.Handler())
+	hGoalSet := goal.NewSet(goalStore)
+	s.Register(ipc.DomainAction[goal.SetInput, goal.SetResult]{
+		Name:   hGoalSet.Action(),
+		Decode: func(r *ipc.Request) (*goal.SetInput, error) { return &goal.SetInput{GoalMinutes: r.GoalMinutes}, nil },
+		Handle: hGoalSet.Handle,
+		Encode: func(out *goal.SetResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Goal: out.Goal, Message: out.Message}, nil
+		},
+	}.Handler())
 	s.Register(dns.NewStart(dc, dp, nil))
 	s.Register(dns.NewStop(dc, dp))
 	s.Register(dns.NewStatus(dc, dp))

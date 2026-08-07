@@ -1,15 +1,16 @@
 // Package presets implements the domain service for the presets/preset-add/
 // preset-remove IPC actions (Fase 4 do refactor-plan). The catalog is a
 // minimal interface (DIP) — *preset.Store and the read-only built-in catalog
-// both satisfy it.
+// both satisfy it. Handlers use package-local types; the transport adapts them
+// via ipc.DomainAction (pós-reorg item 2).
 package presets
 
 import (
 	"context"
 	"fmt"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/preset"
-	"focusguard/internal/transport/ipc"
 )
 
 // Catalog is the preset surface the presets actions need.
@@ -18,6 +19,18 @@ type Catalog interface {
 	Add(p preset.Preset) error
 	Remove(name string) error
 }
+
+// Tipos de entrada/saída das ações — adaptados pelo transporte (DIP).
+type NoInput struct{}
+type ListResult struct{ Presets []preset.Preset }
+type AddInput struct {
+	PresetName    string
+	PresetLabel   string
+	PresetDomains []string
+}
+type AddResult struct{ Message string }
+type RemoveInput struct{ PresetName string }
+type RemoveResult struct{ Message string }
 
 // ---------------------------------------------------------------------------
 // presets
@@ -33,10 +46,10 @@ func NewList(catalog Catalog) *ListHandler { return &ListHandler{catalog: catalo
 
 func (h *ListHandler) Action() string { return "presets" }
 
-func (h *ListHandler) Validate(*ipc.Request) error { return nil }
+func (h *ListHandler) Validate(*NoInput) error { return nil }
 
-func (h *ListHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
-	return &ipc.Response{Success: true, Presets: h.catalog.List()}, nil
+func (h *ListHandler) Handle(ctx context.Context, _ *NoInput) (*ListResult, error) {
+	return &ListResult{Presets: h.catalog.List()}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -53,13 +66,13 @@ func NewAdd(catalog Catalog) *AddHandler { return &AddHandler{catalog: catalog} 
 
 func (h *AddHandler) Action() string { return "preset-add" }
 
-func (h *AddHandler) Validate(*ipc.Request) error { return nil }
+func (h *AddHandler) Validate(*AddInput) error { return nil }
 
-func (h *AddHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *AddHandler) Handle(ctx context.Context, req *AddInput) (*AddResult, error) {
 	if h.catalog == nil {
 		// Mesmo caso do builtin-only fallback do server: sem store de presets
 		// personalizados, a mutação é rejeitada (tests/dev builds).
-		return nil, ipc.Err(ipc.CodeNotConfigured, "presets personalizados não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "presets personalizados não configurados")
 	}
 	err := h.catalog.Add(preset.Preset{
 		Name:    req.PresetName,
@@ -69,7 +82,7 @@ func (h *AddHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Respons
 	if err != nil {
 		return nil, err
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Preset %s criado (%d domínios)", req.PresetName, len(req.PresetDomains))}, nil
+	return &AddResult{Message: fmt.Sprintf("Preset %s criado (%d domínios)", req.PresetName, len(req.PresetDomains))}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -86,14 +99,14 @@ func NewRemove(catalog Catalog) *RemoveHandler { return &RemoveHandler{catalog: 
 
 func (h *RemoveHandler) Action() string { return "preset-remove" }
 
-func (h *RemoveHandler) Validate(*ipc.Request) error { return nil }
+func (h *RemoveHandler) Validate(*RemoveInput) error { return nil }
 
-func (h *RemoveHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *RemoveHandler) Handle(ctx context.Context, req *RemoveInput) (*RemoveResult, error) {
 	if h.catalog == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "presets personalizados não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "presets personalizados não configurados")
 	}
 	if err := h.catalog.Remove(req.PresetName); err != nil {
 		return nil, err
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Preset %s removido", req.PresetName)}, nil
+	return &RemoveResult{Message: fmt.Sprintf("Preset %s removido", req.PresetName)}, nil
 }
