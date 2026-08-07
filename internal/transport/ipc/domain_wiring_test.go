@@ -97,6 +97,18 @@ func (f *fakeDNSController) Status() dnsserver.Status {
 	return dnsserver.Status{Listening: f.started, Upstream: f.upstream}
 }
 
+// mergeDNSWire projeta o Status de domínio do DNS no wire (mesmo helper do
+// composition root).
+func mergeDNSWire(resp *ipc.Response, st dns.Status) {
+	resp.DNSEnabled = st.Enabled
+	resp.DNSListening = st.Listening
+	resp.DNSAddr = st.Addr
+	resp.DNSUpstream = st.Upstream
+	resp.DNSQueries = st.Queries
+	resp.DNSBlocked = st.Blocked
+	resp.DNSBindError = st.BindError
+}
+
 type fakeDNSPersister struct {
 	enabled  bool
 	upstream string
@@ -216,10 +228,53 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 			return &ipc.Response{Success: true, Goal: out.Goal, Message: out.Message}, nil
 		},
 	}.Handler())
-	s.Register(dns.NewStart(dc, dp, nil))
-	s.Register(dns.NewStop(dc, dp))
-	s.Register(dns.NewStatus(dc, dp))
-	s.Register(dns.NewSetUpstream(dc, dp))
+	// dns via ipc.DomainAction (mesmo padrão do composition root).
+	hDNSStart := dns.NewStart(dc, dp, nil)
+	s.Register(ipc.DomainAction[dns.NoInput, dns.StartResult]{
+		Name:   hDNSStart.Action(),
+		Decode: ipc.NoInputDecode[dns.NoInput](),
+		Handle: hDNSStart.Handle,
+		Encode: func(out *dns.StartResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
+	hDNSStop := dns.NewStop(dc, dp)
+	s.Register(ipc.DomainAction[dns.NoInput, dns.StopResult]{
+		Name:   hDNSStop.Action(),
+		Decode: ipc.NoInputDecode[dns.NoInput](),
+		Handle: hDNSStop.Handle,
+		Encode: func(out *dns.StopResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
+	hDNSStatus := dns.NewStatus(dc, dp)
+	s.Register(ipc.DomainAction[dns.NoInput, dns.StatusResult]{
+		Name:   hDNSStatus.Action(),
+		Decode: ipc.NoInputDecode[dns.NoInput](),
+		Handle: hDNSStatus.Handle,
+		Encode: func(out *dns.StatusResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
+	hDNSSetUpstream := dns.NewSetUpstream(dc, dp)
+	s.Register(ipc.DomainAction[dns.SetUpstreamInput, dns.SetUpstreamResult]{
+		Name: hDNSSetUpstream.Action(),
+		Decode: func(r *ipc.Request) (*dns.SetUpstreamInput, error) {
+			return &dns.SetUpstreamInput{Upstream: r.Upstream}, nil
+		},
+		Handle: hDNSSetUpstream.Handle,
+		Encode: func(out *dns.SetUpstreamResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
 	// users via ipc.DomainAction (mesmo padrão do composition root).
 	hUsersList := users.NewList(userStore)
 	s.Register(ipc.DomainAction[users.NoInput, users.ListResult]{

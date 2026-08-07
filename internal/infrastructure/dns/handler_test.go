@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/infrastructure/dnsserver"
-	"focusguard/internal/transport/ipc"
 )
 
 type fakeCtrl struct {
@@ -71,18 +71,26 @@ func (f *fakePersist) SetDNSUpstream(upstream string) error {
 
 func (f *fakePersist) DNSEnabled() bool { return f.enabled }
 
+func assertActionError(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	var ae *ipcerr.Error
+	if !errors.As(err, &ae) || ae.Code != wantCode {
+		t.Fatalf("esperava código %q, got %v", wantCode, err)
+	}
+}
+
 func TestDNSStart_OKComHook(t *testing.T) {
 	c := &fakeCtrl{}
 	p := &fakePersist{}
 	hooked := false
 	h := NewStart(c, p, func() { hooked = true })
 
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-start"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success {
-		t.Fatalf("esperava sucesso, got %+v", resp)
+	if resp.Message == "" {
+		t.Fatalf("esperava mensagem, got %+v", resp)
 	}
 	if !c.started {
 		t.Fatal("Start não foi chamado")
@@ -93,7 +101,7 @@ func TestDNSStart_OKComHook(t *testing.T) {
 	if !hooked {
 		t.Fatal("hook onStarted não disparado")
 	}
-	if !resp.DNSListening {
+	if !resp.Status.Listening {
 		t.Fatalf("resposta deveria refletir o estado vivo, got %+v", resp)
 	}
 }
@@ -103,7 +111,7 @@ func TestDNSStart_FalhaAoPersistirParaOServidor(t *testing.T) {
 	p := &fakePersist{err: errors.New("write falhou")}
 	h := NewStart(c, p, nil)
 
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-start"})
+	_, err := h.Handle(context.Background(), &NoInput{})
 	if err == nil {
 		t.Fatal("esperava o erro de persistência")
 	}
@@ -117,11 +125,11 @@ func TestDNSStop_OK(t *testing.T) {
 	p := &fakePersist{enabled: true}
 	h := NewStop(c, p)
 
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-stop"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || !c.stopped || p.enabled {
+	if resp.Message == "" || !c.stopped || p.enabled {
 		t.Fatalf("esperava sucesso + parado + flag false, got resp=%+v", resp)
 	}
 }
@@ -131,31 +139,25 @@ func TestDNSStatus_OK(t *testing.T) {
 	p := &fakePersist{enabled: true}
 	h := NewStatus(c, p)
 
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-status"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.DNSEnabled || !resp.DNSListening || resp.DNSQueries != 10 {
+	if !resp.Status.Enabled || !resp.Status.Listening || resp.Status.Queries != 10 {
 		t.Fatalf("esperava estado combinado, got %+v", resp)
 	}
 }
 
 func TestDNSSetUpstream_SemController(t *testing.T) {
 	h := NewSetUpstream(nil, &fakePersist{})
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-set-upstream", Upstream: "1.1.1.2"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeNotConfigured {
-		t.Fatalf("esperava ERR_NOT_CONFIGURED, got %v", err)
-	}
+	_, err := h.Handle(context.Background(), &SetUpstreamInput{Upstream: "1.1.1.2"})
+	assertActionError(t, err, ipcerr.CodeNotConfigured)
 }
 
 func TestDNSSetUpstream_UpstreamInvalido(t *testing.T) {
 	h := NewSetUpstream(&fakeCtrl{}, &fakePersist{})
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-set-upstream", Upstream: ""})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeInvalid {
-		t.Fatalf("esperava ERR_INVALID, got %v", err)
-	}
+	_, err := h.Handle(context.Background(), &SetUpstreamInput{Upstream: ""})
+	assertActionError(t, err, ipcerr.CodeInvalid)
 }
 
 func TestDNSSetUpstream_OK(t *testing.T) {
@@ -163,11 +165,11 @@ func TestDNSSetUpstream_OK(t *testing.T) {
 	p := &fakePersist{}
 	h := NewSetUpstream(c, p)
 
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "dns-set-upstream", Upstream: "9.9.9.9"})
+	resp, err := h.Handle(context.Background(), &SetUpstreamInput{Upstream: "9.9.9.9"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success {
+	if resp.Message == "" {
 		t.Fatalf("esperava sucesso, got %+v", resp)
 	}
 	if c.upstream != "9.9.9.9:53" {

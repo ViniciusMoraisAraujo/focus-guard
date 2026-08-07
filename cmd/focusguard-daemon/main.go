@@ -189,6 +189,19 @@ func startProcessGuard(sched processguard.ActivityChecker, denylist []string) pr
 	return pg
 }
 
+// mergeDNSWire projeta o Status de domínio do DNS (dns.Status) no wire
+// (ipc.Response.DNS*). Vive no composition root porque conhece os dois lados
+// — o pacote dns usa tipos próprios (DIP, pós-reorg item 2).
+func mergeDNSWire(resp *ipc.Response, st dns.Status) {
+	resp.DNSEnabled = st.Enabled
+	resp.DNSListening = st.Listening
+	resp.DNSAddr = st.Addr
+	resp.DNSUpstream = st.Upstream
+	resp.DNSQueries = st.Queries
+	resp.DNSBlocked = st.Blocked
+	resp.DNSBindError = st.BindError
+}
+
 // guardApps wires the persisted apps store to the live process guard: every
 // apps-add/apps-remove refreshes the guard's denylist so the change takes
 // effect on the next scan. Satisfies the interface of the apps domain handlers
@@ -858,10 +871,53 @@ func runDaemon() bool {
 			return &ipc.Response{Success: true, Goal: out.Goal, Message: out.Message}, nil
 		},
 	}.Handler())
-	server.Register(dns.NewStart(dnsSrv, sched, dohHook))
-	server.Register(dns.NewStop(dnsSrv, sched))
-	server.Register(dns.NewStatus(dnsSrv, sched))
-	server.Register(dns.NewSetUpstream(dnsSrv, sched))
+	// dns via ipc.DomainAction (DIP — pós-reorg item 2).
+	hDNSStart := dns.NewStart(dnsSrv, sched, dohHook)
+	server.Register(ipc.DomainAction[dns.NoInput, dns.StartResult]{
+		Name:   hDNSStart.Action(),
+		Decode: ipc.NoInputDecode[dns.NoInput](),
+		Handle: hDNSStart.Handle,
+		Encode: func(out *dns.StartResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
+	hDNSStop := dns.NewStop(dnsSrv, sched)
+	server.Register(ipc.DomainAction[dns.NoInput, dns.StopResult]{
+		Name:   hDNSStop.Action(),
+		Decode: ipc.NoInputDecode[dns.NoInput](),
+		Handle: hDNSStop.Handle,
+		Encode: func(out *dns.StopResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
+	hDNSStatus := dns.NewStatus(dnsSrv, sched)
+	server.Register(ipc.DomainAction[dns.NoInput, dns.StatusResult]{
+		Name:   hDNSStatus.Action(),
+		Decode: ipc.NoInputDecode[dns.NoInput](),
+		Handle: hDNSStatus.Handle,
+		Encode: func(out *dns.StatusResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
+	hDNSSetUpstream := dns.NewSetUpstream(dnsSrv, sched)
+	server.Register(ipc.DomainAction[dns.SetUpstreamInput, dns.SetUpstreamResult]{
+		Name: hDNSSetUpstream.Action(),
+		Decode: func(r *ipc.Request) (*dns.SetUpstreamInput, error) {
+			return &dns.SetUpstreamInput{Upstream: r.Upstream}, nil
+		},
+		Handle: hDNSSetUpstream.Handle,
+		Encode: func(out *dns.SetUpstreamResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message}
+			mergeDNSWire(resp, out.Status)
+			return resp, nil
+		},
+	}.Handler())
 	// users via ipc.DomainAction (DIP — pós-reorg item 2).
 	hUsersList := users.NewList(userStore)
 	server.Register(ipc.DomainAction[users.NoInput, users.ListResult]{

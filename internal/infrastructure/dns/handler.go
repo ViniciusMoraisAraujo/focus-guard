@@ -2,7 +2,8 @@
 // (DNS sinkhole lifecycle — Fase 4 do refactor-plan). Handlers combine the
 // live *dnsserver.Controller state with the persisted enabled flag/upstream,
 // which live in the scheduler — the two sources of truth the switch already
-// merged for status.
+// merged for status. Handlers use package-local types; the transport adapts
+// them via ipc.DomainAction (pós-reorg item 2).
 package dns
 
 import (
@@ -13,8 +14,8 @@ import (
 	"strconv"
 	"strings"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/infrastructure/dnsserver"
-	"focusguard/internal/transport/ipc"
 )
 
 // Controller drives the DNS sinkhole server lifecycle.
@@ -34,16 +35,46 @@ type Persister interface {
 	DNSEnabled() bool
 }
 
-// mergeDNS copies the live DNS controller state into an IPC response together
-// with the persisted enabled flag (which lives in the scheduler).
-func mergeDNS(resp *ipc.Response, st dnsserver.Status, enabled bool) {
-	resp.DNSEnabled = enabled
-	resp.DNSListening = st.Listening
-	resp.DNSAddr = st.Addr
-	resp.DNSUpstream = st.Upstream
-	resp.DNSQueries = st.Queries
-	resp.DNSBlocked = st.Blocked
-	resp.DNSBindError = st.BindError
+// Tipos de entrada/saída das ações — adaptados pelo transporte (DIP).
+type NoInput struct{}
+
+// Status agrega o estado vivo do controller + o flag persistido — o que o
+// wire Response.DNS* expõe.
+type Status struct {
+	Enabled   bool
+	Listening bool
+	Addr      string
+	Upstream  string
+	Queries   uint64
+	Blocked   uint64
+	BindError string
+}
+
+type StartResult struct {
+	Message string
+	Status  Status
+}
+type StopResult struct {
+	Message string
+	Status  Status
+}
+type StatusResult struct{ Status Status }
+type SetUpstreamInput struct{ Upstream string }
+type SetUpstreamResult struct {
+	Message string
+	Status  Status
+}
+
+// mergeDNS copies the live DNS controller state into the result Status
+// together with the persisted enabled flag (which lives in the scheduler).
+func mergeDNS(st *Status, s dnsserver.Status, enabled bool) {
+	st.Enabled = enabled
+	st.Listening = s.Listening
+	st.Addr = s.Addr
+	st.Upstream = s.Upstream
+	st.Queries = s.Queries
+	st.Blocked = s.Blocked
+	st.BindError = s.BindError
 }
 
 // ---------------------------------------------------------------------------
@@ -68,11 +99,11 @@ func NewStart(ctrl Controller, persist Persister, onStarted func()) *StartHandle
 
 func (h *StartHandler) Action() string { return "dns-start" }
 
-func (h *StartHandler) Validate(*ipc.Request) error { return nil }
+func (h *StartHandler) Validate(*NoInput) error { return nil }
 
-func (h *StartHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *StartHandler) Handle(ctx context.Context, _ *NoInput) (*StartResult, error) {
 	if h.ctrl == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "servidor DNS não configurado")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "servidor DNS não configurado")
 	}
 	if err := h.ctrl.Start(); err != nil {
 		return nil, err
@@ -87,9 +118,9 @@ func (h *StartHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Respo
 	if h.onStarted != nil {
 		h.onStarted()
 	}
-	resp := &ipc.Response{Success: true, Message: "Servidor DNS iniciado em " + h.ctrl.Status().Addr}
-	mergeDNS(resp, h.ctrl.Status(), h.persist.DNSEnabled())
-	return resp, nil
+	res := &StartResult{Message: "Servidor DNS iniciado em " + h.ctrl.Status().Addr}
+	mergeDNS(&res.Status, h.ctrl.Status(), h.persist.DNSEnabled())
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -109,11 +140,11 @@ func NewStop(ctrl Controller, persist Persister) *StopHandler {
 
 func (h *StopHandler) Action() string { return "dns-stop" }
 
-func (h *StopHandler) Validate(*ipc.Request) error { return nil }
+func (h *StopHandler) Validate(*NoInput) error { return nil }
 
-func (h *StopHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *StopHandler) Handle(ctx context.Context, _ *NoInput) (*StopResult, error) {
 	if h.ctrl == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "servidor DNS não configurado")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "servidor DNS não configurado")
 	}
 	if err := h.ctrl.Stop(); err != nil {
 		return nil, err
@@ -121,9 +152,9 @@ func (h *StopHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Respon
 	if err := h.persist.SetDNSEnabled(false); err != nil {
 		return nil, err
 	}
-	resp := &ipc.Response{Success: true, Message: "Servidor DNS desligado"}
-	mergeDNS(resp, h.ctrl.Status(), h.persist.DNSEnabled())
-	return resp, nil
+	res := &StopResult{Message: "Servidor DNS desligado"}
+	mergeDNS(&res.Status, h.ctrl.Status(), h.persist.DNSEnabled())
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -143,15 +174,15 @@ func NewStatus(ctrl Controller, persist Persister) *StatusHandler {
 
 func (h *StatusHandler) Action() string { return "dns-status" }
 
-func (h *StatusHandler) Validate(*ipc.Request) error { return nil }
+func (h *StatusHandler) Validate(*NoInput) error { return nil }
 
-func (h *StatusHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *StatusHandler) Handle(ctx context.Context, _ *NoInput) (*StatusResult, error) {
 	if h.ctrl == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "servidor DNS não configurado")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "servidor DNS não configurado")
 	}
-	resp := &ipc.Response{Success: true}
-	mergeDNS(resp, h.ctrl.Status(), h.persist.DNSEnabled())
-	return resp, nil
+	res := &StatusResult{}
+	mergeDNS(&res.Status, h.ctrl.Status(), h.persist.DNSEnabled())
+	return res, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -174,15 +205,15 @@ func NewSetUpstream(ctrl Controller, persist Persister) *SetUpstreamHandler {
 
 func (h *SetUpstreamHandler) Action() string { return "dns-set-upstream" }
 
-func (h *SetUpstreamHandler) Validate(*ipc.Request) error { return nil }
+func (h *SetUpstreamHandler) Validate(*SetUpstreamInput) error { return nil }
 
-func (h *SetUpstreamHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *SetUpstreamHandler) Handle(ctx context.Context, req *SetUpstreamInput) (*SetUpstreamResult, error) {
 	if h.ctrl == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "servidor DNS não configurado")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "servidor DNS não configurado")
 	}
 	upstream, err := normalizeUpstream(req.Upstream)
 	if err != nil {
-		return nil, ipc.Err(ipc.CodeInvalid, err.Error())
+		return nil, ipcerr.New(ipcerr.CodeInvalid, err.Error())
 	}
 	if err := h.persist.SetDNSUpstream(upstream); err != nil {
 		return nil, err
@@ -190,9 +221,9 @@ func (h *SetUpstreamHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc
 	if err := h.ctrl.SetUpstream(upstream); err != nil {
 		return nil, err
 	}
-	resp := &ipc.Response{Success: true, Message: fmt.Sprintf("Upstream DNS alterado para %s", upstream)}
-	mergeDNS(resp, h.ctrl.Status(), h.persist.DNSEnabled())
-	return resp, nil
+	res := &SetUpstreamResult{Message: fmt.Sprintf("Upstream DNS alterado para %s", upstream)}
+	mergeDNS(&res.Status, h.ctrl.Status(), h.persist.DNSEnabled())
+	return res, nil
 }
 
 // normalizeUpstream validates a user-supplied upstream resolver and returns it
