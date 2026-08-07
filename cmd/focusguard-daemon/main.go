@@ -774,8 +774,38 @@ func runDaemon() bool {
 	// do ipc. O ipc.Server registra só os handlers de nível servidor
 	// (ping/status/tamper/services); este bloco fecha o registry (34 ações)
 	// que o ValidateRegistry abaixo verifica no boot.
-	server.Register(blocks.New(sched, presetStore))
-	server.Register(blocks.NewBlockAll(sched))
+	// blocks via ipc.DomainAction (handlers de domínio com tipos próprios,
+	// adaptados ao wire — pós-reorg item 2). O conflito ask-first devolve o
+	// código estável no resultado; o Encode o projeta no wire.
+	hBlock := blocks.New(sched, presetStore)
+	server.Register(ipc.DomainAction[blocks.BlockInput, blocks.BlockResult]{
+		Name: hBlock.Action(),
+		Decode: func(r *ipc.Request) (*blocks.BlockInput, error) {
+			return &blocks.BlockInput{Domain: r.Domain, Duration: r.Duration, Preset: r.Preset, Extend: r.Extend, Replace: r.Replace}, nil
+		},
+		Validate: hBlock.Validate,
+		Handle:   hBlock.Handle,
+		Encode: func(out *blocks.BlockResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
+			if out.Code != "" {
+				resp.Success = false
+				resp.Code = out.Code
+			}
+			return resp, nil
+		},
+	}.Handler())
+	hBlockAll := blocks.NewBlockAll(sched)
+	server.Register(ipc.DomainAction[blocks.BlockAllInput, blocks.BlockAllResult]{
+		Name: hBlockAll.Action(),
+		Decode: func(r *ipc.Request) (*blocks.BlockAllInput, error) {
+			return &blocks.BlockAllInput{Duration: r.Duration, Allowlist: r.Allowlist}, nil
+		},
+		Validate: hBlockAll.Validate,
+		Handle:   hBlockAll.Handle,
+		Encode: func(out *blocks.BlockAllResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
 
 	// presets/goal via ipc.DomainAction (handlers de domínio com tipos
 	// próprios, adaptados ao wire — pós-reorg item 2).
@@ -832,11 +862,59 @@ func runDaemon() bool {
 	server.Register(dns.NewStop(dnsSrv, sched))
 	server.Register(dns.NewStatus(dnsSrv, sched))
 	server.Register(dns.NewSetUpstream(dnsSrv, sched))
-	server.Register(users.NewList(userStore))
-	server.Register(users.NewVerify(userStore))
-	server.Register(users.NewAdd(userStore))
-	server.Register(users.NewRemove(userStore))
-	server.Register(users.NewSetPassword(userStore))
+	// users via ipc.DomainAction (DIP — pós-reorg item 2).
+	hUsersList := users.NewList(userStore)
+	server.Register(ipc.DomainAction[users.NoInput, users.ListResult]{
+		Name:   hUsersList.Action(),
+		Decode: ipc.NoInputDecode[users.NoInput](),
+		Handle: hUsersList.Handle,
+		Encode: func(out *users.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Users: out.Users}, nil
+		},
+	}.Handler())
+	hUsersVerify := users.NewVerify(userStore)
+	server.Register(ipc.DomainAction[users.VerifyInput, users.VerifyResult]{
+		Name: hUsersVerify.Action(),
+		Decode: func(r *ipc.Request) (*users.VerifyInput, error) {
+			return &users.VerifyInput{UserName: r.UserName, UserPassword: r.UserPassword}, nil
+		},
+		Handle: hUsersVerify.Handle,
+		Encode: func(out *users.VerifyResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, UserIsAdmin: out.UserIsAdmin}, nil
+		},
+	}.Handler())
+	hUsersAdd := users.NewAdd(userStore)
+	server.Register(ipc.DomainAction[users.AddInput, users.AddResult]{
+		Name: hUsersAdd.Action(),
+		Decode: func(r *ipc.Request) (*users.AddInput, error) {
+			return &users.AddInput{UserName: r.UserName, UserPassword: r.UserPassword}, nil
+		},
+		Handle: hUsersAdd.Handle,
+		Encode: func(out *users.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hUsersRemove := users.NewRemove(userStore)
+	server.Register(ipc.DomainAction[users.RemoveInput, users.RemoveResult]{
+		Name:   hUsersRemove.Action(),
+		Decode: func(r *ipc.Request) (*users.RemoveInput, error) { return &users.RemoveInput{UserName: r.UserName}, nil },
+		Handle: hUsersRemove.Handle,
+		Encode: func(out *users.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hUsersSetPassword := users.NewSetPassword(userStore)
+	server.Register(ipc.DomainAction[users.SetPasswordInput, users.SetPasswordResult]{
+		Name: hUsersSetPassword.Action(),
+		Decode: func(r *ipc.Request) (*users.SetPasswordInput, error) {
+			return &users.SetPasswordInput{UserName: r.UserName, UserPassword: r.UserPassword}, nil
+		},
+		Validate: hUsersSetPassword.Validate,
+		Handle:   hUsersSetPassword.Handle,
+		Encode: func(out *users.SetPasswordResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
 	// apps registrado incondicionalmente (pg pode ser nil quando o process
 	// guard não sobe — ex.: testes que o stubam): o refreshGuard do guardApps
 	// já é no-op com guard nil, e o ValidateRegistry abaixo exige handler para

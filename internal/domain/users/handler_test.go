@@ -5,8 +5,8 @@ import (
 	"errors"
 	"testing"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/user"
-	"focusguard/internal/transport/ipc"
 )
 
 type fakeStore struct {
@@ -48,31 +48,31 @@ func (f *fakeStore) SetPassword(username, password string) error {
 	return nil
 }
 
+func assertActionError(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	var ae *ipcerr.Error
+	if !errors.As(err, &ae) || ae.Code != wantCode {
+		t.Fatalf("esperava código %q, got %v", wantCode, err)
+	}
+}
+
 func TestUserSetPassword_RejeitaSemUsuario(t *testing.T) {
 	h := NewSetPassword(&fakeStore{})
-	err := h.Validate(&ipc.Request{UserPassword: "nova-senha-123"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeInvalid {
-		t.Fatalf("esperava ERR_INVALID, got %v", err)
-	}
+	err := h.Validate(&SetPasswordInput{UserPassword: "nova-senha-123"})
+	assertActionError(t, err, ipcerr.CodeInvalid)
 }
 
 func TestUserSetPassword_RejeitaSenhaCurta(t *testing.T) {
 	h := NewSetPassword(&fakeStore{})
-	err := h.Validate(&ipc.Request{UserName: "joao", UserPassword: "curta"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeInvalid {
-		t.Fatalf("esperava ERR_INVALID, got %v", err)
-	}
+	err := h.Validate(&SetPasswordInput{UserName: "joao", UserPassword: "curta"})
+	assertActionError(t, err, ipcerr.CodeInvalid)
 }
 
 func TestUserSetPassword_OK(t *testing.T) {
 	st := &fakeStore{}
 	h := NewSetPassword(st)
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		UserName: "joao", UserPassword: "nova-senha-123",
-	})
-	if err != nil || resp == nil || !resp.Success {
+	resp, err := h.Handle(context.Background(), &SetPasswordInput{UserName: "joao", UserPassword: "nova-senha-123"})
+	if err != nil || resp == nil || resp.Message == "" {
 		t.Fatalf("esperava sucesso, got resp=%v err=%v", resp, err)
 	}
 	if st.lastUser != "joao" {
@@ -82,61 +82,52 @@ func TestUserSetPassword_OK(t *testing.T) {
 
 func TestUserSetPassword_SemStore(t *testing.T) {
 	h := NewSetPassword(nil)
-	_, err := h.Handle(context.Background(), &ipc.Request{UserName: "joao", UserPassword: "nova-senha-123"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeNotConfigured {
-		t.Fatalf("esperava ERR_NOT_CONFIGURED, got %v", err)
-	}
+	_, err := h.Handle(context.Background(), &SetPasswordInput{UserName: "joao", UserPassword: "nova-senha-123"})
+	assertActionError(t, err, ipcerr.CodeNotConfigured)
 }
 
 func TestUserList_OK(t *testing.T) {
 	h := NewList(&fakeStore{users: []string{"admin", "joao"}})
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "user-list"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || len(resp.Users) != 2 {
+	if len(resp.Users) != 2 {
 		t.Fatalf("esperava 2 usuários, got %+v", resp)
 	}
 }
 
 func TestUserList_SemStore(t *testing.T) {
 	h := NewList(nil)
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "user-list"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeNotConfigured {
-		t.Fatalf("esperava ERR_NOT_CONFIGURED, got %v", err)
-	}
+	_, err := h.Handle(context.Background(), &NoInput{})
+	assertActionError(t, err, ipcerr.CodeNotConfigured)
 }
 
 func TestUserVerify_CredenciaisInvalidas(t *testing.T) {
 	h := NewVerify(&fakeStore{verifyOK: false})
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "user-verify", UserName: "x", UserPassword: "y"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeInvalid {
-		t.Fatalf("esperava ERR_INVALID, got %v", err)
-	}
+	_, err := h.Handle(context.Background(), &VerifyInput{UserName: "x", UserPassword: "y"})
+	assertActionError(t, err, ipcerr.CodeInvalid)
 }
 
 func TestUserVerify_OK(t *testing.T) {
 	h := NewVerify(&fakeStore{verifyOK: true, isAdmin: true})
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "user-verify", UserName: "admin", UserPassword: "x"})
+	resp, err := h.Handle(context.Background(), &VerifyInput{UserName: "admin", UserPassword: "x"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || !resp.UserIsAdmin {
-		t.Fatalf("esperava sucesso + admin, got %+v", resp)
+	if !resp.UserIsAdmin {
+		t.Fatalf("esperava admin, got %+v", resp)
 	}
 }
 
 func TestUserAdd_OK(t *testing.T) {
 	st := &fakeStore{}
 	h := NewAdd(st)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "user-add", UserName: "maria", UserPassword: "senha-segura-1"})
+	resp, err := h.Handle(context.Background(), &AddInput{UserName: "maria", UserPassword: "senha-segura-1"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || st.lastUser != "maria" {
+	if resp.Message == "" || st.lastUser != "maria" {
 		t.Fatalf("esperava sucesso, got resp=%+v last=%q", resp, st.lastUser)
 	}
 }
@@ -144,7 +135,7 @@ func TestUserAdd_OK(t *testing.T) {
 func TestUserAdd_ErroDoStore(t *testing.T) {
 	st := &fakeStore{err: errors.New("user: já existe um usuário chamado \"x\"")}
 	h := NewAdd(st)
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "user-add", UserName: "x", UserPassword: "senha-segura-1"})
+	_, err := h.Handle(context.Background(), &AddInput{UserName: "x", UserPassword: "senha-segura-1"})
 	if err == nil {
 		t.Fatal("esperava o erro do store propagado")
 	}
@@ -153,11 +144,11 @@ func TestUserAdd_ErroDoStore(t *testing.T) {
 func TestUserRemove_OK(t *testing.T) {
 	st := &fakeStore{}
 	h := NewRemove(st)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "user-remove", UserName: "joao"})
+	resp, err := h.Handle(context.Background(), &RemoveInput{UserName: "joao"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || st.lastUser != "joao" {
+	if resp.Message == "" || st.lastUser != "joao" {
 		t.Fatalf("esperava sucesso, got resp=%+v last=%q", resp, st.lastUser)
 	}
 }

@@ -1,7 +1,8 @@
 // Package users implements the domain service for the user-* IPC actions (web
 // login and user management — Fase 4 do refactor-plan). Each action is a
 // self-contained Handler depending only on the minimal Store interface (DIP);
-// the *user.Store satisfies it structurally.
+// the *user.Store satisfies it structurally. Handlers use package-local types;
+// the transport adapts them via ipc.DomainAction (pós-reorg item 2).
 package users
 
 import (
@@ -9,8 +10,8 @@ import (
 	"fmt"
 	"strings"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/user"
-	"focusguard/internal/transport/ipc"
 )
 
 // minPasswordLen espelha a regra do user.Store (minPasswordLen=8) — aqui é só
@@ -25,6 +26,18 @@ type Store interface {
 	Remove(username string) error
 	SetPassword(username, password string) error
 }
+
+// Tipos de entrada/saída das ações — adaptados pelo transporte (DIP).
+type NoInput struct{}
+type ListResult struct{ Users []string }
+type VerifyInput struct{ UserName, UserPassword string }
+type VerifyResult struct{ UserIsAdmin bool }
+type AddInput struct{ UserName, UserPassword string }
+type AddResult struct{ Message string }
+type RemoveInput struct{ UserName string }
+type RemoveResult struct{ Message string }
+type SetPasswordInput struct{ UserName, UserPassword string }
+type SetPasswordResult struct{ Message string }
 
 // ---------------------------------------------------------------------------
 // user-list
@@ -41,13 +54,13 @@ func NewList(store Store) *ListHandler { return &ListHandler{store: store} }
 
 func (h *ListHandler) Action() string { return "user-list" }
 
-func (h *ListHandler) Validate(*ipc.Request) error { return nil }
+func (h *ListHandler) Validate(*NoInput) error { return nil }
 
-func (h *ListHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *ListHandler) Handle(ctx context.Context, _ *NoInput) (*ListResult, error) {
 	if h.store == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "usuários não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "usuários não configurados")
 	}
-	return &ipc.Response{Success: true, Users: h.store.List()}, nil
+	return &ListResult{Users: h.store.List()}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -64,19 +77,19 @@ func NewVerify(store Store) *VerifyHandler { return &VerifyHandler{store: store}
 
 func (h *VerifyHandler) Action() string { return "user-verify" }
 
-func (h *VerifyHandler) Validate(*ipc.Request) error { return nil }
+func (h *VerifyHandler) Validate(*VerifyInput) error { return nil }
 
-func (h *VerifyHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *VerifyHandler) Handle(ctx context.Context, req *VerifyInput) (*VerifyResult, error) {
 	if h.store == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "usuários não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "usuários não configurados")
 	}
 	u, ok := h.store.Verify(req.UserName, req.UserPassword)
 	if !ok {
 		// Mensagem única para usuário desconhecido e senha errada — não
 		// revela qual dos dois falhou (best-effort; o IPC é local).
-		return nil, ipc.Err(ipc.CodeInvalid, "usuário ou senha inválidos")
+		return nil, ipcerr.New(ipcerr.CodeInvalid, "usuário ou senha inválidos")
 	}
-	return &ipc.Response{Success: true, UserIsAdmin: u.IsAdmin}, nil
+	return &VerifyResult{UserIsAdmin: u.IsAdmin}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -93,16 +106,16 @@ func NewAdd(store Store) *AddHandler { return &AddHandler{store: store} }
 
 func (h *AddHandler) Action() string { return "user-add" }
 
-func (h *AddHandler) Validate(*ipc.Request) error { return nil }
+func (h *AddHandler) Validate(*AddInput) error { return nil }
 
-func (h *AddHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *AddHandler) Handle(ctx context.Context, req *AddInput) (*AddResult, error) {
 	if h.store == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "usuários não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "usuários não configurados")
 	}
 	if err := h.store.Add(req.UserName, req.UserPassword); err != nil {
 		return nil, err // o user.Store já devolve mensagens PT-BR prontas
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Usuário %s criado", req.UserName)}, nil
+	return &AddResult{Message: fmt.Sprintf("Usuário %s criado", req.UserName)}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -119,16 +132,16 @@ func NewRemove(store Store) *RemoveHandler { return &RemoveHandler{store: store}
 
 func (h *RemoveHandler) Action() string { return "user-remove" }
 
-func (h *RemoveHandler) Validate(*ipc.Request) error { return nil }
+func (h *RemoveHandler) Validate(*RemoveInput) error { return nil }
 
-func (h *RemoveHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *RemoveHandler) Handle(ctx context.Context, req *RemoveInput) (*RemoveResult, error) {
 	if h.store == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "usuários não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "usuários não configurados")
 	}
 	if err := h.store.Remove(req.UserName); err != nil {
 		return nil, err
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Usuário %s removido", req.UserName)}, nil
+	return &RemoveResult{Message: fmt.Sprintf("Usuário %s removido", req.UserName)}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -147,22 +160,22 @@ func (h *SetPasswordHandler) Action() string { return "user-set-password" }
 
 // Validate é fail-fast (sem chamar o daemon) sobre os campos do request; o
 // store continua a autoridade final das regras de senha.
-func (h *SetPasswordHandler) Validate(req *ipc.Request) error {
+func (h *SetPasswordHandler) Validate(req *SetPasswordInput) error {
 	if strings.TrimSpace(req.UserName) == "" {
-		return ipc.Err(ipc.CodeInvalid, "informe o nome de usuário")
+		return ipcerr.New(ipcerr.CodeInvalid, "informe o nome de usuário")
 	}
 	if len(req.UserPassword) < minPasswordLen {
-		return ipc.Err(ipc.CodeInvalid, fmt.Sprintf("a senha precisa de ao menos %d caracteres", minPasswordLen))
+		return ipcerr.New(ipcerr.CodeInvalid, fmt.Sprintf("a senha precisa de ao menos %d caracteres", minPasswordLen))
 	}
 	return nil
 }
 
-func (h *SetPasswordHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *SetPasswordHandler) Handle(ctx context.Context, req *SetPasswordInput) (*SetPasswordResult, error) {
 	if h.store == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "usuários não configurados")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "usuários não configurados")
 	}
 	if err := h.store.SetPassword(req.UserName, req.UserPassword); err != nil {
 		return nil, err // user.Store já devolve mensagens PT-BR prontas
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Senha de %s atualizada", req.UserName)}, nil
+	return &SetPasswordResult{Message: fmt.Sprintf("Senha de %s atualizada", req.UserName)}, nil
 }

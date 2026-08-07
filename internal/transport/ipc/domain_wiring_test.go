@@ -136,8 +136,36 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 	dc := &fakeDNSController{upstream: dnsserver.DefaultUpstream}
 	dp := &fakeDNSPersister{}
 
-	s.Register(blocks.New(blk, cat))
-	s.Register(blocks.NewBlockAll(blk))
+	// blocks via ipc.DomainAction (mesmo padrão do composition root).
+	hBlock := blocks.New(blk, cat)
+	s.Register(ipc.DomainAction[blocks.BlockInput, blocks.BlockResult]{
+		Name: hBlock.Action(),
+		Decode: func(r *ipc.Request) (*blocks.BlockInput, error) {
+			return &blocks.BlockInput{Domain: r.Domain, Duration: r.Duration, Preset: r.Preset, Extend: r.Extend, Replace: r.Replace}, nil
+		},
+		Validate: hBlock.Validate,
+		Handle:   hBlock.Handle,
+		Encode: func(out *blocks.BlockResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: true, Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
+			if out.Code != "" {
+				resp.Success = false
+				resp.Code = out.Code
+			}
+			return resp, nil
+		},
+	}.Handler())
+	hBlockAll := blocks.NewBlockAll(blk)
+	s.Register(ipc.DomainAction[blocks.BlockAllInput, blocks.BlockAllResult]{
+		Name: hBlockAll.Action(),
+		Decode: func(r *ipc.Request) (*blocks.BlockAllInput, error) {
+			return &blocks.BlockAllInput{Duration: r.Duration, Allowlist: r.Allowlist}, nil
+		},
+		Validate: hBlockAll.Validate,
+		Handle:   hBlockAll.Handle,
+		Encode: func(out *blocks.BlockAllResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
 	// presets/goal via ipc.DomainAction (mesmo padrão do composition root).
 	hPresetsList := presets.NewList(cat)
 	s.Register(ipc.DomainAction[presets.NoInput, presets.ListResult]{
@@ -192,11 +220,59 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 	s.Register(dns.NewStop(dc, dp))
 	s.Register(dns.NewStatus(dc, dp))
 	s.Register(dns.NewSetUpstream(dc, dp))
-	s.Register(users.NewList(userStore))
-	s.Register(users.NewVerify(userStore))
-	s.Register(users.NewAdd(userStore))
-	s.Register(users.NewRemove(userStore))
-	s.Register(users.NewSetPassword(userStore))
+	// users via ipc.DomainAction (mesmo padrão do composition root).
+	hUsersList := users.NewList(userStore)
+	s.Register(ipc.DomainAction[users.NoInput, users.ListResult]{
+		Name:   hUsersList.Action(),
+		Decode: ipc.NoInputDecode[users.NoInput](),
+		Handle: hUsersList.Handle,
+		Encode: func(out *users.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Users: out.Users}, nil
+		},
+	}.Handler())
+	hUsersVerify := users.NewVerify(userStore)
+	s.Register(ipc.DomainAction[users.VerifyInput, users.VerifyResult]{
+		Name: hUsersVerify.Action(),
+		Decode: func(r *ipc.Request) (*users.VerifyInput, error) {
+			return &users.VerifyInput{UserName: r.UserName, UserPassword: r.UserPassword}, nil
+		},
+		Handle: hUsersVerify.Handle,
+		Encode: func(out *users.VerifyResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, UserIsAdmin: out.UserIsAdmin}, nil
+		},
+	}.Handler())
+	hUsersAdd := users.NewAdd(userStore)
+	s.Register(ipc.DomainAction[users.AddInput, users.AddResult]{
+		Name: hUsersAdd.Action(),
+		Decode: func(r *ipc.Request) (*users.AddInput, error) {
+			return &users.AddInput{UserName: r.UserName, UserPassword: r.UserPassword}, nil
+		},
+		Handle: hUsersAdd.Handle,
+		Encode: func(out *users.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hUsersRemove := users.NewRemove(userStore)
+	s.Register(ipc.DomainAction[users.RemoveInput, users.RemoveResult]{
+		Name:   hUsersRemove.Action(),
+		Decode: func(r *ipc.Request) (*users.RemoveInput, error) { return &users.RemoveInput{UserName: r.UserName}, nil },
+		Handle: hUsersRemove.Handle,
+		Encode: func(out *users.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hUsersSetPassword := users.NewSetPassword(userStore)
+	s.Register(ipc.DomainAction[users.SetPasswordInput, users.SetPasswordResult]{
+		Name: hUsersSetPassword.Action(),
+		Decode: func(r *ipc.Request) (*users.SetPasswordInput, error) {
+			return &users.SetPasswordInput{UserName: r.UserName, UserPassword: r.UserPassword}, nil
+		},
+		Validate: hUsersSetPassword.Validate,
+		Handle:   hUsersSetPassword.Handle,
+		Encode: func(out *users.SetPasswordResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
 	// apps via ipc.DomainAction (mesmo padrão do composition root — pós-reorg
 	// item 2: handlers de domínio com tipos próprios, adaptados ao wire).
 	hAppsList := apps.NewList(appsStore)
@@ -338,7 +414,7 @@ func TestDomainWiring_AllActionsDispatch(t *testing.T) {
 func TestDomainWiring_NoStoreFailsAsLegacy(t *testing.T) {
 	// users.NewList(nil): mesmo CodeNotConfigured do adaptador legado.
 	h := users.NewList(nil)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "user-list"})
+	resp, err := h.Handle(context.Background(), &users.NoInput{})
 	if err == nil {
 		t.Fatal("user-list sem store deveria falhar")
 	}

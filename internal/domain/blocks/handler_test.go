@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/preset"
-	"focusguard/internal/transport/ipc"
 )
 
 type fakeBlocker struct {
@@ -67,28 +67,30 @@ func (f fakeCatalog) Resolve(name string) (preset.Preset, error) {
 	return f.p, nil
 }
 
+func assertActionError(t *testing.T, err error, wantCode string) {
+	t.Helper()
+	var ae *ipcerr.Error
+	if !errors.As(err, &ae) || ae.Code != wantCode {
+		t.Fatalf("esperava código %q, got %v", wantCode, err)
+	}
+}
+
 func TestBlockValidate_DurationInvalidoAntesDoAlvo(t *testing.T) {
 	h := New(&fakeBlocker{}, fakeCatalog{})
 	// Duração inválida E alvo ausente: o erro de duração vence (ordem do switch).
-	err := h.Validate(&ipc.Request{Duration: "lixo"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeDurationInvalid {
-		t.Fatalf("esperava ERR_DURATION_INVALID, got %v", err)
-	}
+	err := h.Validate(&BlockInput{Duration: "lixo"})
+	assertActionError(t, err, ipcerr.CodeDurationInvalid)
 }
 
 func TestBlockValidate_SemAlvo(t *testing.T) {
 	h := New(&fakeBlocker{}, fakeCatalog{})
-	err := h.Validate(&ipc.Request{Duration: "4h"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeDomainRequired {
-		t.Fatalf("esperava ERR_DOMAIN_REQUIRED, got %v", err)
-	}
+	err := h.Validate(&BlockInput{Duration: "4h"})
+	assertActionError(t, err, ipcerr.CodeDomainRequired)
 }
 
 func TestBlockValidate_PresetSozinhoEhAlvoValido(t *testing.T) {
 	h := New(&fakeBlocker{}, fakeCatalog{})
-	if err := h.Validate(&ipc.Request{Duration: "4h", Preset: "social"}); err != nil {
+	if err := h.Validate(&BlockInput{Duration: "4h", Preset: "social"}); err != nil {
 		t.Fatalf("preset sozinho deveria passar na validação, got %v", err)
 	}
 }
@@ -96,16 +98,14 @@ func TestBlockValidate_PresetSozinhoEhAlvoValido(t *testing.T) {
 func TestBlock_ConflitoAskFirst(t *testing.T) {
 	existing := &policy.Block{Domain: "youtube.com", ExpiresAt: time.Now().Add(time.Hour)}
 	h := New(&fakeBlocker{active: existing}, fakeCatalog{})
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		Action: "block", Domain: "youtube.com", Duration: "4h",
-	})
+	resp, err := h.Handle(context.Background(), &BlockInput{Domain: "youtube.com", Duration: "4h"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if resp.Success || !resp.Conflict || resp.ConflictBlock == nil {
+	if resp.Conflict == false || resp.ConflictBlock == nil {
 		t.Fatalf("esperava conflito ask-first, got %+v", resp)
 	}
-	if resp.Code != ipc.CodeDomainConflict {
+	if resp.Code != ipcerr.CodeDomainConflict {
 		t.Fatalf("esperava código ERR_DOMAIN_CONFLICT, got %q", resp.Code)
 	}
 }
@@ -114,13 +114,11 @@ func TestBlock_ReplacePulaConflito(t *testing.T) {
 	existing := &policy.Block{Domain: "youtube.com", ExpiresAt: time.Now().Add(time.Hour)}
 	f := &fakeBlocker{active: existing}
 	h := New(f, fakeCatalog{})
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		Action: "block", Domain: "youtube.com", Duration: "4h", Replace: true,
-	})
+	resp, err := h.Handle(context.Background(), &BlockInput{Domain: "youtube.com", Duration: "4h", Replace: true})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || resp.Conflict {
+	if resp.Code != "" || resp.Conflict {
 		t.Fatalf("--replace deveria bloquear direto, got %+v", resp)
 	}
 	if _, ok := f.blocked["youtube.com"]; !ok {
@@ -130,9 +128,7 @@ func TestBlock_ReplacePulaConflito(t *testing.T) {
 
 func TestBlock_PresetResolveErro(t *testing.T) {
 	h := New(&fakeBlocker{}, fakeCatalog{})
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		Action: "block", Preset: "foo", Duration: "4h",
-	})
+	resp, err := h.Handle(context.Background(), &BlockInput{Preset: "foo", Duration: "4h"})
 	if err == nil || resp != nil {
 		t.Fatalf("esperava erro de preset desconhecido, got resp=%+v err=%v", resp, err)
 	}
@@ -140,14 +136,9 @@ func TestBlock_PresetResolveErro(t *testing.T) {
 
 func TestBlock_PresetBloqueiaLote(t *testing.T) {
 	h := New(&fakeBlocker{}, fakeCatalog{p: preset.Preset{Name: "social", Domains: []string{"a.com", "b.com"}}})
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		Action: "block", Preset: "social", Duration: "4h",
-	})
+	resp, err := h.Handle(context.Background(), &BlockInput{Preset: "social", Duration: "4h"})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !resp.Success {
-		t.Fatalf("esperava sucesso, got %+v", resp)
 	}
 	if resp.Message != "Preset social bloqueado (2 domínios) até "+time.Now().Add(4*time.Hour).Local().Format("15:04:05 02/01/2006") {
 		t.Fatalf("mensagem inesperada: %q", resp.Message)
@@ -156,14 +147,9 @@ func TestBlock_PresetBloqueiaLote(t *testing.T) {
 
 func TestBlockAll_SucessoComAllowlist(t *testing.T) {
 	h := NewBlockAll(&fakeBlocker{})
-	resp, err := h.Handle(context.Background(), &ipc.Request{
-		Action: "block-all", Duration: "2h", Allowlist: []string{"gmail.com"},
-	})
+	resp, err := h.Handle(context.Background(), &BlockAllInput{Duration: "2h", Allowlist: []string{"gmail.com"}})
 	if err != nil {
 		t.Fatal(err)
-	}
-	if !resp.Success {
-		t.Fatalf("esperava sucesso, got %+v", resp)
 	}
 	if resp.Message != "Internet bloqueada até "+time.Now().Add(2*time.Hour).Local().Format("15:04:05 02/01/2006")+" (apenas gmail.com permitido)" {
 		t.Fatalf("mensagem inesperada: %q", resp.Message)
@@ -172,9 +158,6 @@ func TestBlockAll_SucessoComAllowlist(t *testing.T) {
 
 func TestBlockAll_DuracaoInvalida(t *testing.T) {
 	h := NewBlockAll(&fakeBlocker{})
-	err := h.Validate(&ipc.Request{Duration: "0s"})
-	var ae *ipc.ActionError
-	if !errors.As(err, &ae) || ae.Code != ipc.CodeDurationInvalid {
-		t.Fatalf("esperava ERR_DURATION_INVALID, got %v", err)
-	}
+	err := h.Validate(&BlockAllInput{Duration: "0s"})
+	assertActionError(t, err, ipcerr.CodeDurationInvalid)
 }
