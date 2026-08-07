@@ -6,9 +6,9 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/transport/ipc"
 )
 
 type fakeBlocker struct {

@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"focusguard/internal/eventhub"
+	"focusguard/internal/transport/eventhub"
 )
 
 // registerHandlers wires the server-level actions into the registry: transport

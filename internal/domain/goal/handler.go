@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // Manager is the daily focus goal surface the goal-* actions need.

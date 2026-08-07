@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/scheduler"
+	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/store"
 )
 

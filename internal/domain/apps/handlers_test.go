@@ -4,7 +4,7 @@ import (
 	"context"
 	"testing"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 type fakeStore struct {

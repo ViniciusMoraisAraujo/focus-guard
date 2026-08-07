@@ -13,7 +13,7 @@ import (
 	"strconv"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // eventPollMargin cobre a latência de ida-e-volta do IPC por cima do orçamento

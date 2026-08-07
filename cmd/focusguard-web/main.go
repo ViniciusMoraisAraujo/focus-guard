@@ -20,8 +20,8 @@ import (
 	"syscall"
 	"time"
 
-	"focusguard/internal/httpapi"
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/httpapi"
+	"focusguard/internal/transport/ipc"
 )
 
 //go:embed all:assets

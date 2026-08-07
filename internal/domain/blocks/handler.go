@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/transport/ipc"
 )
 
 // Blocker is the scheduler surface the block actions need. The

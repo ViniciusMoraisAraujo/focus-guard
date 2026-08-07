@@ -10,8 +10,8 @@ import (
 	"net/http"
 	"time"
 
-	"focusguard/internal/ipc"
-	"focusguard/internal/metrics"
+	"focusguard/internal/transport/ipc"
+	"focusguard/internal/transport/metrics"
 )
 
 // slowProxyThreshold é quando o proxy loga uma linha estruturada (Fase 8) —

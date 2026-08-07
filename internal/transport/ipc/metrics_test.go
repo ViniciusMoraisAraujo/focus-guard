@@ -3,7 +3,7 @@ package ipc
 import (
 	"testing"
 
-	"focusguard/internal/metrics"
+	"focusguard/internal/transport/metrics"
 )
 
 // TestMetrics_NotConfigured: sem registry (tests/dev) a ação falha com o

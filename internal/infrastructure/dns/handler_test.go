@@ -6,16 +6,16 @@ import (
 	"testing"
 
 	"focusguard/internal/infrastructure/dnsserver"
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 type fakeCtrl struct {
-	started    bool
-	stopped    bool
-	upstream   string
-	status     dnsserver.Status
-	startErr   error
-	stopErr    error
+	started     bool
+	stopped     bool
+	upstream    string
+	status      dnsserver.Status
+	startErr    error
+	stopErr     error
 	upstreamErr error
 }
 

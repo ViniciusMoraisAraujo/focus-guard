@@ -4,9 +4,9 @@ import (
 	"fmt"
 	"time"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
+	"focusguard/internal/transport/ipc"
 )
 
 const (

@@ -1,7 +1,7 @@
 package main
 
 import (
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // Command descreve um subcomando do FocusGuard. A tabela commands é o único

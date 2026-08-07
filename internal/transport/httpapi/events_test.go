@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 func TestEventsRequiresAuth(t *testing.T) {

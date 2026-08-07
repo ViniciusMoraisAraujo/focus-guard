@@ -3,7 +3,7 @@ package ipc
 import (
 	"testing"
 
-	"focusguard/internal/eventhub"
+	"focusguard/internal/transport/eventhub"
 )
 
 // TestEventSubscribe_NotConfigured: sem hub (tests/dev) a ação falha com o

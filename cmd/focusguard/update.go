@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 func handleUpdateCommand(client *ipc.Client, args []string) {

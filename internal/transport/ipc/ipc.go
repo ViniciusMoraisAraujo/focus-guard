@@ -5,12 +5,12 @@ import (
 	"time"
 
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/metrics"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/infrastructure/tamper"
+	"focusguard/internal/transport/metrics"
 )
 
 var (

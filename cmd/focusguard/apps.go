@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // handleAppsCommand manages the process denylist used by the process guard

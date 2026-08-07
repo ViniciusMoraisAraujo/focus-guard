@@ -15,16 +15,16 @@ import (
 	"time"
 
 	"focusguard/internal/domain/apps"
-	"focusguard/internal/infrastructure/enforcer"
-	"focusguard/internal/infrastructure/hostswatch"
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/scheduler"
+	"focusguard/internal/infrastructure/enforcer"
+	"focusguard/internal/infrastructure/hostswatch"
 	"focusguard/internal/infrastructure/statewatch"
 	"focusguard/internal/infrastructure/store"
 	"focusguard/internal/infrastructure/update"
+	"focusguard/internal/transport/ipc"
 )
 
 type mockHostswatchEnforcer struct {

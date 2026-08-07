@@ -13,7 +13,7 @@ import (
 	"testing/fstest"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // stubClient is a fake DaemonClient that records the last request and returns

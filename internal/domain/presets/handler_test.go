@@ -4,8 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/transport/ipc"
 )
 
 type fakeCatalog struct {

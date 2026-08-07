@@ -12,8 +12,8 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	"focusguard/internal/infrastructure/fsutil"
 	"focusguard/internal/domain/policy"
+	"focusguard/internal/infrastructure/fsutil"
 	"focusguard/internal/infrastructure/tamper"
 )
 

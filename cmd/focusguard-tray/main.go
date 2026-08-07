@@ -9,7 +9,7 @@ import (
 	"runtime"
 
 	"focusguard/internal/infrastructure/autostart"
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 	"focusguard/internal/tray"
 )
 

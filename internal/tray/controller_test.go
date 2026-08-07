@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/transport/ipc"
 )
 
 // --- mocks ---

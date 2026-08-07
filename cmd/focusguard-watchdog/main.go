@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/recovery"
+	"focusguard/internal/transport/ipc"
 )
 
 const (

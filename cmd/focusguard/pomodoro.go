@@ -4,7 +4,7 @@ import (
 	"flag"
 	"fmt"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // handlePomodoroCommand starts a pomodoro session over a preset's domains.

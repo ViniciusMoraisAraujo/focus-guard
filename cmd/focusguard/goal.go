@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // handleGoalCommand shows or sets the daily focus goal.

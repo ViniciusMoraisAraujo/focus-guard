@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // Manager is the process denylist surface the apps-* actions need. The

@@ -6,7 +6,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 func handleStatusCommand(client *ipc.Client) {

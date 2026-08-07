@@ -7,7 +7,7 @@ import (
 	"text/tabwriter"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // handleMetricsCommand imprime a latência por ação do daemon (Fase 8 — C3):

@@ -5,16 +5,16 @@ import (
 	"errors"
 	"testing"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/user"
+	"focusguard/internal/transport/ipc"
 )
 
 type fakeStore struct {
-	users     []string
-	lastUser  string
-	verifyOK  bool
-	isAdmin   bool
-	err       error
+	users    []string
+	lastUser string
+	verifyOK bool
+	isAdmin  bool
+	err      error
 }
 
 func (f *fakeStore) List() []string { return f.users }

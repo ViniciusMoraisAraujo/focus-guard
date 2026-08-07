@@ -542,10 +542,10 @@ func TestValidateIPs(t *testing.T) {
 	got := validateIPs([]string{
 		"1.1.1.1",
 		"8.8.8.8",
-		"1.1.1.1",       // duplicata
-		"",              // vazio
-		"example.com",   // FQDN — nunca pode chegar ao remoteip
-		" 9.9.9.9 ",     // espaço — aceito e canonicalizado
+		"1.1.1.1",     // duplicata
+		"",            // vazio
+		"example.com", // FQDN — nunca pode chegar ao remoteip
+		" 9.9.9.9 ",   // espaço — aceito e canonicalizado
 		"2606:4700:4700::1111",
 	})
 	want := []string{"1.1.1.1", "8.8.8.8", "9.9.9.9", "2606:4700:4700::1111"}

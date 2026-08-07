@@ -14,7 +14,7 @@ import (
 	"strings"
 
 	"focusguard/internal/infrastructure/dnsserver"
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // Controller drives the DNS sinkhole server lifecycle.
@@ -54,7 +54,7 @@ func mergeDNS(resp *ipc.Response, st dnsserver.Status, enabled bool) {
 // listener is up; if the write fails the server is stopped so the state never
 // stays "ligado mas não persistido".
 type StartHandler struct {
-	ctrl   Controller
+	ctrl    Controller
 	persist Persister
 	// onStarted fires after the flag was persisted (the daemon uses it to
 	// apply the DoH firewall block). May be nil.

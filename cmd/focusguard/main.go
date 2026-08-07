@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // osExit é injetável nos testes (osExit mockado vira panic para capturar o

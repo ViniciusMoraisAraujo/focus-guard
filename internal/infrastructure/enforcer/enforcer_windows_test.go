@@ -777,13 +777,13 @@ func TestDomainRuleName_NormalizesIPv6(t *testing.T) {
 
 func TestDomainIPFromRuleName(t *testing.T) {
 	cases := []struct {
-		name  string
-		want  string
-		isIP  bool
+		name string
+		want string
+		isIP bool
 	}{
 		{"FocusGuard_1.1.1.1", "1.1.1.1", true},
-		{"FocusGuard_2606:4700:4700::1111", "2606:4700:4700::1111", true},  // legado cru
-		{"FocusGuard_2606_4700_4700__1111", "2606:4700:4700::1111", true},   // normalizado
+		{"FocusGuard_2606:4700:4700::1111", "2606:4700:4700::1111", true}, // legado cru
+		{"FocusGuard_2606_4700_4700__1111", "2606:4700:4700::1111", true}, // normalizado
 		{"FocusGuard_DoH_8_8_8_8_tcp", "", false},
 		{"FocusGuard_DoT_TCP", "", false},
 		{"FocusGuard_Allow_2001_db8__1", "", false},

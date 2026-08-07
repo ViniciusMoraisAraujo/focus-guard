@@ -9,8 +9,8 @@ import (
 	"time"
 
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/ipc"
 	"focusguard/internal/infrastructure/tamper"
+	"focusguard/internal/transport/ipc"
 )
 
 // handleMissionCommand lists the focus totals per named mission (sessions

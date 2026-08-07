@@ -10,8 +10,8 @@ import (
 	"sync/atomic"
 	"time"
 
-	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/policy"
+	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/store"
 )
 

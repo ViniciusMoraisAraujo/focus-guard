@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // userCookie creates a non-admin session for the given username.

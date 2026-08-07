@@ -9,7 +9,7 @@ import (
 	"runtime"
 	"time"
 
-	"focusguard/internal/httpapi"
+	"focusguard/internal/transport/httpapi"
 )
 
 // webURL é a URL da interface web servida pelo focusguard-web (sempre

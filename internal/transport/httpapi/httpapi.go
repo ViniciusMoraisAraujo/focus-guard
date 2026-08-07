@@ -22,8 +22,8 @@ import (
 	"strings"
 	"time"
 
-	"focusguard/internal/ipc"
-	"focusguard/internal/metrics"
+	"focusguard/internal/transport/ipc"
+	"focusguard/internal/transport/metrics"
 )
 
 // DefaultAddr is where focusguard-web listens (loopback only). The CLI probes

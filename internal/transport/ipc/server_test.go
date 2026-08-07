@@ -12,8 +12,8 @@ import (
 	"time"
 
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/pomodoro"
+	"focusguard/internal/infrastructure/enforcer"
 
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"

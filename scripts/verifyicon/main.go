@@ -143,9 +143,10 @@ func imagesEqual(a, b []byte) bool {
 	return true
 }
 
-func sameRGBA(a, b interface{ RGBA() (uint32, uint32, uint32, uint32) }) bool {
+func sameRGBA(a, b interface {
+	RGBA() (uint32, uint32, uint32, uint32)
+}) bool {
 	r1, g1, b1, a1 := a.RGBA()
 	r2, g2, b2, a2 := b.RGBA()
 	return r1 == r2 && g1 == g2 && b1 == b2 && a1 == a2
 }
-

@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/domain/policy"
+	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/store"
 )
 
@@ -34,10 +34,10 @@ func TestScheduler_IsBlockedExactAndSubdomain(t *testing.T) {
 		domain string
 		want   bool
 	}{
-		{"youtube.com", true},          // match exato
-		{"www.youtube.com", true},      // subdomínio de 1 nível
-		{"a.b.youtube.com", true},      // subdomínio profundo
-		{"notyoutube.com", false},      // prefixo não é sufixo
+		{"youtube.com", true},           // match exato
+		{"www.youtube.com", true},       // subdomínio de 1 nível
+		{"a.b.youtube.com", true},       // subdomínio profundo
+		{"notyoutube.com", false},       // prefixo não é sufixo
 		{"youtube.com.evil.com", false}, // não é subdomínio
 	}
 	for _, c := range cases {
@@ -70,11 +70,11 @@ func TestScheduler_IsBlockedAllInternetRespectsAllowlist(t *testing.T) {
 	}{
 		{"anywhere.com", true},
 		{"instagram.com", true},
-		{"docs.com", false},                  // allowlist exato
-		{"sub.docs.com", false},              // subdomínio de allowlist
-		{"x.mail.example.com", false},        // subdomínio profundo de allowlist
-		{"example.com", true},   // pai não cobre o filho permitido
-		{"notdocs.com", true},   // prefixo não é sufixo
+		{"docs.com", false},           // allowlist exato
+		{"sub.docs.com", false},       // subdomínio de allowlist
+		{"x.mail.example.com", false}, // subdomínio profundo de allowlist
+		{"example.com", true},         // pai não cobre o filho permitido
+		{"notdocs.com", true},         // prefixo não é sufixo
 	}
 	for _, c := range cases {
 		if got := sched.IsBlocked(c.domain); got != c.want {

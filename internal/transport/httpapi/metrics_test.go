@@ -5,8 +5,8 @@ import (
 	"net/http"
 	"testing"
 
-	"focusguard/internal/ipc"
-	"focusguard/internal/metrics"
+	"focusguard/internal/transport/ipc"
+	"focusguard/internal/transport/metrics"
 )
 
 func TestMetricsRequiresAuth(t *testing.T) {

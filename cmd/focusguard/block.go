@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"strings"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // splitExtendReplaceArgs removes the --extend/--replace tokens from anywhere in

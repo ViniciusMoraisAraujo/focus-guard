@@ -9,8 +9,8 @@ import (
 	"fmt"
 	"strings"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/user"
+	"focusguard/internal/transport/ipc"
 )
 
 // minPasswordLen espelha a regra do user.Store (minPasswordLen=8) — aqui é só

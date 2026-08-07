@@ -15,11 +15,11 @@ import (
 	"time"
 
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/infrastructure/tamper"
+	"focusguard/internal/transport/ipc"
 )
 
 type exitPanic struct {
@@ -797,13 +797,13 @@ func TestHandleDNSCommand_Status_Active(t *testing.T) {
 	startTestIPCServer(t, func(req ipc.Request) ipc.Response {
 		gotReq = req
 		return ipc.Response{
-			Success:     true,
-			DNSEnabled:  true,
+			Success:      true,
+			DNSEnabled:   true,
 			DNSListening: true,
-			DNSAddr:     "0.0.0.0:53",
-			DNSUpstream: "1.1.1.2:53",
-			DNSQueries:  42,
-			DNSBlocked:  7,
+			DNSAddr:      "0.0.0.0:53",
+			DNSUpstream:  "1.1.1.2:53",
+			DNSQueries:   42,
+			DNSBlocked:   7,
 		}
 	})
 

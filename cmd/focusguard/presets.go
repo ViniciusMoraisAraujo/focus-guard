@@ -6,7 +6,7 @@ import (
 	"strings"
 	"text/tabwriter"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 // handlePresetsCommand lists the available preset categories from the daemon.

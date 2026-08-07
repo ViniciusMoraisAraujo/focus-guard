@@ -16,7 +16,7 @@ import (
 	"sync"
 	"time"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 const (

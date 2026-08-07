@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/policy"
+	"focusguard/internal/transport/ipc"
 )
 
 // benchStatusResponse builds a realistic status response: one block per domain

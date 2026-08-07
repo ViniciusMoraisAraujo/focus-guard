@@ -3,7 +3,7 @@ package main
 import (
 	"fmt"
 
-	"focusguard/internal/ipc"
+	"focusguard/internal/transport/ipc"
 )
 
 func handleDNSCommand(client *ipc.Client, args []string) {

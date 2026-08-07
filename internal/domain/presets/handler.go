@@ -8,8 +8,8 @@ import (
 	"context"
 	"fmt"
 
-	"focusguard/internal/ipc"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/transport/ipc"
 )
 
 // Catalog is the preset surface the presets actions need.

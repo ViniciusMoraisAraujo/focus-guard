@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"focusguard/internal/ipcerr"
+	"focusguard/internal/transport/ipcerr"
 )
 
 type fakeProvider struct {

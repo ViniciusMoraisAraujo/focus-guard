@@ -1,6 +1,6 @@
 package ipc
 
-import "focusguard/internal/ipcerr"
+import "focusguard/internal/transport/ipcerr"
 
 // Códigos de erro estáveis, aditivos desde a Fase 2 do plano de refatoração
 // (docs/refactor-plan.md). O campo Response.Code é opcional no wire protocol —
