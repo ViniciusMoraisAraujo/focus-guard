@@ -260,13 +260,23 @@ A migração em camadas está concluída, mas deixou fios soltos documentados qu
 ficam **fora** do escopo de mover pacotes (não introduzem ciclos — o build
 prova —, mas acoplam camadas):
 
-1. **`transport/ipc` importa `domain/*` e `infrastructure/dnsserver` em
-   produção** — os `*_handler.go` de referência (`analytics_handler.go`,
-   `pomodoro_handler.go`, `schedule_handler.go`, `update_handler.go`) e o
-   `server.go` (dnsserver) são herança da Fase 4. O composition root
-   (`system/daemon`) já registra os handlers reais dos domínios e o
-   `ValidateRegistry` prova a cobertura → os arquivos de referência podem ser
-   removidos. **(pendente — item 1)**
+1. ✅ **`transport/ipc` importa `domain/*` e `infrastructure/dnsserver` em
+   produção** — resolvido (2026-08-07): o `server.go` ganhou tipo próprio de
+   status (`DNSStatus`) e o transport **não importa mais `dnsserver`**; os
+   `*_handler.go` de referência (`analytics_handler.go`, `pomodoro_handler.go`,
+   `schedule_handler.go`, `update_handler.go`) foram **removidos** e viraram
+   adapters test-only (`handlers_ref_test.go`, junto com apps/users/dns). As
+   12 ações (stats/missions/sessions, schedule-list/add/import/remove,
+   pomodoro/pomodoro-defaults/pomodoro-stop, update/update-check) agora são
+   atendidas pelos handlers de domínio (`domain/{analytics,pomodoro,schedule}`
+   e `infrastructure/update`, tipos próprios via `ipc.DomainAction`) e o
+   `ipc.Server` ficou só com os handlers de nível servidor. O composition root
+   (`cmd/focusguard-daemon`) traduz o wire (Decode/Encode + bridge do checker
+   de update) e o `domain_wiring_test.go` compõe os 31 handlers reais. O wire
+   (`ipc.Request/Response`) e o `types.ts` **não mudaram**. Commits:
+   `cec0d1d` (DNSStatus), `e07ac41` (handlers de domínio), `93ebea9` (remoção
+   dos adapters de produção), `2ea8ca6` (composition root), `fdbc6cb` (wiring
+   test).
 2. ✅ **Violações de camada (depender "para cima")** — resolvido (2026-08-07):
    `domain/{apps,blocks,goal,presets,users}` e `infrastructure/dns` **não
    importam mais** `transport/ipc` (e os 3 domínios que usavam `ipcerr`

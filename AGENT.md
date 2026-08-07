@@ -421,7 +421,9 @@ confirm the version/tag with the person before pushing the tag
   transport: `NewServer` registers only the server-level handlers
   (ping/status/tamper/service adapters), and the daemon (composition root)
   registers the domain-backed ones (`block`, `block-all`, `apps-*`, `goal-*`,
-  `presets`, `preset-*`, `user-*`, `dns-*`) from their domain packages via
+  `presets`, `preset-*`, `user-*`, `dns-*`, `stats`/`missions`/`sessions`,
+  `schedule-*`, `pomodoro-*`, `update`/`update-check`) from their domain
+  packages via
   `server.Register` before `ValidateRegistry`. The legacy switch
   (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
   `CodeUnknownAction`. A new action is a `Handler` + one line in `specs`
