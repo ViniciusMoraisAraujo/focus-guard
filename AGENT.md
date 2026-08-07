@@ -426,7 +426,10 @@ confirm the version/tag with the person before pushing the tag
   (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
   `CodeUnknownAction`. A new action is a `Handler` + one line in `specs`
   (`internal/transport/ipc/spec.go`) + `Register` in the composition root — never a new
-  `case`. The in-package ipc tests use reference adapters
+  `case`. Domain-backed actions mount via `ipc.DomainAction[In, Out]` (the
+  domain package defines its own input/output types and never imports ipc —
+  DIP; the composition root translates the wire with Decode/Encode) and the
+  composition root registers `...{...}.Handler()`. The in-package ipc tests use reference adapters
   (`handlers_ref_test.go`) because ipc cannot import the domain packages
   (cycle); `domain_wiring_test.go` (package `ipc_test`) wires the REAL domain
   handlers through the router. `ValidateRegistry()` closes specs↔registry at
