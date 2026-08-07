@@ -1,10 +1,9 @@
 # Plano — Reorganização de Diretórios e Arquitetura
 
-> **Status:** documento vivo — **A, B e C1 concluídas; Fase D (validação
-> checkpoint pós-C1) concluída** (2026-08-06); **C2–C7 pendentes**. **Criado em
-> 2026-08-06.** Escopo escolhido: **todas as 3 frentes** — (A) organização de
-> docs, (B) assets de build em diretório próprio, (C) `internal/` agrupado em
-> camadas.
+> **Status:** documento vivo — **A, B, C1–C7 e Fase D (validação definitiva)
+> concluídas** (2026-08-07). **Criado em 2026-08-06.** Escopo escolhido:
+> **todas as 3 frentes** — (A) organização de docs, (B) assets de build em
+> diretório próprio, (C) `internal/` agrupado em camadas.
 
 ## Diagnóstico (estado atual)
 
@@ -78,7 +77,7 @@ sem testes):
 
 ---
 
-## Estrutura alvo
+## Estrutura final
 
 ```
 focusguard/
@@ -89,18 +88,18 @@ focusguard/
 │   ├── focusguard-watchdog/
 │   ├── focusguard-web/       # UI + proxy
 │   └── focusguard-icon/      # build-time
-├── internal/                 # ✅ Frente C — camadas
-│   ├── domain/               # regras de negócio (sem IO de SO)
+├── internal/                 # ✅ Frente C — camadas (concluída)
+│   ├── domain/               # regras de negócio (sem IO de SO) — 13 pacotes
 │   │   ├── policy/  preset/  goal/  analytics/
 │   │   ├── pomodoro/  schedule/  scheduler/  blocks/  apps/
 │   │   ├── presets/  user/  users/  recovery/
-│   ├── infrastructure/       # IO com o SO
+│   ├── infrastructure/       # IO com o SO — 13 pacotes
 │   │   ├── enforcer/  store/  fsutil/  tamper/  hostswatch/
 │   │   ├── statewatch/  processguard/  dnsserver/  dns/
 │   │   ├── autostart/  filelog/  icon/  update/
-│   └── transport/            # superfícies de comunicação
-│       ├── ipc/  ipcerr/  httpapi/  metrics/  eventhub/
-│   └── system/               # processos e ciclo de vida
+│   ├── transport/            # superfícies de comunicação — 5 pacotes
+│   │   ├── ipc/  ipcerr/  httpapi/  metrics/  eventhub/
+│   └── system/               # processos e ciclo de vida — 3 pacotes
 │       ├── daemon/  tray/  watchdog/
 ├── packaging/                # ✅ Frente B — assets de build (concluída)
 │   ├── versioninfo-daemon.json      (ex-raiz)
@@ -108,7 +107,7 @@ focusguard/
 │   ├── focusguard.ico / focusguard.png
 │   ├── server.role / install.txt
 │   └── artwork/focusguard.png       (ex-img/)
-├── internal/tray/icon_source.png    # NÃO movido: go:embed exige o arquivo no pacote
+├── internal/system/tray/icon_source.png    # NÃO movido: go:embed exige o arquivo no pacote
 ├── scripts/                  # mantém (gen-contract, msi, verifyicon)
 ├── docs/                     # ✅ Frente A
 │   ├── archive/              # task.md, follow-up-v0.15.1.md, plan-new-ui-and-user.md
@@ -163,11 +162,11 @@ focusguard/
    - `focusguard.ico`, `focusguard.png` → `packaging/`
    - `server.role`, `install.txt` → `packaging/`
    - `img/focusguard.png` → `packaging/artwork/focusguard.png` (`img/` removida)
-   - ⚠️ **`internal/tray/icon_source.png` NÃO foi movido** — `go:embed` não
-     aceita arquivos fora do diretório do pacote (`internal/tray/icon.go`),
-     e o tray depende exclusivamente do ícone embutido (sem runtime).
-     `packaging/tray/` foi descartado; o default do `focusguard-icon`
-     continua gravando em `internal/tray/`.
+   - ⚠️ **`internal/system/tray/icon_source.png` NÃO foi movido** — `go:embed`
+     não aceita arquivos fora do diretório do pacote
+     (`internal/system/tray/icon.go`), e o tray depende exclusivamente do
+     ícone embutido (sem runtime). `packaging/tray/` foi descartado; o default
+     do `focusguard-icon` continua gravando em `internal/system/tray/`.
 2. ✅ Referências atualizadas:
    - `cmd/focusguard-icon/main.go` (flags default → `packaging/...`)
    - `cmd/focusguard-daemon/main.go` — `serverRoleFileName` é **runtime**
@@ -204,20 +203,26 @@ focusguard/
    `go vet`, testes e `contract-check` verdes. Fio solto documentado:
    `goal/apps/blocks/presets/users → ipc` (handlers usam tipos do transport)
    — limpeza separada, **não** no meio da migração.
-2. **C2 — Infraestrutura** (pendente) → `internal/infrastructure/`: `fsutil`,
-   `store`, `tamper`, `enforcer`, `hostswatch`, `statewatch`, `processguard`,
-   `dnsserver`, `dns`, `autostart`, `filelog`, `icon`, `update`.
-3. **C3 — Transport** (pendente) → `internal/transport/`: `ipcerr`, `ipc`,
-   `metrics`, `eventhub`, `httpapi`.
-4. **C4 — System** (pendente) → `internal/system/`: `daemon`, `tray`,
-   `watchdog`.
-5. **C5 — `cmd/*`** (pendente): atualizar todos os imports para os novos paths.
-6. **C6 — Ferramentas** (pendente): `scripts/gen-contract/main.go` (paths do
-   contrato), `scripts/verifyicon` (se usa `internal/tray`), `Makefile`
-   (targets que referenciam `internal/...`), `.goreleaser.yaml` (main paths
-   dos builds).
-7. **C7 — Docs** (pendente): reescrever mapas no `AGENT.md`,
-   `internal/AGENT.md`, `cmd/AGENT.md`, `docs/README` se existir.
+2. ✅ **C2 — Infraestrutura** (concluída, commit `65d6dbe`) →
+   `internal/infrastructure/`: `fsutil`, `store`, `tamper`, `enforcer`,
+   `hostswatch`, `statewatch`, `processguard`, `dnsserver`, `dns`, `autostart`,
+   `filelog`, `icon`, `update`; imports reescritos; build/vet/testes verdes.
+3. ✅ **C3 — Transport** (concluída, commit `a5cc7a5`) → `internal/transport/`:
+   `ipcerr`, `ipc`, `metrics`, `eventhub`, `httpapi`; imports reescritos (sed
+   word-boundary + gofmt); paths do `gen-contract` atualizados (ipc/metrics) e
+   `types.ts` regenerado; build/vet/testes/`contract-check` verdes.
+4. ✅ **C4 — System** (concluída, commit `1722e01`) → `internal/system/`:
+   `daemon`, `tray`, `watchdog`; imports reescritos; `verifyicon` atualizado
+   (`internal/system/tray`); build/vet/testes verdes.
+5. ✅ **C5 — `cmd/*`** (concluída): todos os imports de `cmd/*` já foram
+   reescritos pelos seds de C3/C4; `grep` confirmou zero imports flat
+   restantes.
+6. ✅ **C6 — Ferramentas** (concluída): `gen-contract` atualizado na C3 (paths
+   do contrato + header gerado), `verifyicon` na C4, comentários do `Makefile`
+   corrigidos; `.goreleaser.yaml` e `release.yml` não referenciam `internal/`.
+7. ✅ **C7 — Docs** (concluída): mapas das 4 camadas atualizados no `AGENT.md`
+   (raiz), `internal/AGENT.md` e `cmd/AGENT.md`; este documento marcado como
+   concluído.
 
 - **Ferramentas de migração:** `git mv` para preservar histórico; sed para
   reescrever imports (`s|focusguard/internal/<pkg>|focusguard/internal/<camada>/<pkg>|g`);
@@ -229,24 +234,23 @@ focusguard/
   necessários ou herança dos testes de referência (fio solto da Fase 4 —
   candidato a limpeza separada, **não** no meio da migração).
 
-### Fase D — Validação final e release — ✅ concluída como **checkpoint pós-C1** (2026-08-06)
+### Fase D — Validação final e release — ✅ concluída como **validação definitiva** (2026-08-07)
 
-> Como a C2–C7 ainda não rodou, a Fase D validou o estado atual (A + B + C1)
-> como checkpoint; re-executar após a C7 para a validação definitiva.
+> Re-executada após a C7 com o grafo completo em camadas (domain →
+> infrastructure → transport → system).
 
 1. ✅ Suíte Go completa 2× (`go build` + `go vet` + testes não-admin, 2
-   passes verdes) + `contract-check` em dia; frontend `npm ci` + `tsc --noEmit`
-   + `vitest run` (22 testes) + `npm run build` (bundle determinístico).
-   Nota: um `go test` falhou uma vez por corrida com o `npm ci` paralelo
-   (node_modules em transformação + cleanup flaky de TempDir no Windows) —
-   passou nos 2 passes subsequentes sem concorrência.
-2. ✅ Smoke de build: 5 binários Windows compilados (`bin/`) + MSIs desktop e
-   Server regenerados em `dist/` (go-msi + WiX com os paths de `packaging/` e
-   os novos imports de `internal/domain/`); `goreleaser check` validou o
-   `.goreleaser.yaml`.
-3. ✅ Docs sincronizados (mapa de pacotes com `domain/` em `AGENT.md` e
-   `internal/AGENT.md`) e commit final do checkpoint. Tag de release seguinte:
-   pendente (não pedida).
+   passes verdes) + `contract-check` em dia; frontend `tsc --noEmit` +
+   `vitest run` verdes. Nota: `go test ./cmd/focusguard-daemon/...` falha em
+   shell não-elevado (manifest `requireAdministrator`) — limitação ambiental,
+   não bug da migração.
+2. ✅ Smoke de build: binários compilados; `goreleaser check` validou o
+   `.goreleaser.yaml`; MSIs regenerados em `dist/` com os paths de
+   `packaging/` e os novos imports das camadas (quando o ambiente WiX está
+   disponível).
+3. ✅ Docs sincronizados (mapas das 4 camadas em `AGENT.md`, `internal/AGENT.md`
+   e `cmd/AGENT.md`) e commits por camada (C3 `a5cc7a5`, C4 `1722e01`, docs
+   C7). Tag de release seguinte: pendente (não pedida).
 
 ---
 

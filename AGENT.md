@@ -35,7 +35,7 @@ don't assume it's implied by the request:
   unit test — always mock it (`execCommand`, `os.Stat`, etc.).
 - Manually editing/generating `.syso`, `.ico`/`.png`, or `versioninfo.json` —
   only via `make icon` / `make winres`.
-- Changing the `internal/ipc` payload without updating CLI + tray + web +
+- Changing the `internal/transport/ipc` payload without updating CLI + tray + web +
   `focusguard-ui/src/api/types.ts` in the same commit.
 - Changing the `state.json` schema without a migration/compatibility plan
   for state already persisted on disk.
@@ -160,46 +160,44 @@ Web (focusguard-web) ────┘                                        │
 ### Internal packages (`internal/`) — quick map
 
 Every package has a dedicated test (`*_test.go` in the same directory);
-implementation details belong in code comments, not here. Packages under
-`domain/` are business logic; the rest live flat under `internal/` (the
-layered split is in progress — `docs/reorg-plan.md` Fase C).
+implementation details belong in code comments, not here.Packages are grouped in four layers — `domain` (business logic), `infrastructure` (OS I/O), `transport` (IPC/HTTP + observability), `system` (daemon/tray/watchdog lifecycle); see `docs/reorg-plan.md` Fase C.
 
 | Package | One-liner |
 |---|---|
 | `domain/analytics` | Session history (JSONL), streaks, stats, export, report |
 | `domain/apps` | Process denylist for the process guard |
-| `autostart` | Installs/removes the service + tray autostart + desktop shortcut |
+| `infrastructure/autostart` | Installs/removes the service + tray autostart + desktop shortcut |
 | `domain/blocks` | Domain handlers for the `block`/`block-all` actions (`Blocker`/`Catalog`) |
-| `daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
-| `dns` | Domain handlers for the DNS sinkhole (`start`/`stop`/`status`/`set-upstream`) |
-| `dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
-| `enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
-| `eventhub` | In-process event pub/sub (ring buffer + long-poll `Wait`) — daemon state changes |
-| `filelog` | Shared file logging (append + rotation) next to the executable |
-| `fsutil` | Filesystem helpers shared by the watchers |
+| `system/daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
+| `infrastructure/dns` | Domain handlers for the DNS sinkhole (`start`/`stop`/`status`/`set-upstream`) |
+| `infrastructure/dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
+| `infrastructure/enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
+| `transport/eventhub` | In-process event pub/sub (ring buffer + long-poll `Wait`) — daemon state changes |
+| `infrastructure/filelog` | Shared file logging (append + rotation) next to the executable |
+| `infrastructure/fsutil` | Filesystem helpers shared by the watchers |
 | `domain/goal` | Daily focus goal |
-| `hostswatch` | Detects/reverts tampering of `hosts` |
-| `httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
-| `icon` | Generates `.ico`/`.png` from the canonical artwork |
-| `ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
-| `ipcerr` | Stable IPC error codes (`Error`) — mirror of `internal/ipc/codes.go`, additive-only |
-| `metrics` | Per-action latency registry (ring + percentiles) — daemon IPC and web proxy |
+| `infrastructure/hostswatch` | Detects/reverts tampering of `hosts` |
+| `transport/httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
+| `infrastructure/icon` | Generates `.ico`/`.png` from the canonical artwork |
+| `transport/ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
+| `transport/ipcerr` | Stable IPC error codes (`Error`) — mirror of `internal/transport/ipc/codes.go`, additive-only |
+| `transport/metrics` | Per-action latency registry (ring + percentiles) — daemon IPC and web proxy |
 | `domain/policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
 | `domain/pomodoro` | Work/rest/cycle sessions |
 | `domain/preset` | Catalog of block categories (builtin + custom) |
 | `domain/presets` | Domain handlers for the preset catalog actions (list/add/remove) |
-| `processguard` | Kills denylisted processes during an active session |
+| `infrastructure/processguard` | Kills denylisted processes during an active session |
 | `domain/recovery` | Smart Recovery: detects and reverts a broken update |
 | `domain/schedule` | Recurring block scheduling |
 | `domain/scheduler` | Block lifecycle (source of truth in RAM) |
-| `statewatch` | Detects/reverts tampering of `state.json` |
-| `store` | Atomic JSON persistence + encrypted replicas |
-| `tamper` | Append-only log of tampering attempts |
-| `tray` | System tray icon controller |
-| `update` | Atomic multi-binary auto-update, with daemon restart |
+| `infrastructure/statewatch` | Detects/reverts tampering of `state.json` |
+| `infrastructure/store` | Atomic JSON persistence + encrypted replicas |
+| `infrastructure/tamper` | Append-only log of tampering attempts |
+| `system/tray` | System tray icon controller |
+| `infrastructure/update` | Atomic multi-binary auto-update, with daemon restart |
 | `domain/user` | User accounts/password store (admin user, hashing) |
 | `domain/users` | Domain handlers for user management (add/remove/verify/set-password) |
-| `watchdog` | systemd health check (`NOTIFY_SOCKET`) |
+| `system/watchdog` | systemd health check (`NOTIFY_SOCKET`) |
 
 ---
 
@@ -294,7 +292,7 @@ go test ./... -count=1 -timeout=60s   # make test
 ├── docs/release.md             # release checklist and process
 ├── Makefile                    # build, icon, winres, ui, test, vet, fmt, tidy, clean, install, uninstall
 ├── cmd/focusguard-web/         # web interface server (user-space, embeds the UI)
-├── internal/httpapi/           # HTTP: IPC proxy + static assets + localhost security
+├── internal/transport/httpapi/  # HTTP: IPC proxy + static assets + localhost security
 ├── focusguard-ui/              # React + Vite + TS frontend (10 screens)
 │   └── src/screens/              # Dashboard, Block, Panic, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security
 ├── .goreleaser.yaml            # release pipeline
@@ -312,8 +310,11 @@ go test ./... -count=1 -timeout=60s   # make test
 │   ├── focusguard-icon/        # icon generator (build-time)
 │   ├── focusguard-tray/        # systray (+ icon-only versioninfo.json)
 │   └── focusguard-watchdog/    # health-check / Smart Recovery (+ versioninfo.json with icon)
-├── internal/                   # 34 packages (see the map in section 3)
-│   ├── domain/                 # business logic (13 packages — Fase C1)
+├── internal/                   # 34 packages in 4 layers (see the map in section 3)
+│   ├── domain/                 # business logic (13 packages)
+│   ├── infrastructure/         # OS I/O (13 packages)
+│   ├── transport/              # IPC/HTTP + observability (5 packages)
+│   └── system/                 # daemon/tray/watchdog lifecycle (3 packages)
 └── scripts/
     ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
     ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart)
@@ -411,7 +412,7 @@ confirm the version/tag with the person before pushing the tag
   because GoReleaser runs hooks without a shell; keep that conditional when
   touching it.
 - **IPC is the contract** — CLI/tray/daemon/**web** all speak the same
-  protocol; changing the `internal/ipc` payload requires updating all three
+  protocol; changing the `internal/transport/ipc` payload requires updating all three
   sides + `focusguard-ui/src/api/types.ts` in the same commit. The TS mirror
   is **generated** — after changing an IPC struct run `make contract` (and
   `make contract-check` to verify no drift; the CI checks it before a
@@ -424,7 +425,7 @@ confirm the version/tag with the person before pushing the tag
   `server.Register` before `ValidateRegistry`. The legacy switch
   (`dispatchLegacy`) is gone (Fase 4); an unregistered action returns
   `CodeUnknownAction`. A new action is a `Handler` + one line in `specs`
-  (`internal/ipc/spec.go`) + `Register` in the composition root — never a new
+  (`internal/transport/ipc/spec.go`) + `Register` in the composition root — never a new
   `case`. The in-package ipc tests use reference adapters
   (`handlers_ref_test.go`) because ipc cannot import the domain packages
   (cycle); `domain_wiring_test.go` (package `ipc_test`) wires the REAL domain
@@ -437,13 +438,13 @@ confirm the version/tag with the person before pushing the tag
   the daemon is the only privileged process. Web only proxies via
   `ipc.Client`.
 - **Real-time events** — the daemon publishes coarse state changes on
-  `internal/eventhub` (`scheduler`/`pomodoro`/`schedule`/`watchPomodoroCompletions`
+  `internal/transport/eventhub` (`scheduler`/`pomodoro`/`schedule`/`watchPomodoroCompletions`
   hooks); the web relays the `event-subscribe` long-poll over SSE
   (`GET /api/events`) and the UI refreshes the affected data. New event type =
   `ipc.Event*` constant + publish point + frontend listener (regenerate
   `types.ts` via `make contract` if the wire type changes).
 - **Observability** — the daemon measures every IPC dispatch into
-  `internal/metrics` and logs structured slow-action lines (> 1s;
+  `internal/transport/metrics` and logs structured slow-action lines (> 1s;
   `event-subscribe` excluded — it is a 20s long-poll by design); the web
   proxy measures its own per-action latency and exposes both via
   `GET /api/metrics`; read the daemon side with `focusguard metrics

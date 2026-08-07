@@ -593,7 +593,7 @@ Painel no navegador (React + TypeScript + Vite) servido por um binário
 > configurado em build de dev); erro no status mostra tooltip de falha em
 > vez do estado normal.
 
-### Autostart (`internal/autostart/`)
+### Autostart (`internal/infrastructure/autostart/`)
 
 Gerencia a inicialização automática do daemon:
 
@@ -605,7 +605,7 @@ Gerencia a inicialização automática do daemon:
 | Linux | Cria `/etc/systemd/system/focusguard.service` | Cria unit systemd |
 | Linux | `systemctl daemon-reload` + `enable` + `start` | Ativa e inicia o serviço |
 
-### HostsWatcher (`internal/hostswatch/`)
+### HostsWatcher (`internal/infrastructure/hostswatch/`)
 
 Monitora o arquivo `hosts` em tempo real usando `fsnotify`:
 - Detecta edições externas (com `sudo`, por exemplo)
@@ -613,7 +613,7 @@ Monitora o arquivo `hosts` em tempo real usando `fsnotify`:
 - Reaplica bloqueios automaticamente se detectar violação
 - Roda em background no daemon
 
-### StateWatcher (`internal/statewatch/`)
+### StateWatcher (`internal/infrastructure/statewatch/`)
 
 Monitora o arquivo de estado `state.json` em tempo real usando `fsnotify`:
 - Detecta adulterações, exclusões e renomeações do arquivo de estado
@@ -638,7 +638,7 @@ Monitora o arquivo de estado `state.json` em tempo real usando `fsnotify`:
 > eventos que chegam durante a execução são coalescidos em uma única execução
 > de acompanhamento, sem perder nem duplicar trabalho.
 
-### Scheduler (`internal/scheduler/`)
+### Scheduler (`internal/domain/scheduler/`)
 
 Gerencia o ciclo de vida dos bloqueios:
 - `Block()` — Cria bloqueio, persiste estado, aplica regras, inicia timer
@@ -649,7 +649,7 @@ Gerencia o ciclo de vida dos bloqueios:
 - `IsBlocked(domain)` — Verifica se um domínio deve ser bloqueado no DNS
   sinkhole (mapa em RAM, case-insensitive, com allowlist do deep-focus)
 
-### DNS Server (`internal/dnsserver/`)
+### DNS Server (`internal/infrastructure/dnsserver/`)
 
 Sinkhole DNS embutido (v0.15.0) usando `miekg/dns`:
 - Escuta **UDP+TCP na mesma porta** (`0.0.0.0:53`, bind atômico dos dois)
@@ -662,7 +662,7 @@ Sinkhole DNS embutido (v0.15.0) usando `miekg/dns`:
   persistido no `state.json` e o servidor sobe junto com o daemon quando ativo
 - Ao subir, o daemon também aplica o bloqueio de DoH (porta 853) via enforcer
 
-### Enforcer (`internal/enforcer/`)
+### Enforcer (`internal/infrastructure/enforcer/`)
 
 Interface para aplicação de regras no sistema operacional:
 
@@ -676,14 +676,14 @@ Interface para aplicação de regras no sistema operacional:
   endereço no Windows. Sustenta o modo pânico (`block --internet`) e a
   allowlist (os IPs permitidos continuam acessíveis e não têm sockets derrubados).
 
-### Presets (`internal/preset/`)
+### Presets (`internal/domain/preset/`)
 
 Catálogo de categorias persistido ao lado do state.json:
 - **Embutidos** — `social`, `video`, `news` e `games` (não removíveis)
 - **Personalizados** — `focusguard preset add/remove`, usados em `block
   --preset`, `pomodoro --preset` e `schedule add --preset`
 
-### Agendamento (`internal/schedule/`)
+### Agendamento (`internal/domain/schedule/`)
 
 Regras recorrentes de bloqueio por dia da semana e horário:
 - Janelas de trabalho/descanso com suporte a horários **overnight**
@@ -692,7 +692,7 @@ Regras recorrentes de bloqueio por dia da semana e horário:
   janelas vencidas via `ApplyActiveRules` (idempotente)
 - Persistência em `schedules.json`; IPC `schedule-add/list/remove`
 
-### Metas e Analytics (`internal/goal/` + `internal/analytics/`)
+### Metas e Analytics (`internal/domain/goal/` + `internal/domain/analytics/`)
 
 - **Meta diária** — `goal.json` define a meta (ex: 4h/dia); exibida no `status`
   e na interface web
@@ -700,14 +700,14 @@ Regras recorrentes de bloqueio por dia da semana e horário:
 - **Exportação** — `ExportCSV`/`ExportJSON` alimentam o `stats --export`
   (`focusguard-stats.csv`/`.json`)
 
-### IPC (`internal/ipc/`)
+### IPC (`internal/transport/ipc/`)
 
 Comunicação entre CLI e Daemon via Unix socket:
 - **Request**: `{ action, domain, duration }`
 - **Response**: `{ success, message, blocks }`
 - Socket em `/run/focusguard.sock` (Linux) ou `%PROGRAMDATA%/FocusGuard/focusguard.sock` (Windows)
 
-### Watchdog (`internal/watchdog/`)
+### Watchdog (`internal/system/watchdog/`)
 
 Integração com systemd:
 - Envia `READY=1` na inicialização
@@ -728,7 +728,7 @@ make test
 go test -cover ./...
 
 # Rodar testes de um pacote específico
-go test ./internal/scheduler/... -v
+go test ./internal/domain/scheduler/... -v
 ```
 
 ### Cobertura

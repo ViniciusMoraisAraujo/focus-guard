@@ -34,7 +34,7 @@ renderiza a resposta. A lógica real vive em `internal/`.
    `-watchdog`) **ao lado do próprio executável** (`os.Executable()` +
    `filepath.Dir`) — mudar esse contrato quebra install/update.
 6. **Logs em arquivo** — todo binário grava `<nome>.log` na **mesma pasta do
-   daemon** (ao lado do executável), via `internal/filelog` (append + rotação
+   daemon** (ao lado do executável), via `internal/infrastructure/filelog` (append + rotação
    de 1 MiB, best-effort: falha cai para stderr sem abortar). O padrão é um
    `logging.go` com `logFileName`, `maxLogSizeBeforeRotate`,
    `setupLoggingAt`/`setupLogging` e `var osExecutable = os.Executable`

@@ -12,46 +12,46 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 
 ## Mapa dos pacotes
 
-> Pacotes sob `domain/` são regra de negócio; os demais vivem flat em
-> `internal/` (o split em camadas está em andamento — `docs/reorg-plan.md`
-> Fase C: C1 concluída, C2–C7 pendentes).
+> 34 pacotes em 4 camadas — `domain/` (regra de negócio), `infrastructure/`
+> (IO de SO), `transport/` (protocolo IPC/HTTP + observabilidade), `system/`
+> (ciclo de vida daemon/tray/watchdog) — reorg concluída (`docs/reorg-plan.md` Fase C).
 
 | Pacote | Responsabilidade |
 |---|---|
 | `domain/analytics` | Histórico JSONL de sessões; streak, stats, exports CSV/JSON/HTML |
 | `domain/apps` | Denylist de processos (apps.json) p/ o process guard; fallback `steam, discord` |
-| `autostart` | Serviço (`sc`/systemd), autostart do tray (HKCU Run / XDG), atalho desktop + `ExtractIcon` |
+| `infrastructure/autostart` | Serviço (`sc`/systemd), autostart do tray (HKCU Run / XDG), atalho desktop + `ExtractIcon` |
 | `domain/blocks` | Handlers de domínio das ações `block`/`block-all` (`Blocker`/`Catalog`) |
-| `daemon` | Ciclo de vida do daemon: `Run(ctx) error` + shutdown ordenado (B10) |
-| `dns` | Handlers de domínio do sinkhole DNS (`start`/`stop`/`status`/`set-upstream`) |
-| `dnsserver` | Sinkhole DNS embutido (porta 53, miekg/dns) + forward de upstream |
-| `enforcer` | Aplica bloqueios no SO: hosts + firewall (`enforcer_linux.go`/`enforcer_windows.go`); `BlockAll`/allowlist; sanitização de domínios |
-| `eventhub` | Pub/sub de eventos em processo (ring buffer + long-poll `Wait`) — mudanças de estado |
-| `filelog` | Log de arquivo compartilhado (append + rotação) ao lado do executável |
-| `fsutil` | SHA-256 de arquivo (watchers) |
+| `system/daemon` | Ciclo de vida do daemon: `Run(ctx) error` + shutdown ordenado (B10) |
+| `infrastructure/dns` | Handlers de domínio do sinkhole DNS (`start`/`stop`/`status`/`set-upstream`) |
+| `infrastructure/dnsserver` | Sinkhole DNS embutido (porta 53, miekg/dns) + forward de upstream |
+| `infrastructure/enforcer` | Aplica bloqueios no SO: hosts + firewall (`enforcer_linux.go`/`enforcer_windows.go`); `BlockAll`/allowlist; sanitização de domínios |
+| `transport/eventhub` | Pub/sub de eventos em processo (ring buffer + long-poll `Wait`) — mudanças de estado |
+| `infrastructure/filelog` | Log de arquivo compartilhado (append + rotação) ao lado do executável |
+| `infrastructure/fsutil` | SHA-256 de arquivo (watchers) |
 | `domain/goal` | Meta diária (goal.json) |
-| `hostswatch` | Watcher do `hosts`: fsnotify + hash anti-loop; detecta/reverte adulterações |
-| `httpapi` | HTTP da UI: proxy IPC + estático + guardas localhost (Host, Content-Type, CSP) |
-| `icon` | Renderiza `packaging/artwork/focusguard.png` em qualquer tamanho; `GenerateICO`/`GeneratePNG` |
-| `ipc` | Protocolo JSON sobre socket; `SendWithTimeout`; server/handlers |
-| `ipcerr` | Códigos de erro estáveis do IPC (`Error`) — espelho de `internal/ipc/codes.go`, aditivo |
-| `metrics` | Registry de latência por ação (ring + percentis) — IPC do daemon e proxy web |
+| `infrastructure/hostswatch` | Watcher do `hosts`: fsnotify + hash anti-loop; detecta/reverte adulterações |
+| `transport/httpapi` | HTTP da UI: proxy IPC + estático + guardas localhost (Host, Content-Type, CSP) |
+| `infrastructure/icon` | Renderiza `packaging/artwork/focusguard.png` em qualquer tamanho; `GenerateICO`/`GeneratePNG` |
+| `transport/ipc` | Protocolo JSON sobre socket; `SendWithTimeout`; server/handlers |
+| `transport/ipcerr` | Códigos de erro estáveis do IPC (`Error`) — espelho de `internal/transport/ipc/codes.go`, aditivo |
+| `transport/metrics` | Registry de latência por ação (ring + percentis) — IPC do daemon e proxy web |
 | `domain/policy` | Modelo `Block` (`IsActive`, `CanUnblock`, `RemainingTime`) |
 | `domain/pomodoro` | Sessões work/rest/cycles; prefs persistidas; resumo pós-sessão |
 | `domain/preset` | Catálogo builtin (social/video/news/games) + personalizados |
 | `domain/presets` | Handlers de domínio do catálogo de presets (list/add/remove) |
-| `processguard` | Encerra processos da denylist a cada 5s durante sessão ativa |
+| `infrastructure/processguard` | Encerra processos da denylist a cada 5s durante sessão ativa |
 | `domain/recovery` | Smart Recovery: `FindRecentBackup`, `ShouldRollBack`, `RestoreFromBackup` |
 | `domain/schedule` | Regras recorrentes (dias/horários, janelas overnight, import iCal); worker 30s |
 | `domain/scheduler` | Ciclo de vida dos bloqueios: `Block`, `Reconcile`, expiração, refresh de IPs (15min) |
-| `statewatch` | Watcher do `state.json`: restaura o disco a partir da RAM |
-| `store` | Persistência JSON atômica + réplica AES-256-GCM atrelada ao hardware |
-| `tamper` | Log JSONL append-only de burlas detectadas/revertidas |
-| `tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
-| `update` | Auto-update multi-binário atômico (`UpdateToAll`) com rollback |
+| `infrastructure/statewatch` | Watcher do `state.json`: restaura o disco a partir da RAM |
+| `infrastructure/store` | Persistência JSON atômica + réplica AES-256-GCM atrelada ao hardware |
+| `infrastructure/tamper` | Log JSONL append-only de burlas detectadas/revertidas |
+| `system/tray` | Controlador do systray: menu, tooltip dinâmico, notificações, IPC com timeout |
+| `infrastructure/update` | Auto-update multi-binário atômico (`UpdateToAll`) com rollback |
 | `domain/user` | Armazenamento de contas/senhas (usuário admin, hash) |
 | `domain/users` | Handlers de domínio de usuários (add/remove/verify/set-password) |
-| `watchdog` | Health check systemd (`NOTIFY_SOCKET`) |
+| `system/watchdog` | Health check systemd (`NOTIFY_SOCKET`) |
 
 ## Regras específicas
 
