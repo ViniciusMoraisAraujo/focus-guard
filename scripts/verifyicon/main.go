@@ -16,7 +16,7 @@ import (
 	"image/png"
 	"os"
 
-	"focusguard/internal/tray"
+	"focusguard/internal/system/tray"
 	"golang.org/x/sys/windows"
 )
 

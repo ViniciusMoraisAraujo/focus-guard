@@ -9,8 +9,8 @@ import (
 	"runtime"
 
 	"focusguard/internal/infrastructure/autostart"
+	"focusguard/internal/system/tray"
 	"focusguard/internal/transport/ipc"
-	"focusguard/internal/tray"
 )
 
 func main() {

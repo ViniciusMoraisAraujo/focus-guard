@@ -13,7 +13,6 @@ import (
 	"syscall"
 	"time"
 
-	"focusguard/internal/daemon"
 	"focusguard/internal/domain/analytics"
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
@@ -34,10 +33,11 @@ import (
 	"focusguard/internal/infrastructure/store"
 	"focusguard/internal/infrastructure/tamper"
 	"focusguard/internal/infrastructure/update"
+	"focusguard/internal/system/daemon"
+	"focusguard/internal/system/watchdog"
 	"focusguard/internal/transport/eventhub"
 	"focusguard/internal/transport/ipc"
 	"focusguard/internal/transport/metrics"
-	"focusguard/internal/watchdog"
 )
 
 var daemonVersion = "0.0.0-dev"
