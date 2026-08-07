@@ -125,12 +125,12 @@ func TestSpecActions_CoversProxyableActions(t *testing.T) {
 
 // TestSpec_ProxyBudgetAtLeastDaemonInternal trava o invariante de timeout do
 // update (B7): o orçamento do proxy (spec) deve ser ≥ o orçamento interno do
-// daemon para a mesma ação (internal/transport/ipc.updateTimeout) — senão um update
-// lento-mas-bem-sucedido viraria "daemon indisponível" falso.
+// daemon para a mesma ação (internal/transport/ipc.UpdateTimeout) — senão um
+// update lento-mas-bem-sucedido viraria "daemon indisponível" falso.
 func TestSpec_ProxyBudgetAtLeastDaemonInternal(t *testing.T) {
 	if spec, ok := SpecFor("update"); ok {
-		if spec.Timeout < updateTimeout {
-			t.Errorf("spec.update.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, updateTimeout)
+		if spec.Timeout < UpdateTimeout {
+			t.Errorf("spec.update.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, UpdateTimeout)
 		}
 	}
 	// O mesmo invariante vale para o long-poll de eventos (Fase 7): o proxy
@@ -142,8 +142,8 @@ func TestSpec_ProxyBudgetAtLeastDaemonInternal(t *testing.T) {
 		}
 	}
 	if spec, ok := SpecFor("update-check"); ok {
-		if spec.Timeout < updateTimeout {
-			t.Errorf("spec.update-check.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, updateTimeout)
+		if spec.Timeout < UpdateTimeout {
+			t.Errorf("spec.update-check.Timeout=%v deve ser >= orçamento interno do daemon (%v)", spec.Timeout, UpdateTimeout)
 		}
 	}
 }

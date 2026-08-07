@@ -8,31 +8,16 @@ import (
 )
 
 // registerHandlers wires the server-level actions into the registry: transport
-// health (ping), server state (status), the tamper log and the domain-service
-// adapters that must live here (the services cannot import ipc, so the wire
-// translation stays in this package). The domain-backed actions (block,
-// block-all, apps-*, goal-*, presets, preset-*, user-*, dns-*) are registered
-// by the composition root (cmd/focusguard-daemon) with the handlers from the
-// domain packages — internal/blocks, internal/dns, internal/goal,
-// internal/presets, internal/users, internal/apps.
-//
-// Regra do strangler: cada handler reproduz 1:1 o case antigo (mensagens,
-// códigos e ordem inalterados) — comportamento preservado.
+// health (ping), server state (status), the tamper log, the event long-poll
+// and the latency snapshot. All the domain-backed actions (block, block-all,
+// apps-*, goal-*, presets, preset-*, user-*, dns-*, stats/missions/sessions,
+// schedule-*, pomodoro-*, update/update-check) are registered by the
+// composition root (cmd/focusguard-daemon) with the handlers from the domain
+// packages via ipc.DomainAction (DIP — pós-reorg itens 1 e 2). The server
+// keeps ONLY what is server-level state or transport concern.
 func (s *Server) registerHandlers() {
 	s.registry.Register(funcHandler{action: "ping", handle: s.handlePing})
 	s.registry.Register(funcHandler{action: "tamper-log", handle: s.handleTamperLog})
-	s.registry.Register(funcHandler{action: "stats", handle: s.handleStats})
-	s.registry.Register(funcHandler{action: "missions", handle: s.handleMissions})
-	s.registry.Register(funcHandler{action: "sessions", handle: s.handleSessions})
-	s.registry.Register(funcHandler{action: "schedule-list", handle: s.handleScheduleList})
-	s.registry.Register(funcHandler{action: "schedule-add", handle: s.handleScheduleAdd})
-	s.registry.Register(funcHandler{action: "schedule-import", handle: s.handleScheduleImport})
-	s.registry.Register(funcHandler{action: "schedule-remove", handle: s.handleScheduleRemove})
-	s.registry.Register(funcHandler{action: "pomodoro", handle: s.handlePomodoroStart})
-	s.registry.Register(funcHandler{action: "pomodoro-defaults", handle: s.handlePomodoroDefaults})
-	s.registry.Register(funcHandler{action: "pomodoro-stop", handle: s.handlePomodoroStop})
-	s.registry.Register(funcHandler{action: "update", handle: s.handleUpdate})
-	s.registry.Register(funcHandler{action: "update-check", handle: s.handleUpdateCheck})
 	s.registry.Register(funcHandler{action: "status", handle: s.handleStatus})
 	s.registry.Register(funcHandler{action: "event-subscribe", handle: s.handleEventSubscribe})
 	s.registry.Register(funcHandler{action: "metrics", handle: s.handleMetrics})

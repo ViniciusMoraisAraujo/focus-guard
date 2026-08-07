@@ -14,12 +14,14 @@ package ipc
 // legado. Os testes dos pacotes de domínio cobrem os handlers reais; o teste
 // externo domain_wiring_test.go compõe os reais com o roteador.
 //
-// As dependências de apps/user/dns (denylist, credenciais, hook DoH) NÃO
-// vivem mais no Server (SetApps/SetUsers/SetOnDNSStarted foram removidos na
-// Fase 5) — chegam via refDeps, espelhando o construtor dos handlers reais de
-// domínio no composition root do daemon. As demais (presets, goal, dns
-// controller, scheduler) continuam no Server (SetPresets/SetGoal/SetDNS
-// permanecem — o status e os adapters de pomodoro/schedule as leem).
+// As dependências de apps/user/dns/analytics/schedules/pomodoroPrefs NÃO
+// vivem mais no Server (SetApps/SetUsers/SetOnDNSStarted removidos na Fase 5;
+// SetAnalytics/SetSchedules/SetPomodoroPrefs removidos no item 1 do pós-reorg)
+// — chegam via refDeps, espelhando o construtor dos handlers reais de domínio
+// no composition root do daemon. As demais (presets, goal, dns controller,
+// scheduler, pomodoro runner, update checker) continuam no Server
+// (SetPresets/SetGoal/SetDNS/SetPomodoro/SetUpdateChecker permanecem — o
+// status e os adapters de pomodoro/schedule as leem).
 // ---------------------------------------------------------------------------
 
 import (
@@ -31,17 +33,24 @@ import (
 	"strings"
 	"time"
 
+	"focusguard/internal/domain/analytics"
+	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/schedule"
+	"focusguard/internal/infrastructure/update"
 )
 
 // refDeps são as dependências dos adapters de referência que o Server não
 // carrega mais. s aponta para o servidor que registrou os handlers (o
 // dns-start precisa do controller + scheduler).
 type refDeps struct {
-	s            *Server
-	apps         AppsManager
-	users        UserManager
-	onDNSStarted func()
+	s             *Server
+	apps          AppsManager
+	users         UserManager
+	onDNSStarted  func()
+	analytics     AnalyticsProvider
+	schedules     ScheduleManager
+	pomodoroPrefs PomodoroPrefs
 }
 
 // registerDomainReferenceHandlers registra as ações de domínio com os adapters
@@ -74,6 +83,22 @@ func registerDomainReferenceHandlers(s *Server, deps *refDeps) {
 	s.registry.Register(funcHandler{action: "dns-stop", handle: s.handleDNSStop})
 	s.registry.Register(funcHandler{action: "dns-status", handle: s.handleDNSStatus})
 	s.registry.Register(funcHandler{action: "dns-set-upstream", handle: s.handleDNSSetUpstream})
+	// Serviços (pós-reorg item 1): os handlers reais vivem nos domínios
+	// (analytics/pomodoro/schedule/update) e o composition root os registra via
+	// ipc.DomainAction; aqui os testes internos usam os adapters de referência
+	// abaixo (mesmo padrão dos demais), que reproduzem 1:1 o legado.
+	s.registry.Register(funcHandler{action: "stats", handle: deps.handleStats})
+	s.registry.Register(funcHandler{action: "missions", handle: deps.handleMissions})
+	s.registry.Register(funcHandler{action: "sessions", handle: deps.handleSessions})
+	s.registry.Register(funcHandler{action: "schedule-list", handle: deps.handleScheduleList})
+	s.registry.Register(funcHandler{action: "schedule-add", handle: deps.handleScheduleAdd})
+	s.registry.Register(funcHandler{action: "schedule-import", handle: deps.handleScheduleImport})
+	s.registry.Register(funcHandler{action: "schedule-remove", handle: deps.handleScheduleRemove})
+	s.registry.Register(funcHandler{action: "pomodoro", handle: deps.handlePomodoroStart})
+	s.registry.Register(funcHandler{action: "pomodoro-defaults", handle: deps.handlePomodoroDefaults})
+	s.registry.Register(funcHandler{action: "pomodoro-stop", handle: deps.handlePomodoroStop})
+	s.registry.Register(funcHandler{action: "update", handle: s.handleUpdate})
+	s.registry.Register(funcHandler{action: "update-check", handle: s.handleUpdateCheck})
 }
 
 // ---------------------------------------------------------------------------
@@ -456,4 +481,214 @@ func (d *refDeps) handleUserSetPassword(_ context.Context, req *Request) (*Respo
 		return nil, err
 	}
 	return &Response{Success: true, Message: fmt.Sprintf("Senha de %s atualizada", req.UserName)}, nil
+}
+
+// ---------------------------------------------------------------------------
+// stats / missions / sessions (adapters de referência — pós-reorg item 1)
+// ---------------------------------------------------------------------------
+
+// handleStats devolve o relatório agregado de foco (últimos 7 dias),
+// opcionalmente filtrado por missão.
+func (d *refDeps) handleStats(ctx context.Context, req *Request) (*Response, error) {
+	st, err := analytics.NewService(d.analytics).Stats(ctx, req.Mission)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Stats: st}, nil
+}
+
+// handleMissions devolve o foco agregado por missão nomeada.
+func (d *refDeps) handleMissions(ctx context.Context, _ *Request) (*Response, error) {
+	ls, err := analytics.NewService(d.analytics).Missions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, LabelStats: ls}, nil
+}
+
+// handleSessions devolve as sessões concluídas mais recentes (mais novas
+// primeiro, limitadas — o teto vive no serviço de domínio).
+func (d *refDeps) handleSessions(ctx context.Context, _ *Request) (*Response, error) {
+	sessions, err := analytics.NewService(d.analytics).Sessions(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Sessions: sessions}, nil
+}
+
+// ---------------------------------------------------------------------------
+// schedule-list/add/import/remove (adapters de referência — pós-reorg item 1)
+// ---------------------------------------------------------------------------
+
+// scheduleService monta o serviço de domínio com o manager + catálogo atuais
+// (o prefs/resolver do catálogo ficam no Server — SetPresets permanece).
+func (d *refDeps) scheduleService() *schedule.Service {
+	return schedule.NewService(d.schedules, d.s.catalog())
+}
+
+// handleScheduleList devolve o catálogo de regras recorrentes.
+func (d *refDeps) handleScheduleList(ctx context.Context, _ *Request) (*Response, error) {
+	rules, err := d.scheduleService().List(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Schedules: rules}, nil
+}
+
+// handleScheduleAdd cria uma regra recorrente.
+func (d *refDeps) handleScheduleAdd(ctx context.Context, req *Request) (*Response, error) {
+	r, err := d.scheduleService().Add(ctx, req.ScheduleRule)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Message: fmt.Sprintf("Regra %s criada: %s das %s às %s", r.ID, r.Preset, r.Start, r.End)}, nil
+}
+
+// handleScheduleImport importa um calendário .ics como regras recorrentes.
+func (d *refDeps) handleScheduleImport(ctx context.Context, req *Request) (*Response, error) {
+	added, err := d.scheduleService().Import(ctx, req.ICSContent, req.ICSPreset)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{
+		Success:   true,
+		Schedules: added,
+		Message:   fmt.Sprintf("%d regras importadas do calendário (preset %s)", len(added), req.ICSPreset),
+	}, nil
+}
+
+// handleScheduleRemove remove uma regra recorrente.
+func (d *refDeps) handleScheduleRemove(ctx context.Context, req *Request) (*Response, error) {
+	if err := d.scheduleService().Remove(ctx, req.ScheduleID); err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Message: fmt.Sprintf("Regra %s removida", req.ScheduleID)}, nil
+}
+
+// ---------------------------------------------------------------------------
+// pomodoro/pomodoro-defaults/pomodoro-stop (adapters de referência — item 1)
+// ---------------------------------------------------------------------------
+
+// pomodoroService monta o serviço de domínio com o runner/prefs/catálogo
+// atuais (o runner fica no Server — SetPomodoro permanece para o status; o
+// prefs vem do refDeps).
+func (d *refDeps) pomodoroService() *pomodoro.Service {
+	return pomodoro.NewService(d.s.pomodoro, d.pomodoroPrefs, d.s.catalog())
+}
+
+// handlePomodoroStart valida a requisição, resolve o preset para domínios e
+// entrega a sessão ao runner, mesclando os parâmetros com os padrões salvos.
+func (d *refDeps) handlePomodoroStart(ctx context.Context, req *Request) (*Response, error) {
+	res, err := d.pomodoroService().Start(ctx, req.Preset, req.Label, req.WorkMin, req.RestMin, req.Cycles, req.Strict, req.Save)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Message: res.Message, Pomodoro: &res.State}, nil
+}
+
+// handlePomodoroDefaults devolve os padrões atuais de trabalho/descanso/ciclos.
+func (d *refDeps) handlePomodoroDefaults(ctx context.Context, _ *Request) (*Response, error) {
+	res, err := d.pomodoroService().Defaults(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{
+		Success:       true,
+		PomodoroWork:  res.Work,
+		PomodoroRest:  res.Rest,
+		PomodoroCycle: res.Cycles,
+		Message:       res.Message,
+	}, nil
+}
+
+// handlePomodoroStop encerra a sessão ativa.
+func (d *refDeps) handlePomodoroStop(ctx context.Context, _ *Request) (*Response, error) {
+	res, err := d.pomodoroService().Stop(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Message: res.Message, Pomodoro: &res.State}, nil
+}
+
+// ---------------------------------------------------------------------------
+// update / update-check (adapters de referência — pós-reorg item 1)
+// ---------------------------------------------------------------------------
+
+// updateCheckerBridge adapta o ipc.UpdateChecker do wire (devolve
+// ipc.UpdateStatus) ao update.Checker do domínio (update.Status) — o domínio
+// não pode importar ipc. Só testes usam (o composition root tem o seu).
+type updateCheckerBridge struct{ c UpdateChecker }
+
+func (b updateCheckerBridge) Check(ctx context.Context, apply bool, channel string) (update.Status, error) {
+	st, err := b.c.Check(ctx, apply, channel)
+	return update.Status{
+		CurrentVersion: st.CurrentVersion,
+		NewVersion:     st.NewVersion,
+		Available:      st.Available,
+		Applied:        st.Applied,
+		PendingReboot:  st.PendingReboot,
+	}, err
+}
+
+// updater returns the wired update checker under the lock, bridgeado para o
+// tipo do domínio (nil → nil: o serviço devolve "auto-update não configurado").
+func (s *Server) updater() update.Checker {
+	s.mu.RLock()
+	c := s.updateChecker
+	s.mu.RUnlock()
+	if c == nil {
+		return nil
+	}
+	return updateCheckerBridge{c: c}
+}
+
+// handleUpdate aplica uma atualização disponível aos binários.
+func (s *Server) handleUpdate(_ context.Context, req *Request) (*Response, error) {
+	return s.runUpdateAction(req, true)
+}
+
+// handleUpdateCheck verifica atualizações sem aplicar (botão "Verificar" da UI,
+// consulta o GitHub na hora em vez de ler o cache do status).
+func (s *Server) handleUpdateCheck(_ context.Context, req *Request) (*Response, error) {
+	return s.runUpdateAction(req, false)
+}
+
+// runUpdateAction roda o checker dentro do orçamento UpdateTimeout, cacheia o
+// resultado (a ação "status" o expõe) e sinaliza o restart quando um update
+// foi aplicado.
+func (s *Server) runUpdateAction(req *Request, apply bool) (*Response, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), UpdateTimeout)
+	res, err := update.NewService(s.updater(), apply).Run(ctx, req.Channel)
+	cancel()
+	if err != nil {
+		// O único erro conhecido aqui é o checker ausente (dev builds) — a
+		// semântica exata de CodeNotConfigured.
+		return nil, Err(CodeNotConfigured, err.Error())
+	}
+
+	s.mu.Lock()
+	s.updateStatus = UpdateStatus{
+		CurrentVersion: res.Status.CurrentVersion,
+		NewVersion:     res.Status.NewVersion,
+		Available:      res.Status.Available,
+		Applied:        res.Status.Applied,
+		PendingReboot:  res.Status.PendingReboot,
+	}
+	s.mu.Unlock()
+
+	if res.Applied {
+		s.MarkUpdateApplied()
+	}
+
+	resp := &Response{
+		Success:         true,
+		UpdateAvailable: res.Status.Available,
+		UpdateVersion:   res.Status.NewVersion,
+		CurrentVersion:  res.Status.CurrentVersion,
+	}
+	if apply {
+		resp.UpdatePendingReboot = res.Status.PendingReboot
+	}
+	resp.Message = res.Message
+	return resp, nil
 }

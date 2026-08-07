@@ -21,11 +21,13 @@ import (
 	"focusguard/internal/transport/metrics"
 )
 
-// updateTimeout bounds the update/update-check IPC actions. Aplicar uma
+// UpdateTimeout bounds the update/update-check IPC actions. Aplicar uma
 // atualização baixa o release (~13 MB), extrai e troca os binários — 30s era
 // apertado em conexões lentas; 120s cobre download + apply sem travar o daemon
 // (cada conexão IPC roda na própria goroutine, então pings não são bloqueados).
-const updateTimeout = 120 * time.Second
+// Exportado porque o composition root o aplica no wrapper do DomainAction de
+// update (pós-reorg item 1).
+const UpdateTimeout = 120 * time.Second
 
 // eventSubscribeTimeout is how long the event-subscribe long-poll blocks
 // before answering an empty cycle (no changes) — the heartbeat that keeps the
@@ -47,19 +49,24 @@ type Server struct {
 	// registry holds the action handlers: o roteador despacha por
 	// registry.Get → Validate → Handle; ação desconhecida vira
 	// CodeUnknownAction (wire protocol preservado do switch legado).
-	registry        *Registry
-	listener        net.Listener
-	updateChecker   UpdateChecker
-	pomodoro        PomodoroRunner
-	pomodoroPrefs   PomodoroPrefs
-	analytics       AnalyticsProvider
-	presets         PresetManager
-	schedules       ScheduleManager
-	goalStore       GoalManager
-	tamperLog       TamperProvider
-	dnsCtrl         DNSController
-	eventHub        *eventhub.Hub
-	metrics         *metrics.Registry
+	registry *Registry
+	listener net.Listener
+	// updateChecker fica no Server (RefreshUpdateStatus — o check periódico do
+	// daemon — o lê); o handler de update (domínio, composition root) o lê via
+	// UpdateChecker().
+	updateChecker UpdateChecker
+	// pomodoro/goalStore/dnsCtrl/presets continuam no Server porque o status
+	// (e os adapters de referência) os leem; analytics/schedules/pomodoroPrefs
+	// saíram (Fase 5 + item 1 — os handlers reais os recebem por construtor no
+	// composition root; os adapters de referência via refDeps).
+	pomodoro  PomodoroRunner
+	presets   PresetManager
+	goalStore GoalManager
+	tamperLog TamperProvider
+	dnsCtrl   DNSController
+	eventHub  *eventhub.Hub
+	metrics   *metrics.Registry
+
 	onUpdateApplied func()
 	currentVersion  string
 
@@ -105,6 +112,12 @@ func (s *Server) SetPresets(m PresetManager) {
 
 // ScheduleManager is the recurring-rule catalog used by the schedule-*
 // actions. The daemon wires a *schedule.Manager (file-backed); tests stub it.
+//
+// NOTA: o Server não carrega mais a instância (SetSchedules foi removido na
+// Fase 5 + item 1) — os handlers reais de schedule-* recebem a dependência por
+// construtor no composition root. A interface permanece aqui porque os
+// adapters de referência dos testes internos (handlers_ref_test.go) a usam
+// via refDeps.
 type ScheduleManager interface {
 	List() []schedule.Rule
 	Add(r schedule.Rule) (schedule.Rule, error)
@@ -125,14 +138,6 @@ func (s *Server) SetGoal(g GoalManager) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.goalStore = g
-}
-
-// SetSchedules wires the recurring-rule manager into the server. Nil makes the
-// schedule-* actions fail with a clear message.
-func (s *Server) SetSchedules(m ScheduleManager) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.schedules = m
 }
 
 // AppsManager is the process-app denylist used by the apps-* actions. The
@@ -254,27 +259,26 @@ func (s *Server) SetPomodoro(r PomodoroRunner) {
 
 // PomodoroPrefs persists/reads the pomodoro defaults (work/rest/cycles) so a
 // plain "focusguard pomodoro --preset x" reuses the last session's values.
+//
+// NOTA: o Server não carrega mais a instância (SetPomodoroPrefs foi removido
+// na Fase 5 + item 1) — os handlers reais de pomodoro-* recebem as
+// dependências por construtor no composition root. A interface permanece aqui
+// porque os adapters de referência dos testes internos (handlers_ref_test.go)
+// a usam via refDeps.
 type PomodoroPrefs interface {
 	Resolve(work, rest, cycles int) (int, int, int)
 	Remember(work, rest, cycles int)
 }
 
-func (s *Server) SetPomodoroPrefs(p PomodoroPrefs) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.pomodoroPrefs = p
-}
-
 // AnalyticsProvider supplies the recorded sessions for the stats action. The
 // daemon wires the analytics recorder; tests stub it.
+//
+// NOTA: o Server não carrega mais a instância (SetAnalytics foi removido na
+// Fase 5 + item 1) — os handlers reais de stats/missions/sessions recebem a
+// dependência por construtor no composition root. A interface permanece aqui
+// porque os adapters de referência dos testes internos a usam via refDeps.
 type AnalyticsProvider interface {
 	Sessions() ([]analytics.Session, error)
-}
-
-func (s *Server) SetAnalytics(p AnalyticsProvider) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.analytics = p
 }
 
 // HasActiveSession reports whether a pomodoro session is currently running, so
@@ -340,6 +344,56 @@ func (s *Server) SetUpdateChecker(c UpdateChecker) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.updateChecker = c
+}
+
+// UpdateChecker returns the wired update checker (nil when none is configured
+// — dev builds). The composition root's update DomainAction reads it lazily
+// (SetUpdateChecker roda depois do registro dos handlers).
+func (s *Server) UpdateChecker() UpdateChecker {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.updateChecker
+}
+
+// CacheUpdateStatus stores the outcome of the last update check/apply so the
+// "status" action can surface it without re-checking. The composition root's
+// update DomainAction calls it after each run (mesma semântica do switch
+// legado: o status mostra o último check).
+func (s *Server) CacheUpdateStatus(st UpdateStatus) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateStatus = st
+}
+
+// MarkUpdateApplied arma o latch que o roteador consome APÓS escrever a
+// resposta no socket, para disparar o hook de restart (mesma ordem do legado).
+// O composition root o chama quando o DomainAction de update aplica um
+// binário novo.
+func (s *Server) MarkUpdateApplied() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.updateApplied = true
+}
+
+// takeUpdateApplied lê-e-limpa o latch de update aplicado (read-and-clear:
+// cada aplicação notifica o hook uma única vez).
+func (s *Server) takeUpdateApplied() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	applied := s.updateApplied
+	s.updateApplied = false
+	return applied
+}
+
+// dispatchUpdateHook notifica o onUpdateApplied (daemon sai para o
+// supervisor/subir o binário novo) em goroutine — nunca bloqueia a conexão.
+func (s *Server) dispatchUpdateHook() {
+	s.mu.RLock()
+	fn := s.onUpdateApplied
+	s.mu.RUnlock()
+	if fn != nil {
+		go fn()
+	}
 }
 
 // SetOnUpdateApplied registers a hook invoked after an update has been applied

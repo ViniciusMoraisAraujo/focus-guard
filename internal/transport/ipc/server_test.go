@@ -1104,9 +1104,8 @@ func TestServer_GoalSet_InvalidMinutes(t *testing.T) {
 }
 
 func TestServer_Stats_IncludesStreak(t *testing.T) {
-	server := setupTestServer(t)
 	now := time.Now()
-	server.SetAnalytics(&fakeAnalyticsProvider{
+	server := setupTestServerWithDeps(t, &refDeps{analytics: &fakeAnalyticsProvider{
 		sessions: []analytics.Session{
 			{
 				Start:  now.Add(-time.Hour),
@@ -1121,7 +1120,7 @@ func TestServer_Stats_IncludesStreak(t *testing.T) {
 				Focus:  time.Hour,
 			},
 		},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "stats"})
 	if !resp.Success {
@@ -1151,9 +1150,8 @@ END:VCALENDAR
 `
 
 func TestServer_ScheduleImport_AddsRules(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeScheduleManager{}
-	server.SetSchedules(fake)
+	server := setupTestServerWithDeps(t, &refDeps{schedules: fake})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent, ICSPreset: "social"})
 	if !resp.Success {
@@ -1168,8 +1166,7 @@ func TestServer_ScheduleImport_AddsRules(t *testing.T) {
 }
 
 func TestServer_ScheduleImport_MissingPreset(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetSchedules(&fakeScheduleManager{})
+	server := setupTestServerWithDeps(t, &refDeps{schedules: &fakeScheduleManager{}})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent})
 	if resp.Success {
@@ -1178,8 +1175,7 @@ func TestServer_ScheduleImport_MissingPreset(t *testing.T) {
 }
 
 func TestServer_ScheduleImport_EmptyContent(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetSchedules(&fakeScheduleManager{})
+	server := setupTestServerWithDeps(t, &refDeps{schedules: &fakeScheduleManager{}})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSPreset: "social"})
 	if resp.Success {
@@ -1188,8 +1184,7 @@ func TestServer_ScheduleImport_EmptyContent(t *testing.T) {
 }
 
 func TestServer_ScheduleImport_UnknownPreset(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetSchedules(&fakeScheduleManager{})
+	server := setupTestServerWithDeps(t, &refDeps{schedules: &fakeScheduleManager{}})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent, ICSPreset: "nao-existe"})
 	if resp.Success {
@@ -1198,9 +1193,8 @@ func TestServer_ScheduleImport_UnknownPreset(t *testing.T) {
 }
 
 func TestServer_ScheduleImport_NoWeeklyEvents(t *testing.T) {
-	server := setupTestServer(t)
 	// importErr força o "nenhum evento semanal" na resposta do manager.
-	server.SetSchedules(&fakeScheduleManager{importErr: errors.New("Nenhum evento semanal encontrado no calendário.")})
+	server := setupTestServerWithDeps(t, &refDeps{schedules: &fakeScheduleManager{importErr: errors.New("Nenhum evento semanal encontrado no calendário.")}})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-import", ICSContent: testICSContent, ICSPreset: "social"})
 	if resp.Success {
@@ -1209,10 +1203,9 @@ func TestServer_ScheduleImport_NoWeeklyEvents(t *testing.T) {
 }
 
 func TestServer_ScheduleList_ReturnsRules(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetSchedules(&fakeScheduleManager{
+	server := setupTestServerWithDeps(t, &refDeps{schedules: &fakeScheduleManager{
 		list: []schedule.Rule{{ID: "abc1", Preset: "social", Days: []int{1, 2}, Start: "08:00", End: "12:00", Enabled: true}},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-list"})
 	if !resp.Success {
@@ -1224,9 +1217,8 @@ func TestServer_ScheduleList_ReturnsRules(t *testing.T) {
 }
 
 func TestServer_ScheduleAdd_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeScheduleManager{}
-	server.SetSchedules(fake)
+	server := setupTestServerWithDeps(t, &refDeps{schedules: fake})
 
 	resp := executeRequest(t, server, Request{
 		Action:       "schedule-add",
@@ -1244,9 +1236,8 @@ func TestServer_ScheduleAdd_Success(t *testing.T) {
 }
 
 func TestServer_ScheduleAdd_ValidationError(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeScheduleManager{addErr: errors.New("schedule: informe um preset")}
-	server.SetSchedules(fake)
+	server := setupTestServerWithDeps(t, &refDeps{schedules: fake})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-add"})
 	if resp.Success {
@@ -1267,9 +1258,8 @@ func TestServer_ScheduleAdd_WithoutManager(t *testing.T) {
 }
 
 func TestServer_ScheduleRemove_Success(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeScheduleManager{}
-	server.SetSchedules(fake)
+	server := setupTestServerWithDeps(t, &refDeps{schedules: fake})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-remove", ScheduleID: "abc1"})
 	if !resp.Success {
@@ -1281,9 +1271,8 @@ func TestServer_ScheduleRemove_Success(t *testing.T) {
 }
 
 func TestServer_ScheduleRemove_Error(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakeScheduleManager{remErr: errors.New("schedule: regra não encontrada")}
-	server.SetSchedules(fake)
+	server := setupTestServerWithDeps(t, &refDeps{schedules: fake})
 
 	resp := executeRequest(t, server, Request{Action: "schedule-remove", ScheduleID: "zzz"})
 	if resp.Success {
@@ -1446,8 +1435,7 @@ func TestServer_PomodoroDefaults_NoPrefs(t *testing.T) {
 }
 
 func TestServer_PomodoroDefaults_ResolvesSaved(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetPomodoroPrefs(&fakePomodoroPrefs{work: 50, rest: 10, cycles: 2})
+	server := setupTestServerWithDeps(t, &refDeps{pomodoroPrefs: &fakePomodoroPrefs{work: 50, rest: 10, cycles: 2}})
 
 	resp := executeRequest(t, server, Request{Action: "pomodoro-defaults"})
 	if !resp.Success {
@@ -1459,11 +1447,10 @@ func TestServer_PomodoroDefaults_ResolvesSaved(t *testing.T) {
 }
 
 func TestServer_Pomodoro_SavePersistsDefaults(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakePomodoroRunner{}
-	server.SetPomodoro(fake)
 	prefs := &fakePomodoroPrefs{}
-	server.SetPomodoroPrefs(prefs)
+	server := setupTestServerWithDeps(t, &refDeps{pomodoroPrefs: prefs})
+	server.SetPomodoro(fake)
 
 	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 50, RestMin: 10, Cycles: 2, Save: true})
 	if !resp.Success {
@@ -1478,10 +1465,9 @@ func TestServer_Pomodoro_SavePersistsDefaults(t *testing.T) {
 }
 
 func TestServer_Pomodoro_NoSaveSkipsPersist(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetPomodoro(&fakePomodoroRunner{})
 	prefs := &fakePomodoroPrefs{}
-	server.SetPomodoroPrefs(prefs)
+	server := setupTestServerWithDeps(t, &refDeps{pomodoroPrefs: prefs})
+	server.SetPomodoro(&fakePomodoroRunner{})
 
 	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 50, RestMin: 10, Cycles: 2})
 	if !resp.Success {
@@ -1493,11 +1479,10 @@ func TestServer_Pomodoro_NoSaveSkipsPersist(t *testing.T) {
 }
 
 func TestServer_Pomodoro_ResolvesDefaultsWhenZero(t *testing.T) {
-	server := setupTestServer(t)
 	fake := &fakePomodoroRunner{}
-	server.SetPomodoro(fake)
 	prefs := &fakePomodoroPrefs{work: 50, rest: 10, cycles: 2}
-	server.SetPomodoroPrefs(prefs)
+	server := setupTestServerWithDeps(t, &refDeps{pomodoroPrefs: prefs})
+	server.SetPomodoro(fake)
 
 	// CLI sem flags explícitas: work=0, rest=-1, cycles=0 → defaults salvos.
 	resp := executeRequest(t, server, Request{Action: "pomodoro", Preset: "social", WorkMin: 0, RestMin: -1, Cycles: 0})
@@ -1524,13 +1509,12 @@ func TestServer_Pomodoro_LabelPassthrough(t *testing.T) {
 }
 
 func TestServer_Stats_FilterByMission(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetAnalytics(&fakeAnalyticsProvider{
+	server := setupTestServerWithDeps(t, &refDeps{analytics: &fakeAnalyticsProvider{
 		sessions: []analytics.Session{
 			{Start: time.Now().Add(-time.Hour), End: time.Now(), Preset: "social", Label: "ENEM", Domains: []string{"twitter.com"}, Focus: time.Hour},
 			{Start: time.Now().Add(-2 * time.Hour), End: time.Now().Add(-time.Hour), Preset: "video", Domains: []string{"youtube.com"}, Focus: 2 * time.Hour},
 		},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "stats", Mission: "ENEM"})
 	if !resp.Success {
@@ -1542,13 +1526,12 @@ func TestServer_Stats_FilterByMission(t *testing.T) {
 }
 
 func TestServer_Missions_AggregatesLabels(t *testing.T) {
-	server := setupTestServer(t)
-	server.SetAnalytics(&fakeAnalyticsProvider{
+	server := setupTestServerWithDeps(t, &refDeps{analytics: &fakeAnalyticsProvider{
 		sessions: []analytics.Session{
 			{Start: time.Now().Add(-time.Hour), End: time.Now(), Preset: "social", Label: "ENEM", Domains: []string{"twitter.com"}, Focus: time.Hour},
 			{Start: time.Now().Add(-2 * time.Hour), End: time.Now().Add(-time.Hour), Preset: "video", Label: "ENEM", Domains: []string{"youtube.com"}, Focus: 2 * time.Hour},
 		},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "missions"})
 	if !resp.Success {
@@ -1760,9 +1743,8 @@ func TestServer_Stats_NotConfigured(t *testing.T) {
 }
 
 func TestServer_Stats_ReturnsSummary(t *testing.T) {
-	server := setupTestServer(t)
 	now := time.Now()
-	server.SetAnalytics(&fakeAnalyticsProvider{
+	server := setupTestServerWithDeps(t, &refDeps{analytics: &fakeAnalyticsProvider{
 		sessions: []analytics.Session{
 			{
 				Start:   now.Add(-time.Hour),
@@ -1776,7 +1758,7 @@ func TestServer_Stats_ReturnsSummary(t *testing.T) {
 				Strict:  false,
 			},
 		},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "stats"})
 	if !resp.Success {
@@ -1809,15 +1791,14 @@ func TestServer_Sessions_NotConfigured(t *testing.T) {
 // surfaces the recent sessions sorted newest first (the cap and ordering live
 // in analytics.RecentSessions).
 func TestServer_Sessions_ReturnsRecentNewestFirst(t *testing.T) {
-	server := setupTestServer(t)
 	now := time.Now()
-	server.SetAnalytics(&fakeAnalyticsProvider{
+	server := setupTestServerWithDeps(t, &refDeps{analytics: &fakeAnalyticsProvider{
 		sessions: []analytics.Session{
 			{End: now.Add(-2 * time.Hour), Preset: "social", Domains: []string{"twitter.com"}, Focus: time.Hour},
 			{End: now.Add(-time.Hour), Preset: "video", Domains: []string{"youtube.com"}, Focus: 30 * time.Minute},
 			{End: now, Preset: "news", Domains: []string{"g1.globo.com"}, Focus: 45 * time.Minute},
 		},
-	})
+	}})
 
 	resp := executeRequest(t, server, Request{Action: "sessions"})
 	if !resp.Success {
