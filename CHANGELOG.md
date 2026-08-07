@@ -5,6 +5,27 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.16.2] - 2026-08-07
+
+### 🏗️ Arquitetura (refatoração interna — sem mudança de comportamento)
+
+- **`internal/` reorganizado em camadas** — os 34 pacotes foram movidos para
+  `domain/` (lógica de negócio), `infrastructure/` (I/O de SO), `transport/`
+  (IPC/HTTP + observabilidade) e `system/` (ciclo de vida de daemon/tray/
+  watchdog); assets de build consolidados em `packaging/` e guias
+  consolidados em `docs/`.
+- **Inversão de dependências (DIP) no IPC** — apps, blocks, goal, presets,
+  users, analytics, pomodoro, schedule, dns e update **não importam mais** o
+  `transport/ipc`: cada ação virou um handler de domínio com tipos próprios
+  (`ipc.DomainAction`), adaptado ao wire pelo composition root do daemon. Os
+  handlers de referência do transport foram removidos (viraram test-only) e o
+  `transport/ipc` ganhou tipo próprio de status DNS (`DNSStatus`), sem
+  depender mais do `dnsserver`.
+- **Contrato do wire inalterado** — `ipc.Request/Response`, mensagens PT-BR,
+  códigos estáveis e o `types.ts` do frontend permanecem idênticos; o
+  `domain_wiring_test.go` compõe os 31 handlers reais e o `ValidateRegistry`
+  fecha specs↔registry no boot do daemon.
+
 ## [0.16.1] - 2026-08-06
 
 ### 🪟 Windows
