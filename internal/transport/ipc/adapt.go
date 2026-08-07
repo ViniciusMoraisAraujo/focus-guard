@@ -56,8 +56,12 @@ func (a DomainAction[In, Out]) handler() Handler {
 // Handler returns the ipc.Handler for this domain action — the composition
 // root mounts it with s.Register(ipc.DomainAction[...]{...}.Handler()). The
 // action needs a spec in spec.go like any other handler — ValidateRegistry
-// covers it at boot.
+// covers it at boot. Fails fast (panic) when a required closure is missing, so
+// a misconfigured action breaks at boot, not at dispatch time.
 func (a DomainAction[In, Out]) Handler() Handler {
+	if a.Name == "" || a.Decode == nil || a.Handle == nil || a.Encode == nil {
+		panic("ipc.DomainAction: Name, Decode, Handle e Encode são obrigatórios")
+	}
 	return a.handler()
 }
 

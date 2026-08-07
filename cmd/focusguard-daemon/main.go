@@ -799,9 +799,10 @@ func runDaemon() bool {
 		Validate: hBlock.Validate,
 		Handle:   hBlock.Handle,
 		Encode: func(out *blocks.BlockResult) (*ipc.Response, error) {
-			resp := &ipc.Response{Success: true, Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
+			// Success deriva de Code (invariante do domínio: conflito implica
+			// código estável) — nunca Success:true + Conflict:true no wire.
+			resp := &ipc.Response{Success: out.Code == "", Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
 			if out.Code != "" {
-				resp.Success = false
 				resp.Code = out.Code
 			}
 			return resp, nil

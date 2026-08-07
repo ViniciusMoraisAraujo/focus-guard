@@ -266,11 +266,18 @@ prova —, mas acoplam camadas):
    `server.go` (dnsserver) são herança da Fase 4. O composition root
    (`system/daemon`) já registra os handlers reais dos domínios e o
    `ValidateRegistry` prova a cobertura → os arquivos de referência podem ser
-   removidos.
-2. **Violações de camada (depender "para cima")**: `domain/{apps,blocks,goal,
-   presets,users}` → `transport/ipc` (handlers de domínio usam tipos do
-   transport) e `infrastructure/dns` → `transport/ipc`. Não causam ciclo; o
-   ideal a longo prazo é inverter para interfaces definidas no domínio.
+   removidos. **(pendente — item 1)**
+2. ✅ **Violações de camada (depender "para cima")** — resolvido (2026-08-07):
+   `domain/{apps,blocks,goal,presets,users}` e `infrastructure/dns` **não
+   importam mais** `transport/ipc` (e os 3 domínios que usavam `ipcerr`
+   passaram a importar `internal/domain/ipcerr`). O DIP foi aplicado com o
+   adaptador genérico `ipc.DomainAction[In, Out]` (`transport/ipc/adapt.go`):
+   cada pacote define seus próprios tipos de entrada/saída, o composition root
+   (`cmd/focusguard-daemon`) traduz o wire (Decode/Encode) e o roteador
+   continua convertendo erros (`*ipcerr.Error` → `Success:false + Code`). O
+   wire (`ipc.Request/Response`) e o `types.ts` **não mudaram**. Commits:
+   `e7c7a81` (ipcerr→domain), `20ecdc6` (adapter), `2cbcf4e` (apps),
+   `0cde265` (goal+presets), `4db92b9` (users+blocks), `1f39a4c` (dns).
 
 ---
 

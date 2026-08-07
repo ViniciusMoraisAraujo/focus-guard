@@ -37,6 +37,9 @@ type Catalog interface {
 // Tipos de entrada/saída das ações — adaptados pelo transporte (DIP).
 // BlockResult.Code carrega o código estável de um resultado de FALHA
 // conhecido (ex.: CodeDomainConflict no ask-first); vazio = sucesso.
+// Invariante: Conflict=true implica Code != "" — o Encode do composition root
+// deriva Success de Code, então um conflito sem código viraria um wire
+// impossível (Success:true + Conflict:true).
 type BlockInput struct {
 	Domain   string
 	Duration string

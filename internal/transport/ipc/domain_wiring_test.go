@@ -69,6 +69,7 @@ func (f *fakeBlocker) BlockAllInternet(allowlist []string, d time.Duration) (*po
 type fakeDNSController struct {
 	started  bool
 	upstream string
+	queries  uint64
 	err      error
 }
 
@@ -94,7 +95,7 @@ func (f *fakeDNSController) SetUpstream(u string) error {
 }
 
 func (f *fakeDNSController) Status() dnsserver.Status {
-	return dnsserver.Status{Listening: f.started, Upstream: f.upstream}
+	return dnsserver.Status{Listening: f.started, Upstream: f.upstream, Queries: f.queries}
 }
 
 // mergeDNSWire projeta o Status de domínio do DNS no wire (mesmo helper do
@@ -145,7 +146,7 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 	userStore := user.NewStore(t.TempDir() + "/user.json")
 	appsStore := apps.NewStore(t.TempDir() + "/apps.json")
 	blk := &fakeBlocker{}
-	dc := &fakeDNSController{upstream: dnsserver.DefaultUpstream}
+	dc := &fakeDNSController{upstream: dnsserver.DefaultUpstream, queries: 7}
 	dp := &fakeDNSPersister{}
 
 	// blocks via ipc.DomainAction (mesmo padrão do composition root).
@@ -158,9 +159,10 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 		Validate: hBlock.Validate,
 		Handle:   hBlock.Handle,
 		Encode: func(out *blocks.BlockResult) (*ipc.Response, error) {
-			resp := &ipc.Response{Success: true, Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
+			// Success deriva de Code (invariante do domínio: conflito implica
+			// código estável) — nunca Success:true + Conflict:true no wire.
+			resp := &ipc.Response{Success: out.Code == "", Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
 			if out.Code != "" {
-				resp.Success = false
 				resp.Code = out.Code
 			}
 			return resp, nil
@@ -402,6 +404,15 @@ func TestDomainWiring_ComposesWithRouter(t *testing.T) {
 	resp = s.Dispatch(&ipc.Request{Action: "dns-start"})
 	if !resp.Success || !dp.enabled || !strings.Contains(resp.Message, "Servidor DNS iniciado") {
 		t.Fatalf("dns-start: success=%v enabled=%v msg=%q", resp.Success, dp.enabled, resp.Message)
+	}
+	// O wire DNS* reflete a projeção (mergeDNSWire) do estado combinado —
+	// cobre os campos DNS* contra drift entre domínio e composition root.
+	if !resp.DNSListening {
+		t.Fatalf("dns-start: DNSListening deveria vir no wire, got %+v", resp)
+	}
+	resp = s.Dispatch(&ipc.Request{Action: "dns-status"})
+	if !resp.Success || !resp.DNSListening || resp.DNSQueries != 7 || resp.DNSUpstream != dnsserver.DefaultUpstream {
+		t.Fatalf("dns-status: wire DNS* incompleto, got %+v", resp)
 	}
 
 	// goal-set com store real → meta refletida na resposta.
