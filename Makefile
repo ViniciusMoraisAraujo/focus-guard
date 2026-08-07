@@ -26,7 +26,7 @@ build: icon build-cli build-daemon build-web
 # icon regenera o ícone multi-tamanho a partir do artwork
 # packaging/artwork/focusguard.png: o .ico Windows usado pelo go-winres
 # (metadados .exe), o .png Linux do atalho do Desktop e o .png 32px do tray
-# (internal/tray/icon_source.png, mantido no pacote por causa do go:embed).
+# (internal/system/tray/icon_source.png, mantido no pacote por causa do go:embed).
 icon:
 	$(GO) run ./cmd/focusguard-icon
 
@@ -64,7 +64,7 @@ ui:
 	cp -r focusguard-ui/dist/. cmd/focusguard-web/assets/
 
 # contract regenera focusguard-ui/src/api/types.ts a partir dos structs Go que
-# definem o contrato IPC (internal/ipc + policy, preset, pomodoro, analytics,
+# definem o contrato IPC (internal/transport/ipc + policy, preset, pomodoro, analytics,
 # schedule, tamper) — o Go é a fonte de verdade do espelho TypeScript, sem
 # edição manual (Fase 2 do docs/refactor-plan.md). Rode após mudar um struct do
 # contrato (regra do AGENT.md: mudou o IPC, muda os 4 lados no mesmo commit).
