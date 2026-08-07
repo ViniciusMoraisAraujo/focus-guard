@@ -684,6 +684,20 @@ func TestDomainWiring_ComposesWithRouter(t *testing.T) {
 	if !resp.Success || resp.Message != "Nenhuma atualização disponível." {
 		t.Fatalf("update-check: success=%v msg=%q", resp.Success, resp.Message)
 	}
+
+	// update com atualização aplicada → campos do wire + latch de restart
+	// (o wrapper do composition root cacheia o status e arma o latch; o
+	// roteador o consome após a resposta — hook ausente aqui é nil-safe).
+	s.SetUpdateChecker(&fakeWireUpdateChecker{st: ipc.UpdateStatus{
+		CurrentVersion: "0.16.1", NewVersion: "0.17.0", Available: true, Applied: true,
+	}})
+	resp = s.Dispatch(&ipc.Request{Action: "update"})
+	if !resp.Success || !resp.UpdateAvailable || resp.UpdateVersion != "0.17.0" || resp.CurrentVersion != "0.16.1" {
+		t.Fatalf("update aplicado: wire incompleto, got %+v", resp)
+	}
+	if !strings.Contains(resp.Message, "Atualização aplicada") {
+		t.Fatalf("update aplicado: msg=%q", resp.Message)
+	}
 }
 
 // TestDomainWiring_AllActionsDispatch dispara TODAS as 31 ações de domínio
