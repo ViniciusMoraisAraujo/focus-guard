@@ -223,6 +223,24 @@ func (a dnsCtrlAdapter) Status() ipc.DNSStatus {
 	}
 }
 
+// updateCheckerBridge adapta o ipc.UpdateChecker do wire (devolve
+// ipc.UpdateStatus) ao update.Checker do domínio (update.Status) — o domínio
+// não pode importar ipc (ciclo: ipc importa update para o adapter). Vivia no
+// transport até o pós-reorg item 1; agora é responsabilidade do composition
+// root, que conhece os dois lados.
+type updateCheckerBridge struct{ c ipc.UpdateChecker }
+
+func (b updateCheckerBridge) Check(ctx context.Context, apply bool, channel string) (update.Status, error) {
+	st, err := b.c.Check(ctx, apply, channel)
+	return update.Status{
+		CurrentVersion: st.CurrentVersion,
+		NewVersion:     st.NewVersion,
+		Available:      st.Available,
+		Applied:        st.Applied,
+		PendingReboot:  st.PendingReboot,
+	}, err
+}
+
 // guardApps wires the persisted apps store to the live process guard: every
 // apps-add/apps-remove refreshes the guard's denylist so the change takes
 // effect on the next scan. Satisfies the interface of the apps domain handlers
@@ -759,7 +777,6 @@ func runDaemon() bool {
 	// flags reutiliza os padrões salvos. O watcher abaixo também persiste os
 	// valores resolvidos ao fim de cada sessão (mesmo sem --save).
 	pomoPrefs := pomodoro.NewPrefs(filepath.Join(filepath.Dir(statePath), "pomodoro.json"))
-	server.SetPomodoroPrefs(pomoPrefs)
 	stopPomoWatch := watchPomodoroCompletions(pomo, pomoPrefs, func() { hub.Publish(ipc.EventPomodoroComplete) })
 	if stopPomoWatch != nil {
 		components = append(components, daemon.StopOnly(stopPomoWatch))
@@ -784,7 +801,6 @@ func runDaemon() bool {
 	// vencidas a cada 30s (e no boot); o IPC expõe schedule add/list/remove.
 	scheduleMgr := schedule.NewManager(filepath.Join(filepath.Dir(statePath), "schedules.json"))
 	scheduleMgr.SetOnChange(func() { hub.Publish(ipc.EventScheduleChanged) })
-	server.SetSchedules(scheduleMgr)
 	stopSchedule := startScheduleWorker(scheduleMgr, presetResolver{store: presetStore}, sched, scheduleCheckInterval)
 	if stopSchedule != nil {
 		components = append(components, daemon.StopOnly(stopSchedule))
@@ -795,7 +811,6 @@ func runDaemon() bool {
 	// apenas perde o histórico entre restarts).
 	rec := analytics.NewRecorder(filepath.Join(filepath.Dir(statePath), "analytics.jsonl"))
 	pomo.SetRecorder(rec)
-	server.SetAnalytics(rec)
 
 	// Meta diária de foco (ex: 4h/dia) persistida em goal.json — alimenta o
 	// "focusguard goal" e o status da TUI.
@@ -1027,6 +1042,169 @@ func runDaemon() bool {
 			return &ipc.Response{Success: true, Message: out.Message}, nil
 		},
 	}.Handler())
+	// analytics/stats via ipc.DomainAction (DIP — pós-reorg item 1).
+	hStats := analytics.NewStatsHandler(rec)
+	server.Register(ipc.DomainAction[analytics.StatsInput, analytics.StatsResult]{
+		Name: hStats.Action(),
+		Decode: func(r *ipc.Request) (*analytics.StatsInput, error) {
+			return &analytics.StatsInput{Mission: r.Mission}, nil
+		},
+		Handle: hStats.Handle,
+		Encode: func(out *analytics.StatsResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Stats: out.Stats}, nil
+		},
+	}.Handler())
+	hMissions := analytics.NewMissionsHandler(rec)
+	server.Register(ipc.DomainAction[analytics.NoInput, analytics.MissionsResult]{
+		Name:   hMissions.Action(),
+		Decode: ipc.NoInputDecode[analytics.NoInput](),
+		Handle: hMissions.Handle,
+		Encode: func(out *analytics.MissionsResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, LabelStats: out.LabelStats}, nil
+		},
+	}.Handler())
+	hSessions := analytics.NewSessionsHandler(rec)
+	server.Register(ipc.DomainAction[analytics.NoInput, analytics.SessionsResult]{
+		Name:   hSessions.Action(),
+		Decode: ipc.NoInputDecode[analytics.NoInput](),
+		Handle: hSessions.Handle,
+		Encode: func(out *analytics.SessionsResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Sessions: out.Sessions}, nil
+		},
+	}.Handler())
+	// schedule via ipc.DomainAction (DIP — pós-reorg item 1). O presetStore
+	// satisfaz o PresetResolver do serviço (Resolve → preset.Preset).
+	hScheduleList := schedule.NewListHandler(scheduleMgr, presetStore)
+	server.Register(ipc.DomainAction[schedule.NoInput, schedule.ListResult]{
+		Name:   hScheduleList.Action(),
+		Decode: ipc.NoInputDecode[schedule.NoInput](),
+		Handle: hScheduleList.Handle,
+		Encode: func(out *schedule.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Schedules: out.Schedules}, nil
+		},
+	}.Handler())
+	hScheduleAdd := schedule.NewAddHandler(scheduleMgr, presetStore)
+	server.Register(ipc.DomainAction[schedule.AddInput, schedule.AddResult]{
+		Name:   hScheduleAdd.Action(),
+		Decode: func(r *ipc.Request) (*schedule.AddInput, error) { return &schedule.AddInput{Rule: r.ScheduleRule}, nil },
+		Handle: hScheduleAdd.Handle,
+		Encode: func(out *schedule.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hScheduleImport := schedule.NewImportHandler(scheduleMgr, presetStore)
+	server.Register(ipc.DomainAction[schedule.ImportInput, schedule.ImportResult]{
+		Name: hScheduleImport.Action(),
+		Decode: func(r *ipc.Request) (*schedule.ImportInput, error) {
+			return &schedule.ImportInput{ICSContent: r.ICSContent, ICSPreset: r.ICSPreset}, nil
+		},
+		Handle: hScheduleImport.Handle,
+		Encode: func(out *schedule.ImportResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Schedules: out.Schedules, Message: out.Message}, nil
+		},
+	}.Handler())
+	hScheduleRemove := schedule.NewRemoveHandler(scheduleMgr, presetStore)
+	server.Register(ipc.DomainAction[schedule.RemoveInput, schedule.RemoveResult]{
+		Name: hScheduleRemove.Action(),
+		Decode: func(r *ipc.Request) (*schedule.RemoveInput, error) {
+			return &schedule.RemoveInput{ScheduleID: r.ScheduleID}, nil
+		},
+		Handle: hScheduleRemove.Handle,
+		Encode: func(out *schedule.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	// pomodoro via ipc.DomainAction (DIP — pós-reorg item 1).
+	hPomodoro := pomodoro.NewStartHandler(pomo, pomoPrefs, presetStore)
+	server.Register(ipc.DomainAction[pomodoro.StartInput, pomodoro.StartResult]{
+		Name: hPomodoro.Action(),
+		Decode: func(r *ipc.Request) (*pomodoro.StartInput, error) {
+			return &pomodoro.StartInput{
+				Preset: r.Preset, Label: r.Label, WorkMin: r.WorkMin, RestMin: r.RestMin,
+				Cycles: r.Cycles, Strict: r.Strict, Save: r.Save,
+			}, nil
+		},
+		Handle: hPomodoro.Handle,
+		Encode: func(out *pomodoro.StartResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, Pomodoro: &out.State}, nil
+		},
+	}.Handler())
+	hPomodoroDefaults := pomodoro.NewDefaultsHandler(pomoPrefs)
+	server.Register(ipc.DomainAction[pomodoro.NoInput, pomodoro.DefaultsResult]{
+		Name:   hPomodoroDefaults.Action(),
+		Decode: ipc.NoInputDecode[pomodoro.NoInput](),
+		Handle: hPomodoroDefaults.Handle,
+		Encode: func(out *pomodoro.DefaultsResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:       true,
+				PomodoroWork:  out.Work,
+				PomodoroRest:  out.Rest,
+				PomodoroCycle: out.Cycles,
+				Message:       out.Message,
+			}, nil
+		},
+	}.Handler())
+	hPomodoroStop := pomodoro.NewStopHandler(pomo)
+	server.Register(ipc.DomainAction[pomodoro.NoInput, pomodoro.StopResult]{
+		Name:   hPomodoroStop.Action(),
+		Decode: ipc.NoInputDecode[pomodoro.NoInput](),
+		Handle: hPomodoroStop.Handle,
+		Encode: func(out *pomodoro.StopResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, Pomodoro: &out.State}, nil
+		},
+	}.Handler())
+	// update/update-check via ipc.DomainAction (DIP — pós-reorg item 1). O
+	// checker é lido lazy do server (SetUpdateChecker roda depois do registro —
+	// setupUpdateIntegration); o estado de processo (latch de restart + cache
+	// do status) fica no Server, setado pelo wrapper abaixo.
+	updateBridge := func() update.Checker {
+		c := server.UpdateChecker()
+		if c == nil {
+			return nil
+		}
+		return updateCheckerBridge{c: c}
+	}
+	for _, apply := range []bool{true, false} {
+		hUpdate := update.NewUpdateHandler(updateBridge, apply)
+		server.Register(ipc.DomainAction[update.UpdateInput, update.Result]{
+			Name:   hUpdate.Action(),
+			Decode: func(r *ipc.Request) (*update.UpdateInput, error) { return &update.UpdateInput{Channel: r.Channel}, nil },
+			Handle: func(ctx context.Context, in *update.UpdateInput) (*update.Result, error) {
+				ctx, cancel := context.WithTimeout(ctx, ipc.UpdateTimeout)
+				defer cancel()
+				res, err := hUpdate.Handle(ctx, in)
+				if err != nil {
+					return nil, err
+				}
+				// Cache do status (a ação "status" o expõe) + latch de restart
+				// (o roteador o consome APÓS escrever a resposta).
+				server.CacheUpdateStatus(ipc.UpdateStatus{
+					CurrentVersion: res.Status.CurrentVersion,
+					NewVersion:     res.Status.NewVersion,
+					Available:      res.Status.Available,
+					Applied:        res.Status.Applied,
+					PendingReboot:  res.Status.PendingReboot,
+				})
+				if res.Applied {
+					server.MarkUpdateApplied()
+				}
+				return res, nil
+			},
+			Encode: func(out *update.Result) (*ipc.Response, error) {
+				resp := &ipc.Response{
+					Success:         true,
+					UpdateAvailable: out.Status.Available,
+					UpdateVersion:   out.Status.NewVersion,
+					CurrentVersion:  out.Status.CurrentVersion,
+					Message:         out.Message,
+				}
+				if apply {
+					resp.UpdatePendingReboot = out.Status.PendingReboot
+				}
+				return resp, nil
+			},
+		}.Handler())
+	}
 
 	// Fechamento specs↔registry no boot (Fase 4): todo handler registrado tem
 	// ActionSpec (user-verify isento — web-only) e todo spec tem handler.
