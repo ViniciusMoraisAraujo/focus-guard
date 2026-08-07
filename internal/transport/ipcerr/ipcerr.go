@@ -1,16 +1,16 @@
 // Package ipcerr defines the stable IPC error codes shared by the router
-// (internal/ipc) and the domain services (analytics, pomodoro, schedule,
-// tamper). Those domain packages are imported by internal/ipc for the wire
+// (internal/transport/ipc) and the domain services (analytics, pomodoro, schedule,
+// tamper). Those domain packages are imported by internal/transport/ipc for the wire
 // types (Response embeds analytics.Stats, schedule.Rule, pomodoro.State,
 // tamper.Event), so they cannot import ipc back — importing it would create an
 // import cycle. The codes and the error type live here so every package reads
 // the SAME constants instead of duplicating the strings (drift risk).
 //
-// internal/ipc/codes.go re-exports the constants; the Response.Code wire field
+// internal/transport/ipc/codes.go re-exports the constants; the Response.Code wire field
 // keeps its values. Additive only — new codes never break old clients.
 package ipcerr
 
-// Stable error codes (same values as internal/ipc/codes.go).
+// Stable error codes (same values as internal/transport/ipc/codes.go).
 const (
 	// CodeDurationInvalid: malformed, zero or negative duration
 	// (block/block-all/pomodoro).

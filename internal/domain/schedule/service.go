@@ -3,9 +3,9 @@
 // The Service depends only on narrow interfaces (RuleStore, PresetResolver —
 // DIP); the *schedule.Manager and the preset catalog satisfy them structurally.
 //
-// The Service intentionally does NOT import internal/ipc: ipc imports schedule
+// The Service intentionally does NOT import internal/transport/ipc: ipc imports schedule
 // for the wire types (Request.ScheduleRule, Response.Schedules), so importing
-// it back would create an import cycle. The ipc adapter (internal/ipc) reads
+// it back would create an import cycle. The ipc adapter (internal/transport/ipc) reads
 // the domain results and builds the wire Response; stable error codes travel in
 // *ipcerr.Error.
 package schedule

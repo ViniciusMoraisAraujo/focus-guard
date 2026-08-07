@@ -522,7 +522,7 @@ func main() {
 }
 
 // stopLifecycleComponents para os componentes na ordem inversa de registro —
-// o mesmo teardown ordenado que o internal/daemon executa (B10). Usado nos
+// o mesmo teardown ordenado que o internal/system/daemon executa (B10). Usado nos
 // pontos de falha do boot que antecedem o Run (onde o lifecycle ainda não
 // assumiu o controle).
 func stopLifecycleComponents(components []daemon.Component) {
@@ -551,7 +551,7 @@ func runDaemon() bool {
 	log.Println("[FocusGuard Daemon] Iniciando serviço...")
 
 	// Satélites do boot (watchers/workers/guards) registrados como componentes
-	// do lifecycle (Fase 5 — B10): o internal/daemon os para em ordem inversa
+	// do lifecycle (Fase 5 — B10): o internal/system/daemon os para em ordem inversa
 	// no shutdown. Os Start são no-op (StopOnly) porque o boot histórico os
 	// inicia na construção — o lifecycle assume o servidor IPC e TODO o
 	// teardown.
@@ -817,7 +817,7 @@ func runDaemon() bool {
 		server.SetOnUpdateApplied(func() { restartAfterUpdate(sched, pomo.Stop) })
 	}
 
-	// Lifecycle (Fase 5 — B10): o internal/daemon executa o servidor IPC e o
+	// Lifecycle (Fase 5 — B10): o internal/system/daemon executa o servidor IPC e o
 	// shutdown ordenado (componentes parados na ordem inversa de registro) com
 	// Run(ctx) explícito — no lugar dos defers e da goroutine de sinais
 	// manuais. Sinais (SIGINT/SIGTERM) e a parada do serviço (serviceStopCh)

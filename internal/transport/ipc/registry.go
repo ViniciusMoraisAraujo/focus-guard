@@ -69,7 +69,7 @@ func (r *Registry) ValidateSpecs(webOnly ...string) error {
 		}
 	}
 	if len(missing) > 0 {
-		return fmt.Errorf("handlers sem ActionSpec: %v (adicione a linha em internal/ipc/spec.go)", missing)
+		return fmt.Errorf("handlers sem ActionSpec: %v (adicione a linha em internal/transport/ipc/spec.go)", missing)
 	}
 	return nil
 }

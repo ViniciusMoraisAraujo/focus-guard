@@ -27,7 +27,7 @@ const (
 
 // ActionSpec carries the declarative metadata for one IPC action, shared by
 // the daemon (execution) and focusguard-web (authz + proxy timeout) — both
-// binaries import internal/ipc, so this table is the single source of truth.
+// binaries import internal/transport/ipc, so this table is the single source of truth.
 type ActionSpec struct {
 	Action     string
 	Permission Permission

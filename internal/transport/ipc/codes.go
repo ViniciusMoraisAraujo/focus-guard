@@ -13,7 +13,7 @@ import "focusguard/internal/transport/ipcerr"
 // domínio (scheduler, store, etc.) continuam devolvendo apenas a message
 // original — o código vazio diz "não ramifique por isso".
 //
-// Os valores vivem em internal/ipcerr (fonte única — os services de domínio,
+// Os valores vivem em internal/transport/ipcerr (fonte única — os services de domínio,
 // que não podem importar ipc, leem os MESMOS valores); este arquivo apenas os
 // re-exporta para o pacote ipc e para o wire.
 const (

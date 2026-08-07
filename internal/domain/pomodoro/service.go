@@ -4,9 +4,9 @@
 // *pomodoro.Controller, *pomodoro.Prefs and the preset catalog satisfy them
 // structurally.
 //
-// The Service intentionally does NOT import internal/ipc: ipc imports pomodoro
+// The Service intentionally does NOT import internal/transport/ipc: ipc imports pomodoro
 // for the wire types (Response.Pomodoro embeds pomodoro.State), so importing it
-// back would create an import cycle. The ipc adapter (internal/ipc) reads the
+// back would create an import cycle. The ipc adapter (internal/transport/ipc) reads the
 // domain results and builds the wire Response; stable error codes travel in
 // *ipcerr.Error.
 package pomodoro

@@ -254,6 +254,26 @@ focusguard/
 
 ---
 
+## Pós-reorg (próximos passos — fora do escopo da migração)
+
+A migração em camadas está concluída, mas deixou fios soltos documentados que
+ficam **fora** do escopo de mover pacotes (não introduzem ciclos — o build
+prova —, mas acoplam camadas):
+
+1. **`transport/ipc` importa `domain/*` e `infrastructure/dnsserver` em
+   produção** — os `*_handler.go` de referência (`analytics_handler.go`,
+   `pomodoro_handler.go`, `schedule_handler.go`, `update_handler.go`) e o
+   `server.go` (dnsserver) são herança da Fase 4. O composition root
+   (`system/daemon`) já registra os handlers reais dos domínios e o
+   `ValidateRegistry` prova a cobertura → os arquivos de referência podem ser
+   removidos.
+2. **Violações de camada (depender "para cima")**: `domain/{apps,blocks,goal,
+   presets,users}` → `transport/ipc` (handlers de domínio usam tipos do
+   transport) e `infrastructure/dns` → `transport/ipc`. Não causam ciclo; o
+   ideal a longo prazo é inverter para interfaces definidas no domínio.
+
+---
+
 ## Riscos e mitigações
 
 | Risco | Mitigação |

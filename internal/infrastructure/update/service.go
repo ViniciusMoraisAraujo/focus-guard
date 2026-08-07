@@ -4,7 +4,7 @@
 // owns the timeout budget (updateTimeout), the status cache and the restart-hook
 // signaling.
 //
-// The Service deliberately does NOT import internal/ipc (ipc imports update for
+// The Service deliberately does NOT import internal/transport/ipc (ipc imports update for
 // the adapter, so importing it back would create an import cycle — ipc's wire
 // UpdateStatus is mirrored here as Status, converted by the adapter).
 package update

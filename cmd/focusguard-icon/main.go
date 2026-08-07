@@ -6,7 +6,7 @@
 //     for the daemon and the CLI, and the one the desktop shortcut references.
 //   - packaging/focusguard.png: 256px PNG used by the Linux desktop shortcut
 //     (~/.local/share/icons/hicolor/256x256/apps/focusguard.png).
-//   - internal/tray/icon_source.png: 32px PNG embedded in the tray binary
+//   - internal/system/tray/icon_source.png: 32px PNG embedded in the tray binary
 //     (Linux tray) — same artwork, so every icon stays consistent. Kept inside
 //     the package because go:embed cannot reference files outside it.
 //
@@ -33,7 +33,7 @@ func main() {
 	src := flag.String("src", "packaging/artwork/focusguard.png", "caminho do PNG de origem (artwork 1024px)")
 	icoOut := flag.String("ico", "packaging/focusguard.ico", "caminho do .ico multi-tamanho gerado")
 	pngOut := flag.String("png", "packaging/focusguard.png", "caminho do .png 256px gerado")
-	trayOut := flag.String("tray", "internal/tray/icon_source.png", "caminho do .png 32px do tray; vazio desativa")
+	trayOut := flag.String("tray", "internal/system/tray/icon_source.png", "caminho do .png 32px do tray; vazio desativa")
 	sizesFlag := flag.String("sizes", "", "tamanhos do .ico separados por vírgula (default: 16,32,48,64,128,256)")
 	flag.Parse()
 

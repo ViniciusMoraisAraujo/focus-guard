@@ -3,9 +3,9 @@
 // depends only on the minimal Provider interface (DIP); the *analytics.Recorder
 // satisfies it structurally.
 //
-// The Service intentionally does NOT import internal/ipc: ipc imports analytics
+// The Service intentionally does NOT import internal/transport/ipc: ipc imports analytics
 // for the wire types (Response embeds Stats/LabelStat/Session), so importing it
-// back would create an import cycle. The ipc adapter (internal/ipc) reads the
+// back would create an import cycle. The ipc adapter (internal/transport/ipc) reads the
 // domain results and builds the wire Response; stable error codes travel in
 // *ipcerr.Error.
 package analytics
