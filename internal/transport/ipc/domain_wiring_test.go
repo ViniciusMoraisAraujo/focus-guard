@@ -16,16 +16,20 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/domain/analytics"
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
 	"focusguard/internal/domain/goal"
 	"focusguard/internal/domain/policy"
+	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/presets"
+	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/user"
 	"focusguard/internal/domain/users"
 	"focusguard/internal/infrastructure/dns"
 	"focusguard/internal/infrastructure/dnsserver"
+	"focusguard/internal/infrastructure/update"
 	"focusguard/internal/transport/ipc"
 )
 
@@ -134,9 +138,104 @@ func (f *fakeDNSPersister) SetDNSUpstream(u string) error {
 
 func (f *fakeDNSPersister) DNSEnabled() bool { return f.enabled }
 
-// composeTestServer mounts the 19 domain handlers (como o daemon faz) sobre o
-// NewServer (que registra os 15 de nível servidor) — o conjunto completo de 34
-// ações que o ValidateRegistry exige no boot.
+// fakeSessionsProvider é um analytics.Provider de teste (uma sessão pronta
+// para as ações stats/missions/sessions).
+type fakeSessionsProvider struct{ sessions []analytics.Session }
+
+func (f *fakeSessionsProvider) Sessions() ([]analytics.Session, error) { return f.sessions, nil }
+
+// fakeScheduleStore é um schedule.RuleStore de teste (lista em memória).
+type fakeScheduleStore struct {
+	rules []schedule.Rule
+	err   error
+}
+
+func (f *fakeScheduleStore) List() []schedule.Rule { return f.rules }
+
+func (f *fakeScheduleStore) Add(r schedule.Rule) (schedule.Rule, error) {
+	if f.err != nil {
+		return schedule.Rule{}, f.err
+	}
+	f.rules = append(f.rules, r)
+	return r, nil
+}
+
+func (f *fakeScheduleStore) Remove(id string) error {
+	if f.err != nil {
+		return f.err
+	}
+	for i, r := range f.rules {
+		if r.ID == id {
+			f.rules = append(f.rules[:i], f.rules[i+1:]...)
+			return nil
+		}
+	}
+	return nil
+}
+
+func (f *fakeScheduleStore) ImportICS(_ []byte, _ string) ([]schedule.Rule, error) {
+	if f.err != nil {
+		return nil, f.err
+	}
+	return []schedule.Rule{{ID: "ics-1"}}, nil
+}
+
+// fakePomodoroRunner é um pomodoro.Runner de teste (estado fixo).
+type fakePomodoroRunner struct{ st pomodoro.State }
+
+func (f *fakePomodoroRunner) Start(_ pomodoro.Session) (pomodoro.State, error) { return f.st, nil }
+func (f *fakePomodoroRunner) Stop() (pomodoro.State, error)                    { return f.st, nil }
+
+// fakePomodoroPrefs é um pomodoro.PrefsStore de teste com defaults clássicos
+// 25/5/4.
+type fakePomodoroPrefs struct{ work, rest, cycles int }
+
+func newFakePomodoroPrefs() *fakePomodoroPrefs {
+	return &fakePomodoroPrefs{work: 25, rest: 5, cycles: 4}
+}
+
+func (f *fakePomodoroPrefs) Resolve(work, rest, cycles int) (int, int, int) {
+	if work == 0 {
+		work = f.work
+	}
+	if rest == -1 {
+		rest = f.rest
+	}
+	if cycles == 0 {
+		cycles = f.cycles
+	}
+	return work, rest, cycles
+}
+
+func (f *fakePomodoroPrefs) Remember(work, rest, cycles int) {
+	f.work, f.rest, f.cycles = work, rest, cycles
+}
+
+// fakeWireUpdateChecker é um ipc.UpdateChecker de teste (status fixo no wire).
+type fakeWireUpdateChecker struct{ st ipc.UpdateStatus }
+
+func (f *fakeWireUpdateChecker) Check(_ context.Context, _ bool, _ string) (ipc.UpdateStatus, error) {
+	return f.st, nil
+}
+
+// updateCheckerBridge — espelho do composition root (pós-reorg item 1): adapta
+// o ipc.UpdateChecker do wire ao update.Checker do domínio.
+type updateCheckerBridge struct{ c ipc.UpdateChecker }
+
+func (b updateCheckerBridge) Check(ctx context.Context, apply bool, channel string) (update.Status, error) {
+	st, err := b.c.Check(ctx, apply, channel)
+	return update.Status{
+		CurrentVersion: st.CurrentVersion,
+		NewVersion:     st.NewVersion,
+		Available:      st.Available,
+		Applied:        st.Applied,
+		PendingReboot:  st.PendingReboot,
+	}, err
+}
+
+// composeTestServer mounts todos os 31 handlers de domínio (como o daemon faz)
+// sobre o NewServer (que registra os de nível servidor) — o conjunto completo
+// que o ValidateRegistry exige no boot (34 + 12 ações do item 1).
 func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersister) {
 	t.Helper()
 	s := ipc.NewServer(nil)
@@ -359,6 +458,159 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 			return &ipc.Response{Success: true, Message: out.Message}, nil
 		},
 	}.Handler())
+	// analytics/stats via ipc.DomainAction (mesmo padrão do composition root —
+	// pós-reorg item 1).
+	sp := &fakeSessionsProvider{}
+	hStats := analytics.NewStatsHandler(sp)
+	s.Register(ipc.DomainAction[analytics.StatsInput, analytics.StatsResult]{
+		Name: hStats.Action(),
+		Decode: func(r *ipc.Request) (*analytics.StatsInput, error) {
+			return &analytics.StatsInput{Mission: r.Mission}, nil
+		},
+		Handle: hStats.Handle,
+		Encode: func(out *analytics.StatsResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Stats: out.Stats}, nil
+		},
+	}.Handler())
+	hMissions := analytics.NewMissionsHandler(sp)
+	s.Register(ipc.DomainAction[analytics.NoInput, analytics.MissionsResult]{
+		Name:   hMissions.Action(),
+		Decode: ipc.NoInputDecode[analytics.NoInput](),
+		Handle: hMissions.Handle,
+		Encode: func(out *analytics.MissionsResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, LabelStats: out.LabelStats}, nil
+		},
+	}.Handler())
+	hSessions := analytics.NewSessionsHandler(sp)
+	s.Register(ipc.DomainAction[analytics.NoInput, analytics.SessionsResult]{
+		Name:   hSessions.Action(),
+		Decode: ipc.NoInputDecode[analytics.NoInput](),
+		Handle: hSessions.Handle,
+		Encode: func(out *analytics.SessionsResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Sessions: out.Sessions}, nil
+		},
+	}.Handler())
+	// schedule via ipc.DomainAction (pós-reorg item 1). O catálogo de presets
+	// real (cat) satisfaz o PresetResolver do serviço.
+	ss := &fakeScheduleStore{}
+	hScheduleList := schedule.NewListHandler(ss, cat)
+	s.Register(ipc.DomainAction[schedule.NoInput, schedule.ListResult]{
+		Name:   hScheduleList.Action(),
+		Decode: ipc.NoInputDecode[schedule.NoInput](),
+		Handle: hScheduleList.Handle,
+		Encode: func(out *schedule.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Schedules: out.Schedules}, nil
+		},
+	}.Handler())
+	hScheduleAdd := schedule.NewAddHandler(ss, cat)
+	s.Register(ipc.DomainAction[schedule.AddInput, schedule.AddResult]{
+		Name:   hScheduleAdd.Action(),
+		Decode: func(r *ipc.Request) (*schedule.AddInput, error) { return &schedule.AddInput{Rule: r.ScheduleRule}, nil },
+		Handle: hScheduleAdd.Handle,
+		Encode: func(out *schedule.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hScheduleImport := schedule.NewImportHandler(ss, cat)
+	s.Register(ipc.DomainAction[schedule.ImportInput, schedule.ImportResult]{
+		Name: hScheduleImport.Action(),
+		Decode: func(r *ipc.Request) (*schedule.ImportInput, error) {
+			return &schedule.ImportInput{ICSContent: r.ICSContent, ICSPreset: r.ICSPreset}, nil
+		},
+		Handle: hScheduleImport.Handle,
+		Encode: func(out *schedule.ImportResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Schedules: out.Schedules, Message: out.Message}, nil
+		},
+	}.Handler())
+	hScheduleRemove := schedule.NewRemoveHandler(ss, cat)
+	s.Register(ipc.DomainAction[schedule.RemoveInput, schedule.RemoveResult]{
+		Name: hScheduleRemove.Action(),
+		Decode: func(r *ipc.Request) (*schedule.RemoveInput, error) {
+			return &schedule.RemoveInput{ScheduleID: r.ScheduleID}, nil
+		},
+		Handle: hScheduleRemove.Handle,
+		Encode: func(out *schedule.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	// pomodoro via ipc.DomainAction (pós-reorg item 1). O catálogo de presets
+	// real (cat) satisfaz o Catalog do serviço.
+	pr := &fakePomodoroRunner{}
+	pp := newFakePomodoroPrefs()
+	hPomodoro := pomodoro.NewStartHandler(pr, pp, cat)
+	s.Register(ipc.DomainAction[pomodoro.StartInput, pomodoro.StartResult]{
+		Name: hPomodoro.Action(),
+		Decode: func(r *ipc.Request) (*pomodoro.StartInput, error) {
+			return &pomodoro.StartInput{
+				Preset: r.Preset, Label: r.Label, WorkMin: r.WorkMin, RestMin: r.RestMin,
+				Cycles: r.Cycles, Strict: r.Strict, Save: r.Save,
+			}, nil
+		},
+		Handle: hPomodoro.Handle,
+		Encode: func(out *pomodoro.StartResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, Pomodoro: &out.State}, nil
+		},
+	}.Handler())
+	hPomodoroDefaults := pomodoro.NewDefaultsHandler(pp)
+	s.Register(ipc.DomainAction[pomodoro.NoInput, pomodoro.DefaultsResult]{
+		Name:   hPomodoroDefaults.Action(),
+		Decode: ipc.NoInputDecode[pomodoro.NoInput](),
+		Handle: hPomodoroDefaults.Handle,
+		Encode: func(out *pomodoro.DefaultsResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:       true,
+				PomodoroWork:  out.Work,
+				PomodoroRest:  out.Rest,
+				PomodoroCycle: out.Cycles,
+				Message:       out.Message,
+			}, nil
+		},
+	}.Handler())
+	hPomodoroStop := pomodoro.NewStopHandler(pr)
+	s.Register(ipc.DomainAction[pomodoro.NoInput, pomodoro.StopResult]{
+		Name:   hPomodoroStop.Action(),
+		Decode: ipc.NoInputDecode[pomodoro.NoInput](),
+		Handle: hPomodoroStop.Handle,
+		Encode: func(out *pomodoro.StopResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, Pomodoro: &out.State}, nil
+		},
+	}.Handler())
+	// update/update-check via ipc.DomainAction (pós-reorg item 1). O checker é
+	// lido lazy do server (SetUpdateChecker roda depois do registro), com o
+	// bridge wire→domínio — espelho exato do composition root.
+	s.SetUpdateChecker(&fakeWireUpdateChecker{st: ipc.UpdateStatus{CurrentVersion: "0.16.1"}})
+	updateBridge := func() update.Checker {
+		c := s.UpdateChecker()
+		if c == nil {
+			return nil
+		}
+		return updateCheckerBridge{c: c}
+	}
+	for _, apply := range []bool{true, false} {
+		hUpdate := update.NewUpdateHandler(updateBridge, apply)
+		s.Register(ipc.DomainAction[update.UpdateInput, update.Result]{
+			Name:   hUpdate.Action(),
+			Decode: func(r *ipc.Request) (*update.UpdateInput, error) { return &update.UpdateInput{Channel: r.Channel}, nil },
+			Handle: func(ctx context.Context, in *update.UpdateInput) (*update.Result, error) {
+				ctx, cancel := context.WithTimeout(ctx, ipc.UpdateTimeout)
+				defer cancel()
+				return hUpdate.Handle(ctx, in)
+			},
+			Encode: func(out *update.Result) (*ipc.Response, error) {
+				resp := &ipc.Response{
+					Success:         true,
+					UpdateAvailable: out.Status.Available,
+					UpdateVersion:   out.Status.NewVersion,
+					CurrentVersion:  out.Status.CurrentVersion,
+					Message:         out.Message,
+				}
+				if apply {
+					resp.UpdatePendingReboot = out.Status.PendingReboot
+				}
+				return resp, nil
+			},
+		}.Handler())
+	}
 	return s, blk, dp
 }
 
@@ -426,9 +678,15 @@ func TestDomainWiring_ComposesWithRouter(t *testing.T) {
 	if resp.Success || resp.Code != ipc.CodeUnknownAction || resp.Message != "Not suported action: nope" {
 		t.Fatalf("desconhecida: success=%v code=%q msg=%q", resp.Success, resp.Code, resp.Message)
 	}
+
+	// update-check → mensagem do serviço de domínio (checker fake sem update).
+	resp = s.Dispatch(&ipc.Request{Action: "update-check"})
+	if !resp.Success || resp.Message != "Nenhuma atualização disponível." {
+		t.Fatalf("update-check: success=%v msg=%q", resp.Success, resp.Message)
+	}
 }
 
-// TestDomainWiring_AllActionsDispatch dispara TODAS as 19 ações de domínio
+// TestDomainWiring_AllActionsDispatch dispara TODAS as 31 ações de domínio
 // contra o roteador real (handlers de produção), prendendo o shape do wire de
 // cada família — a rede de segurança contra drift entre os adapters de
 // referência (testes internos) e os handlers reais (daemon).
@@ -463,6 +721,18 @@ func TestDomainWiring_AllActionsDispatch(t *testing.T) {
 		{name: "dns-stop", req: ipc.Request{Action: "dns-stop"}, wantOK: true},
 		{name: "dns-status", req: ipc.Request{Action: "dns-status"}, wantOK: true},
 		{name: "dns-set-upstream", req: ipc.Request{Action: "dns-set-upstream", Upstream: "9.9.9.9"}, wantOK: true},
+		{name: "stats", req: ipc.Request{Action: "stats"}, wantOK: true},
+		{name: "missions", req: ipc.Request{Action: "missions"}, wantOK: true},
+		{name: "sessions", req: ipc.Request{Action: "sessions"}, wantOK: true},
+		{name: "schedule-list", req: ipc.Request{Action: "schedule-list"}, wantOK: true},
+		{name: "schedule-add", req: ipc.Request{Action: "schedule-add", ScheduleRule: schedule.Rule{Preset: "social"}}, wantOK: true},
+		{name: "schedule-import", req: ipc.Request{Action: "schedule-import", ICSContent: "BEGIN:VCALENDAR", ICSPreset: "social"}, wantOK: true},
+		{name: "schedule-remove", req: ipc.Request{Action: "schedule-remove", ScheduleID: "r1"}, wantOK: true},
+		{name: "pomodoro", req: ipc.Request{Action: "pomodoro", Preset: "social", WorkMin: 25, RestMin: 5, Cycles: 1}, wantOK: true},
+		{name: "pomodoro-defaults", req: ipc.Request{Action: "pomodoro-defaults"}, wantOK: true},
+		{name: "pomodoro-stop", req: ipc.Request{Action: "pomodoro-stop"}, wantOK: true},
+		{name: "update-check", req: ipc.Request{Action: "update-check"}, wantOK: true},
+		{name: "update", req: ipc.Request{Action: "update"}, wantOK: true},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
