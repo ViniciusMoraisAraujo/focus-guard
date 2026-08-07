@@ -60,3 +60,10 @@ func (a DomainAction[In, Out]) handler() Handler {
 func (a DomainAction[In, Out]) Handler() Handler {
 	return a.handler()
 }
+
+// NoInputDecode returns a Decode for actions without payload: it ignores the
+// wire Request and returns a zero In. Actions with fields still write their
+// own Decode.
+func NoInputDecode[In any]() func(*Request) (*In, error) {
+	return func(*Request) (*In, error) { return new(In), nil }
+}

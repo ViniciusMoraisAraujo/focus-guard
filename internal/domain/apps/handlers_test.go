@@ -3,8 +3,6 @@ package apps
 import (
 	"context"
 	"testing"
-
-	"focusguard/internal/transport/ipc"
 )
 
 type fakeStore struct {
@@ -28,18 +26,18 @@ func (f *fakeStore) Remove(name string) error {
 
 func TestAppsList_OK(t *testing.T) {
 	h := NewList(&fakeStore{list: []string{"steam"}})
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "apps-list"})
+	resp, err := h.Handle(context.Background(), &NoInput{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || len(resp.Apps) != 1 {
+	if len(resp.Apps) != 1 {
 		t.Fatalf("esperava 1 app, got %+v", resp)
 	}
 }
 
 func TestAppsList_SemStore(t *testing.T) {
 	h := NewList(nil)
-	_, err := h.Handle(context.Background(), &ipc.Request{Action: "apps-list"})
+	_, err := h.Handle(context.Background(), &NoInput{})
 	if err == nil {
 		t.Fatal("esperava erro de denylist não configurada")
 	}
@@ -48,12 +46,12 @@ func TestAppsList_SemStore(t *testing.T) {
 func TestAppsAdd_OK(t *testing.T) {
 	st := &fakeStore{}
 	h := NewAdd(st)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "apps-add", AppName: "discord.exe"})
+	resp, err := h.Handle(context.Background(), &AddInput{AppName: "discord.exe"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success {
-		t.Fatalf("esperava sucesso, got %+v", resp)
+	if resp.Message == "" {
+		t.Fatalf("esperava mensagem de sucesso, got %+v", resp)
 	}
 	if len(st.list) != 1 || st.list[0] != "discord.exe" {
 		t.Fatalf("Add não foi chamado, got %+v", st.list)
@@ -63,11 +61,11 @@ func TestAppsAdd_OK(t *testing.T) {
 func TestAppsRemove_OK(t *testing.T) {
 	st := &fakeStore{list: []string{"discord.exe"}}
 	h := NewRemove(st)
-	resp, err := h.Handle(context.Background(), &ipc.Request{Action: "apps-remove", AppName: "discord.exe"})
+	resp, err := h.Handle(context.Background(), &RemoveInput{AppName: "discord.exe"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !resp.Success || len(st.list) != 0 {
+	if resp.Message == "" || len(st.list) != 0 {
 		t.Fatalf("esperava sucesso + lista vazia, got resp=%+v list=%v", resp, st.list)
 	}
 }

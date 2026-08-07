@@ -4,7 +4,7 @@ import (
 	"context"
 	"fmt"
 
-	"focusguard/internal/transport/ipc"
+	"focusguard/internal/domain/ipcerr"
 )
 
 // Manager is the process denylist surface the apps-* actions need. The
@@ -15,6 +15,23 @@ type Manager interface {
 	Add(name string) error
 	Remove(name string) error
 }
+
+// Tipos de entrada/saída das ações — o transporte adapta via ipc.DomainAction
+// (os pacotes de domínio nunca importam ipc; DIP — pós-reorg item 2).
+
+// NoInput: ações sem payload de entrada.
+type NoInput struct{}
+
+// ListResult é a saída de apps-list.
+type ListResult struct{ Apps []string }
+
+// AddInput/AddResult são a entrada/saída de apps-add.
+type AddInput struct{ AppName string }
+type AddResult struct{ Message string }
+
+// RemoveInput/RemoveResult são a entrada/saída de apps-remove.
+type RemoveInput struct{ AppName string }
+type RemoveResult struct{ Message string }
 
 // ---------------------------------------------------------------------------
 // apps-list
@@ -31,13 +48,13 @@ func NewList(manager Manager) *ListHandler { return &ListHandler{manager: manage
 
 func (h *ListHandler) Action() string { return "apps-list" }
 
-func (h *ListHandler) Validate(*ipc.Request) error { return nil }
+func (h *ListHandler) Validate(*NoInput) error { return nil }
 
-func (h *ListHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *ListHandler) Handle(ctx context.Context, _ *NoInput) (*ListResult, error) {
 	if h.manager == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "denylist de apps não configurada")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "denylist de apps não configurada")
 	}
-	return &ipc.Response{Success: true, Apps: h.manager.List()}, nil
+	return &ListResult{Apps: h.manager.List()}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -54,16 +71,16 @@ func NewAdd(manager Manager) *AddHandler { return &AddHandler{manager: manager} 
 
 func (h *AddHandler) Action() string { return "apps-add" }
 
-func (h *AddHandler) Validate(*ipc.Request) error { return nil }
+func (h *AddHandler) Validate(*AddInput) error { return nil }
 
-func (h *AddHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *AddHandler) Handle(ctx context.Context, req *AddInput) (*AddResult, error) {
 	if h.manager == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "denylist de apps não configurada")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "denylist de apps não configurada")
 	}
 	if err := h.manager.Add(req.AppName); err != nil {
 		return nil, err
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Processo %s adicionado à denylist", req.AppName)}, nil
+	return &AddResult{Message: fmt.Sprintf("Processo %s adicionado à denylist", req.AppName)}, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -80,14 +97,14 @@ func NewRemove(manager Manager) *RemoveHandler { return &RemoveHandler{manager: 
 
 func (h *RemoveHandler) Action() string { return "apps-remove" }
 
-func (h *RemoveHandler) Validate(*ipc.Request) error { return nil }
+func (h *RemoveHandler) Validate(*RemoveInput) error { return nil }
 
-func (h *RemoveHandler) Handle(ctx context.Context, req *ipc.Request) (*ipc.Response, error) {
+func (h *RemoveHandler) Handle(ctx context.Context, req *RemoveInput) (*RemoveResult, error) {
 	if h.manager == nil {
-		return nil, ipc.Err(ipc.CodeNotConfigured, "denylist de apps não configurada")
+		return nil, ipcerr.New(ipcerr.CodeNotConfigured, "denylist de apps não configurada")
 	}
 	if err := h.manager.Remove(req.AppName); err != nil {
 		return nil, err
 	}
-	return &ipc.Response{Success: true, Message: fmt.Sprintf("Processo %s removido da denylist", req.AppName)}, nil
+	return &RemoveResult{Message: fmt.Sprintf("Processo %s removido da denylist", req.AppName)}, nil
 }

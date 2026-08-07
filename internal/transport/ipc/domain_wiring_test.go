@@ -152,9 +152,35 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 	s.Register(users.NewAdd(userStore))
 	s.Register(users.NewRemove(userStore))
 	s.Register(users.NewSetPassword(userStore))
-	s.Register(apps.NewList(appsStore))
-	s.Register(apps.NewAdd(appsStore))
-	s.Register(apps.NewRemove(appsStore))
+	// apps via ipc.DomainAction (mesmo padrão do composition root — pós-reorg
+	// item 2: handlers de domínio com tipos próprios, adaptados ao wire).
+	hAppsList := apps.NewList(appsStore)
+	s.Register(ipc.DomainAction[apps.NoInput, apps.ListResult]{
+		Name:   hAppsList.Action(),
+		Decode: ipc.NoInputDecode[apps.NoInput](),
+		Handle: hAppsList.Handle,
+		Encode: func(out *apps.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Apps: out.Apps}, nil
+		},
+	}.Handler())
+	hAppsAdd := apps.NewAdd(appsStore)
+	s.Register(ipc.DomainAction[apps.AddInput, apps.AddResult]{
+		Name:   hAppsAdd.Action(),
+		Decode: func(r *ipc.Request) (*apps.AddInput, error) { return &apps.AddInput{AppName: r.AppName}, nil },
+		Handle: hAppsAdd.Handle,
+		Encode: func(out *apps.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hAppsRemove := apps.NewRemove(appsStore)
+	s.Register(ipc.DomainAction[apps.RemoveInput, apps.RemoveResult]{
+		Name:   hAppsRemove.Action(),
+		Decode: func(r *ipc.Request) (*apps.RemoveInput, error) { return &apps.RemoveInput{AppName: r.AppName}, nil },
+		Handle: hAppsRemove.Handle,
+		Encode: func(out *apps.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
 	return s, blk, dp
 }
 

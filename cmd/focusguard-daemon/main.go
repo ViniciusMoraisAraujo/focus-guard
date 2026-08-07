@@ -794,10 +794,36 @@ func runDaemon() bool {
 	// guard não sobe — ex.: testes que o stubam): o refreshGuard do guardApps
 	// já é no-op com guard nil, e o ValidateRegistry abaixo exige handler para
 	// todos os specs (apps-list/add/remove) — sem eles o boot falharia.
+	// Handlers de domínio com tipos próprios (DIP), adaptados ao wire via
+	// ipc.DomainAction (pós-reorg item 2).
 	ga := &guardApps{store: appsStore, guard: pg}
-	server.Register(apps.NewList(ga))
-	server.Register(apps.NewAdd(ga))
-	server.Register(apps.NewRemove(ga))
+	hAppsList := apps.NewList(ga)
+	server.Register(ipc.DomainAction[apps.NoInput, apps.ListResult]{
+		Name:   hAppsList.Action(),
+		Decode: ipc.NoInputDecode[apps.NoInput](),
+		Handle: hAppsList.Handle,
+		Encode: func(out *apps.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Apps: out.Apps}, nil
+		},
+	}.Handler())
+	hAppsAdd := apps.NewAdd(ga)
+	server.Register(ipc.DomainAction[apps.AddInput, apps.AddResult]{
+		Name:   hAppsAdd.Action(),
+		Decode: func(r *ipc.Request) (*apps.AddInput, error) { return &apps.AddInput{AppName: r.AppName}, nil },
+		Handle: hAppsAdd.Handle,
+		Encode: func(out *apps.AddResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hAppsRemove := apps.NewRemove(ga)
+	server.Register(ipc.DomainAction[apps.RemoveInput, apps.RemoveResult]{
+		Name:   hAppsRemove.Action(),
+		Decode: func(r *ipc.Request) (*apps.RemoveInput, error) { return &apps.RemoveInput{AppName: r.AppName}, nil },
+		Handle: hAppsRemove.Handle,
+		Encode: func(out *apps.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
 
 	// Fechamento specs↔registry no boot (Fase 4): todo handler registrado tem
 	// ActionSpec (user-verify isento — web-only) e todo spec tem handler.
