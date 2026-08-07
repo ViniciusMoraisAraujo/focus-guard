@@ -8,19 +8,20 @@ import (
 	"focusguard/internal/infrastructure/dnsserver"
 )
 
-// fakeDNSController is a scriptable stand-in for *dnsserver.Controller.
+// fakeDNSController is a scriptable stand-in for the DNS controller (o ipc usa
+// o tipo próprio DNSStatus — pós-reorg item 1).
 type fakeDNSController struct {
 	startErr    error
 	stopErr     error
 	setErr      error
 	started     bool
 	setUpstream string
-	st          dnsserver.Status
+	st          DNSStatus
 }
 
 func newFakeDNS() *fakeDNSController {
 	return &fakeDNSController{
-		st: dnsserver.Status{Upstream: dnsserver.DefaultUpstream},
+		st: DNSStatus{Upstream: dnsserver.DefaultUpstream},
 	}
 }
 
@@ -44,7 +45,7 @@ func (f *fakeDNSController) Stop() error {
 	return nil
 }
 
-func (f *fakeDNSController) Status() dnsserver.Status { return f.st }
+func (f *fakeDNSController) Status() DNSStatus { return f.st }
 
 func (f *fakeDNSController) SetUpstream(upstream string) error {
 	f.setUpstream = upstream

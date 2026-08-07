@@ -16,7 +16,6 @@ import (
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/scheduler"
 	"focusguard/internal/domain/user"
-	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/infrastructure/tamper"
 	"focusguard/internal/transport/eventhub"
 	"focusguard/internal/transport/metrics"
@@ -181,16 +180,29 @@ type UserManager interface {
 	SetPassword(username, password string) error
 }
 
+// DNSStatus é o snapshot do controller DNS no wire do ipc — tipo próprio do
+// transporte (o ipc não importa dnsserver; o composition root projeta o
+// dnsserver.Status do controller real para cá — pós-reorg item 1).
+type DNSStatus struct {
+	Listening bool
+	Addr      string
+	Upstream  string
+	Queries   uint64
+	Blocked   uint64
+	BindError string
+}
+
 // DNSController drives the DNS sinkhole server lifecycle used by the
 // dns-start/dns-stop/dns-status/dns-set-upstream actions. The daemon wires a
-// *dnsserver.Controller (bound to the scheduler as the policy checker); tests
-// stub it. The persisted enabled flag and upstream live in the scheduler, not
-// the controller — the actions combine both for status.
+// controller satisfeito pelo *dnsserver.Controller via adapter no composition
+// root (que projeta dnsserver.Status → ipc.DNSStatus); tests stub it. The
+// persisted enabled flag and upstream live in the scheduler, not the
+// controller — the actions combine both for status.
 type DNSController interface {
 	Start() error
 	Stop() error
 	SetUpstream(upstream string) error
-	Status() dnsserver.Status
+	Status() DNSStatus
 }
 
 // SetDNS wires the DNS sinkhole controller into the server. Nil makes the
@@ -203,7 +215,7 @@ func (s *Server) SetDNS(c DNSController) {
 
 // mergeDNS copies the live DNS controller state into an IPC response together
 // with the persisted enabled flag (which lives in the scheduler).
-func mergeDNS(resp *Response, st dnsserver.Status, enabled bool) {
+func mergeDNS(resp *Response, st DNSStatus, enabled bool) {
 	resp.DNSEnabled = enabled
 	resp.DNSListening = st.Listening
 	resp.DNSAddr = st.Addr

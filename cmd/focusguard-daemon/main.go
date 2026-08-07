@@ -202,6 +202,27 @@ func mergeDNSWire(resp *ipc.Response, st dns.Status) {
 	resp.DNSBindError = st.BindError
 }
 
+// dnsCtrlAdapter projeta o *dnsserver.Controller real no ipc.DNSController: o
+// ipc usa tipo próprio de status (DNSStatus — pós-reorg item 1) e o pacote
+// dns (domínio) usa dnsserver.Status; este adapter fica no composition root
+// porque conhece os dois lados.
+type dnsCtrlAdapter struct{ c *dnsserver.Controller }
+
+func (a dnsCtrlAdapter) Start() error                      { return a.c.Start() }
+func (a dnsCtrlAdapter) Stop() error                       { return a.c.Stop() }
+func (a dnsCtrlAdapter) SetUpstream(upstream string) error { return a.c.SetUpstream(upstream) }
+func (a dnsCtrlAdapter) Status() ipc.DNSStatus {
+	st := a.c.Status()
+	return ipc.DNSStatus{
+		Listening: st.Listening,
+		Addr:      st.Addr,
+		Upstream:  st.Upstream,
+		Queries:   st.Queries,
+		Blocked:   st.Blocked,
+		BindError: st.BindError,
+	}
+}
+
 // guardApps wires the persisted apps store to the live process guard: every
 // apps-add/apps-remove refreshes the guard's denylist so the change takes
 // effect on the next scan. Satisfies the interface of the apps domain handlers
@@ -704,7 +725,7 @@ func runDaemon() bool {
 		dnsUpstream = dnsserver.DefaultUpstream
 	}
 	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsUpstream)
-	server.SetDNS(dnsSrv)
+	server.SetDNS(dnsCtrlAdapter{c: dnsSrv})
 	// Hook DoH do dns-start: fechado pela porta 853 (browsers com DoH embutido
 	// ignorariam o sinkhole). Idempotente — o scheduler também o aplica
 	// enquanto houver blocos ativos. Passado ao handler de domínio (dns.Start)
