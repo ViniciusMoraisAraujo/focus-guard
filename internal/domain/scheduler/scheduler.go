@@ -1093,8 +1093,12 @@ func (s *Scheduler) SetDNSEnabled(enabled bool) error {
 		s.mu.Unlock()
 		return nil
 	}
+	original := s.dnsEnabled
 	s.dnsEnabled = enabled
 	if err := s.store.Save(s.ramState()); err != nil {
+		// Reverte a RAM: sem o disco persistido, o setting não pode ficar
+		// divergente até o próximo boot (mesmo padrão de Block/ExtendBlock).
+		s.dnsEnabled = original
 		s.mu.Unlock()
 		return err
 	}
@@ -1123,8 +1127,12 @@ func (s *Scheduler) SetDNSUpstream(upstream string) error {
 		s.mu.Unlock()
 		return nil
 	}
+	original := s.dnsUpstream
 	s.dnsUpstream = upstream
 	if err := s.store.Save(s.ramState()); err != nil {
+		// Reverte a RAM: sem o disco persistido, o setting não pode ficar
+		// divergente até o próximo boot (mesmo padrão de Block/ExtendBlock).
+		s.dnsUpstream = original
 		s.mu.Unlock()
 		return err
 	}

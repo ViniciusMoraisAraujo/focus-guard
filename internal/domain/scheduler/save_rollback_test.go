@@ -154,3 +154,75 @@ func TestScheduler_ExtendBlock_SaveErrorKeepsOriginalExpiry(t *testing.T) {
 		t.Errorf("extended expiry = %v, want %v", ext.ExpiresAt, originalExpiry.Add(30*time.Minute))
 	}
 }
+
+// TestScheduler_SetDNSEnabled_SaveErrorRevertsRAM covers the same rollback
+// family for the DNS sinkhole setting: when store.Save fails, the RAM value
+// must revert to the persisted one instead of diverging from the disk until
+// the next boot (the daemon reads DNSEnabled() after boot).
+func TestScheduler_SetDNSEnabled_SaveErrorRevertsRAM(t *testing.T) {
+	st, err := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	failing := &saveFailingStore{Store: st}
+	sched := NewScheduler(failing, newMockEnforcer())
+
+	// Estado persistido com sucesso: DNS ligado.
+	if err := sched.SetDNSEnabled(true); err != nil {
+		t.Fatalf("SetDNSEnabled(true): %v", err)
+	}
+	if !sched.DNSEnabled() {
+		t.Fatal("DNSEnabled should be true after successful set")
+	}
+
+	// Desligar falha no Save: a RAM deve reverter para true (valor persistido).
+	failing.fail.Store(true)
+	if err := sched.SetDNSEnabled(false); err == nil {
+		t.Fatal("expected SetDNSEnabled to fail when store.Save fails")
+	}
+	if !sched.DNSEnabled() {
+		t.Error("DNSEnabled should revert to the persisted value (true) after failed Save")
+	}
+
+	// Recuperação: com o disco de volta, a mudança funciona.
+	failing.fail.Store(false)
+	if err := sched.SetDNSEnabled(false); err != nil {
+		t.Fatalf("SetDNSEnabled after recovery: %v", err)
+	}
+	if sched.DNSEnabled() {
+		t.Error("DNSEnabled should be false after successful recovery set")
+	}
+}
+
+// TestScheduler_SetDNSUpstream_SaveErrorRevertsRAM is the same guarantee for
+// the upstream resolver setting.
+func TestScheduler_SetDNSUpstream_SaveErrorRevertsRAM(t *testing.T) {
+	st, err := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("store: %v", err)
+	}
+	failing := &saveFailingStore{Store: st}
+	sched := NewScheduler(failing, newMockEnforcer())
+
+	if err := sched.SetDNSUpstream("1.1.1.2:53"); err != nil {
+		t.Fatalf("SetDNSUpstream: %v", err)
+	}
+
+	// Troca falha no Save: a RAM deve reverter para o upstream persistido.
+	failing.fail.Store(true)
+	if err := sched.SetDNSUpstream("8.8.8.8:53"); err == nil {
+		t.Fatal("expected SetDNSUpstream to fail when store.Save fails")
+	}
+	if got := sched.DNSUpstream(); got != "1.1.1.2:53" {
+		t.Errorf("DNSUpstream should revert to the persisted value after failed Save, got %q", got)
+	}
+
+	// Recuperação: com o disco de volta, a troca funciona.
+	failing.fail.Store(false)
+	if err := sched.SetDNSUpstream("8.8.8.8:53"); err != nil {
+		t.Fatalf("SetDNSUpstream after recovery: %v", err)
+	}
+	if got := sched.DNSUpstream(); got != "8.8.8.8:53" {
+		t.Errorf("DNSUpstream should be updated after successful recovery, got %q", got)
+	}
+}

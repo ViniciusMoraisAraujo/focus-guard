@@ -104,6 +104,11 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   `ExtendBlock` restaura o bloco original no erro do Save, como
   `BlockDomains`/`BlockAllInternet` já faziam — testes TDD
   (`save_rollback_test.go`).
+- **`scheduler/scheduler.go` (`SetDNSEnabled`/`SetDNSUpstream`)** — na falha
+  do `Save`, a RAM mantinha o setting divergente do disco até o próximo boot
+  (o daemon lê `DNSEnabled()`/`DNSUpstream()` após o boot). Corrigido: ambos
+  revertem ao valor persistido no erro do Save — testes TDD
+  (`save_rollback_test.go`).
 
 ### Abertos (candidatos a hardening)
 
@@ -135,11 +140,6 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   criam `time.NewTicker` sem `Stop` (goroutines vivas para sempre). Aceitável
   para o processo do tray, mas documentar; se um dia o controller ganhar
   teardown, parar os tickers.
-
-- **`scheduler/scheduler.go` (`SetDNSEnabled`/`SetDNSUpstream`)** — mutam a
-  RAM e, no erro do `Save`, retornam com a configuração divergente do disco
-  até o próximo boot (menor: é setting, não bloqueio). Se um dia quiser
-  atomicidade total, reverter a RAM no erro do Save como os demais caminhos.
 
 ## Testes
 
