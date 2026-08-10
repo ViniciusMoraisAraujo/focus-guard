@@ -127,4 +127,7 @@ cmd/focusguard-web/assets/*
 # Logs em runtime: cada binário grava <nome>.log na pasta do executável (e os
 # testes podem criá-los no diretório do package) — nunca versionar.
 *.log
+# Pastas de exportação de logs do CI (GitHub Actions "Download log") —
+# artefatos locais de depuração (ex.: logs_<jobid>/), nunca versionar.
+logs_*/
 
