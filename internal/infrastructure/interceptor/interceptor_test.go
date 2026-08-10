@@ -1,6 +1,8 @@
 package interceptor
 
 import (
+	"crypto/tls"
+	"crypto/x509"
 	"io"
 	"net"
 	"net/http"
@@ -127,6 +129,92 @@ func TestIPv6LoopbackServesPage(t *testing.T) {
 	}
 }
 
+// startTLSSUT binds an ephemeral TLS port and returns a client that trusts
+// the self-signed certificate (the browser warns but lets the user continue —
+// this test does the "continue" part) plus the https base URL.
+func startTLSSUT(t *testing.T, c Checker) (string, *http.Client) {
+	t.Helper()
+	s := New(c)
+	if err := s.StartTLS("127.0.0.1:0"); err != nil {
+		t.Fatalf("StartTLS: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	// Cliente que confia no cert auto-assinado do servidor (equivalente ao
+	// usuário clicando "Avançado → Continuar" no Firefox). O dial de extração
+	// usa o MESMO ServerName do request (o cert é gerado por SNI).
+	pool := x509.NewCertPool()
+	conn, err := tls.Dial("tcp", s.Addr(), &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "youtube.com",
+	})
+	if err != nil {
+		t.Fatalf("tls.Dial: %v", err)
+	}
+	pool.AddCert(conn.ConnectionState().PeerCertificates[0])
+	_ = conn.Close()
+
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "youtube.com"},
+	}}
+	return "https://" + s.Addr(), client
+}
+
+// TestBlockedDomainGetsPageOverHTTPS: sites HTTPS-only (YouTube/Instagram —
+// HSTS força TLS) conectam na porta 443 do interceptor. O cert auto-assinado
+// por SNI permite continuar pelo aviso e a página de bloqueio é servida — o
+// fluxo que o usuário final vê.
+func TestBlockedDomainGetsPageOverHTTPS(t *testing.T) {
+	base, client := startTLSSUT(t, &fakeChecker{blocked: map[string]bool{"youtube.com": true}, remain: 2 * time.Hour})
+
+	req, _ := http.NewRequest("GET", base+"/", nil)
+	req.Host = "youtube.com"
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	text := string(body)
+	if !strings.Contains(text, "youtube.com") || !strings.Contains(text, quoteFor("youtube.com")) {
+		t.Errorf("página HTTPS sem domínio/frase: %s", text)
+	}
+}
+
+// TestSelfSignedCertScopedToSNI: o certificado gerado sob demanda carrega a
+// SAN exata do hostname do SNI — sem hostname-mismatch ao continuar pelo
+// aviso de certificado.
+func TestSelfSignedCertScopedToSNI(t *testing.T) {
+	s := New(&fakeChecker{})
+	if err := s.StartTLS("127.0.0.1:0"); err != nil {
+		t.Fatalf("StartTLS: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	conn, err := tls.Dial("tcp", s.Addr(), &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         "instagram.com",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer conn.Close()
+
+	certs := conn.ConnectionState().PeerCertificates
+	if len(certs) == 0 {
+		t.Fatal("sem certificado no handshake")
+	}
+	if len(certs[0].DNSNames) != 1 || certs[0].DNSNames[0] != "instagram.com" {
+		t.Errorf("SAN do cert = %v, want [instagram.com]", certs[0].DNSNames)
+	}
+}
+
+// TestBusyPortFailsStartWithoutPanic: HTTP e TLS compartilham o mesmo
+// best-effort — uma porta ocupada falha o Start sem derrubar nada.
 func TestBusyPortFailsStartWithoutPanic(t *testing.T) {
 	// Ocupa uma porta e tenta bindar o interceptor nela — deve falhar com
 	// erro (best-effort do daemon), nunca derrubar nada.
@@ -141,6 +229,19 @@ func TestBusyPortFailsStartWithoutPanic(t *testing.T) {
 		t.Fatal("Start numa porta ocupada deveria falhar")
 	}
 	_ = s.Stop() // idempotente
+
+	// Mesmo contrato para o listener TLS.
+	ln2, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln2.Close()
+
+	s2 := New(&fakeChecker{})
+	if err := s2.StartTLS(ln2.Addr().String()); err == nil {
+		t.Fatal("StartTLS numa porta ocupada deveria falhar")
+	}
+	_ = s2.Stop() // idempotente
 }
 
 func TestQuoteForIsDeterministic(t *testing.T) {

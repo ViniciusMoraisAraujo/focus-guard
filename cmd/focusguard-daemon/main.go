@@ -458,21 +458,29 @@ func localIP4() string {
 	return strings.Split(conn.LocalAddr().String(), ":")[0]
 }
 
-// interceptorLifecycle é o estado do listener HTTP da Interceptor Page (Fase
-// 3): os servers (best-effort, porta 80 ocupada não derruba o daemon) e o IP
-// respondido pelo DNS quando ativo. O daemon os sobe no boot quando o flag
-// persistido está ligado e os troca quando interceptor-set muda o flag.
+// interceptorLifecycle é o estado do listener HTTP(S) da Interceptor Page
+// (Fase 3): os servers (best-effort — porta 80/443 ocupada não derruba o
+// daemon) e o IP respondido pelo DNS quando ativo. O daemon os sobe no boot
+// quando o flag persistido está ligado e os troca quando interceptor-set muda
+// o flag.
 //
-// No Desktop o listener é DUAL-STACK loopback (127.0.0.1:80 + [::1]:80): o
+// No Desktop os listeners são DUAL-STACK loopback (127.0.0.1 + [::1]): o
 // hosts do enforcer escreve as duas entradas (IPv4 e IPv6) e navegadores
 // modernos tentam IPv6 primeiro — sem o ::1, a conexão seria recusada no
 // stack IPv6 antes do fallback para o IPv4, e a página não apareceria.
+//
+// O listener TLS (:443) cobre sites HTTPS-only (YouTube, Instagram...): o
+// HSTS força TLS e o navegador nunca cai no HTTP. Ele responde com
+// certificado auto-assinado por SNI — o usuário continua pelo aviso do
+// navegador e vê a página. Best-effort como o HTTP: 443 ocupada degrada só a
+// página dos sites HTTPS.
 type interceptorLifecycle struct {
 	mu        sync.Mutex
 	checker   *scheduler.Scheduler
 	servers   []*interceptor.Server
 	dns       *dnsserver.Controller
-	bindAddrs []string
+	bindAddrs []string // HTTP (:80)
+	tlsAddrs  []string // HTTPS (:443)
 	dnsAnswer string
 }
 
@@ -487,11 +495,20 @@ func (il *interceptorLifecycle) set(enabled bool) {
 			for _, addr := range il.bindAddrs {
 				srv := interceptor.New(il.checker)
 				if err := srv.Start(addr); err != nil {
-					log.Printf("[FocusGuard Interceptor] página de bloqueio indisponível em %s (porta 80 ocupada?): %v — o bloqueio continua valendo", addr, err)
+					log.Printf("[FocusGuard Interceptor] página de bloqueio indisponível em %s (porta ocupada?): %v — o bloqueio continua valendo", addr, err)
 					continue
 				}
 				il.servers = append(il.servers, srv)
-				log.Printf("[FocusGuard Interceptor] página de bloqueio ativa em %s", srv.Addr())
+				log.Printf("[FocusGuard Interceptor] página de bloqueio ativa em %s (HTTP)", srv.Addr())
+			}
+			for _, addr := range il.tlsAddrs {
+				srv := interceptor.New(il.checker)
+				if err := srv.StartTLS(addr); err != nil {
+					log.Printf("[FocusGuard Interceptor] página HTTPS indisponível em %s (porta 443 ocupada?): %v — sites HTTPS ficam sem a página, o bloqueio segue valendo", addr, err)
+					continue
+				}
+				il.servers = append(il.servers, srv)
+				log.Printf("[FocusGuard Interceptor] página de bloqueio ativa em %s (HTTPS)", srv.Addr())
 			}
 		}
 		if il.dns != nil {
@@ -994,24 +1011,28 @@ func runDaemon() bool {
 	}
 	components = append(components, daemon.StopOnly(func() { _ = dnsSrv.Stop() }))
 
-	// Focus Interceptor Page (Fase 3): listener HTTP :80 best-effort que
-	// serve a página de bloqueio (com frase motivacional) quando o flag
-	// persistido está ativo. Desktop: loopback dual-stack (127.0.0.1 + ::1,
-	// casando com as duas entradas que o enforcer escreve no hosts) — a
-	// página funciona na edição padrão. Server: todas as interfaces, e o DNS
-	// responde os bloqueados com o IP local (em vez de 0.0.0.0) para a rede
-	// conectar no listener. Porta 80 ocupada nunca derruba o daemon — o
-	// bloqueio continua valendo sem a página.
+	// Focus Interceptor Page (Fase 3): listener HTTP :80 + HTTPS :443
+	// best-effort que serve a página de bloqueio (com frase motivacional)
+	// quando o flag persistido está ativo. Desktop: loopback dual-stack
+	// (127.0.0.1 + ::1, casando com as duas entradas que o enforcer escreve
+	// no hosts) — a página funciona na edição padrão. Server: todas as
+	// interfaces, e o DNS responde os bloqueados com o IP local (em vez de
+	// 0.0.0.0) para a rede conectar no listener. O :443 cobre sites
+	// HTTPS-only (HSTS) com cert auto-assinado por SNI. Portas ocupadas nunca
+	// derrubam o daemon — o bloqueio continua valendo sem a página.
 	interceptorBinds := []string{"127.0.0.1:80", "[::1]:80"}
+	interceptorTLS := []string{"127.0.0.1:443", "[::1]:443"}
 	interceptorAnswer := ""
 	if isServerEdition() {
 		interceptorBinds = []string{interceptor.DefaultBindAddr}
+		interceptorTLS = []string{interceptor.DefaultTLSBindAddr}
 		interceptorAnswer = localIP4()
 	}
 	il := &interceptorLifecycle{
 		checker:   sched,
 		dns:       dnsSrv,
 		bindAddrs: interceptorBinds,
+		tlsAddrs:  interceptorTLS,
 		dnsAnswer: interceptorAnswer,
 	}
 	if sched.InterceptorEnabled() {

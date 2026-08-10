@@ -7,15 +7,30 @@
 // How it works: with the feature enabled, the hosts file points blocked
 // domains at 127.0.0.1 (desktop) and/or the DNS sinkhole answers with the
 // server's local IP (server edition). Either way, the browser connects to
-// port 80 on this machine, where this listener answers. The listener is
-// best-effort: a busy port 80 (Apache/IIS/nginx) must never take down the
-// daemon — the block keeps working, only the page is missing.
+// this machine, where the listener answers on BOTH ports:
+//
+//   - :80 (HTTP) — classic flow, works for plain-HTTP sites.
+//   - :443 (HTTPS) — HTTPS-only sites (YouTube, Instagram, ...) force TLS via
+//     HSTS and never fall back to HTTP; without :443 the browser shows
+//     "connection refused". The TLS listener answers with a self-signed
+//     certificate generated on demand for the SNI hostname, so the browser
+//     shows the usual "certificate not trusted" warning and lets the user
+//     continue to the page (Firefox: Avançado → Continuar; the block itself
+//     never depends on this listener — it is best-effort, like the HTTP one).
 package interceptor
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
 	"fmt"
 	"html/template"
 	"log"
+	"math/big"
 	"net"
 	"net/http"
 	"strings"
@@ -23,9 +38,14 @@ import (
 	"time"
 )
 
-// DefaultBindAddr is where the daemon binds the listener: loopback in desktop
-// mode, 0.0.0.0 in server edition (the daemon chooses and passes it).
+// DefaultBindAddr is where the daemon binds the HTTP listener: loopback in
+// desktop mode, 0.0.0.0 in server edition (the daemon chooses and passes it).
 const DefaultBindAddr = "0.0.0.0:80"
+
+// DefaultTLSBindAddr is the HTTPS listener that covers HSTS-only sites
+// (port 443). Best-effort like the HTTP one — a busy 443 degrades only the
+// page for HTTPS sites, never the block.
+const DefaultTLSBindAddr = "0.0.0.0:443"
 
 // Checker decides whether a requested host is blocked (satisfied by
 // *scheduler.Scheduler.IsBlocked). The page is served only for blocked hosts.
@@ -70,7 +90,7 @@ var motivationalQuotes = []string{
 	"O agora é onde o futuro é construído.",
 }
 
-// Server is the HTTP listener for the interceptor page. Zero-value is not
+// Server is the HTTP(S) listener for the interceptor page. Zero-value is not
 // usable; construct with New.
 type Server struct {
 	checker Checker
@@ -79,18 +99,25 @@ type Server struct {
 	ln   net.Listener
 	srv  *http.Server
 	addr string
+
+	// certCache is the SNI → self-signed certificate map for the TLS
+	// listener (guarded by mu). Regenerated on demand — a certificate always
+	// carries the SAN of the exact hostname the browser is connecting to, so
+	// the warning page can be continued without hostname-mismatch errors.
+	certCache map[string]*tls.Certificate
 }
 
 // New builds an interceptor server consulting checker (nil checker = page
 // never matches, the listener still answers 404).
 func New(checker Checker) *Server {
-	return &Server{checker: checker}
+	return &Server{checker: checker, certCache: make(map[string]*tls.Certificate)}
 }
 
-// Start binds addr (default DefaultBindAddr) and begins serving. It is
-// synchronous: it returns as soon as the listener is bound, so a bind error
-// (port 80 occupied) surfaces immediately for the daemon to log and continue
-// (best-effort — the block never depends on this listener). Not idempotent.
+// Start binds addr (default DefaultBindAddr) and begins serving plain HTTP.
+// It is synchronous: it returns as soon as the listener is bound, so a bind
+// error (port 80 occupied) surfaces immediately for the daemon to log and
+// continue (best-effort — the block never depends on this listener). Not
+// idempotent.
 func (s *Server) Start(addr string) error {
 	if addr == "" {
 		addr = DefaultBindAddr
@@ -99,11 +126,37 @@ func (s *Server) Start(addr string) error {
 	if err != nil {
 		return fmt.Errorf("interceptor: bind %s: %w", addr, err)
 	}
+	return s.start(ln, nil)
+}
 
+// StartTLS binds addr (default DefaultTLSBindAddr) and serves HTTPS with a
+// self-signed certificate generated on demand for the SNI hostname. Same
+// best-effort contract as Start: a bind error (port 443 occupied) surfaces
+// immediately and never takes down the daemon. Not idempotent.
+func (s *Server) StartTLS(addr string) error {
+	if addr == "" {
+		addr = DefaultTLSBindAddr
+	}
+	ln, err := net.Listen("tcp", addr)
+	if err != nil {
+		return fmt.Errorf("interceptor: bind %s: %w", addr, err)
+	}
+	tlsCfg := &tls.Config{
+		MinVersion:     tls.VersionTLS12,
+		GetCertificate: s.certificateFor,
+	}
+	return s.start(ln, tlsCfg)
+}
+
+// start wires the shared HTTP handler into a plain or TLS listener.
+func (s *Server) start(ln net.Listener, tlsCfg *tls.Config) error {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", s.handleRequest)
 
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 5 * time.Second}
+	if tlsCfg != nil {
+		srv.TLSConfig = tlsCfg
+	}
 
 	s.mu.Lock()
 	if s.ln != nil {
@@ -117,11 +170,89 @@ func (s *Server) Start(addr string) error {
 	s.mu.Unlock()
 
 	go func() {
-		if err := srv.Serve(ln); err != nil && err != http.ErrServerClosed && s.isRunning() {
+		var err error
+		if tlsCfg != nil {
+			err = srv.ServeTLS(ln, "", "")
+		} else {
+			err = srv.Serve(ln)
+		}
+		if err != nil && err != http.ErrServerClosed && s.isRunning() {
 			log.Printf("[FocusGuard Interceptor] erro no listener: %v", err)
 		}
 	}()
 	return nil
+}
+
+// certificateFor returns a self-signed certificate for the SNI hostname,
+// generating it on first use and caching it. A certificate is scoped to the
+// exact host (SAN DNS + IP when the SNI is an IP), so after clicking through
+// the browser warning the page loads without a hostname-mismatch error.
+func (s *Server) certificateFor(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hello.ServerName)), ".")
+	if host == "" {
+		host = "localhost"
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if cert, ok := s.certCache[host]; ok {
+		return cert, nil
+	}
+
+	cert, err := selfSigned(host, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	s.certCache[host] = cert
+	return cert, nil
+}
+
+// selfSigned builds a self-signed ECDSA (P-256) certificate whose SAN covers
+// host (DNS name or IP address). now is injectable for tests. The validity is
+// deliberately long (10 years): the certificate is ephemeral and scoped to
+// the blocked-domain warning flow — the user must click through the browser
+// warning anyway.
+func selfSigned(host string, now time.Time) (*tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
+	if err != nil {
+		return nil, err
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host, Organization: []string{"FocusGuard"}},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.AddDate(10, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		tmpl.IPAddresses = []net.IP{ip}
+	} else {
+		tmpl.DNSNames = []string{host}
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, err
+	}
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, err
+	}
+	return &pair, nil
 }
 
 // isRunning reports whether srv is still the active server (false once Stop
