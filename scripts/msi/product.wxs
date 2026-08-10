@@ -157,10 +157,23 @@
       <InstallExecuteSequence>
          {{range $i, $h := .Hooks}}
          <!-- Hooks de install rodam DEPOIS de InstallServices (que registra o
-              serviço no SCM) para que `sc failure` encontre o serviço. -->
+              serviço no SCM) para que `sc failure` encontre o serviço. A
+              condição padrão é NOT Installed AND NOT REMOVE (instalação
+              limpa); um hook pode sobrescrevê-la com `condition` — ex.: o
+              start do tray usa NOT REMOVE para rodar TAMBÉM no upgrade (o
+              tray não é serviço: quem o traz de volta após atualizar é este
+              hook, e ele precisa existir antes — o taskkill do tray com
+              when="" roda Before=InstallValidate, ANTES do
+              RemoveExistingProducts, para liberar o .exe travado na troca de
+              binários; sem isso o upgrade agendava a remoção para reboot e
+              o Windows mostrava "não pode encontrar focusguard-tray.exe"). -->
          <Custom Action="CustomExec{{$i}}" {{if eq $h.When "install"}} After="InstallServices" {{else if eq $h.Execute "immediate"}} Before="InstallValidate" {{else}} After="InstallInitialize" {{end}}>
             {{if eq $h.When "install"}}
-            <![CDATA[NOT Installed AND NOT REMOVE{{if gt ($h.Condition | len) 0}} AND ({{$h.Condition}}){{end}}]]>
+            {{if gt ($h.Condition | len) 0}}
+            <![CDATA[{{$h.Condition}}]]>
+            {{else}}
+            <![CDATA[NOT Installed AND NOT REMOVE]]>
+            {{end}}
             {{else if eq $h.When "uninstall"}}
             <![CDATA[REMOVE{{if gt ($h.Condition | len) 0}} AND ({{$h.Condition}}){{end}}]]>
             {{else if gt ($h.Condition | len) 0 }}

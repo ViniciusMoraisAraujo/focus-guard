@@ -64,6 +64,18 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
   TUI** — a TUI foi removida e a CLI sem argumentos abre a interface web no
   navegador. **Fix:** comentário atualizado e `Terminal=false` (clicar no
   atalho não abre console; o navegador abre direto).
+- **Upgrade do MSI com o tray rodando → "Windows não pode encontrar
+  focusguard-tray.exe"** — o hook de start do tray tinha condição `NOT
+  Installed AND NOT REMOVE` (só instalação limpa): num upgrade o tray nunca
+  voltava a subir, e durante o `RemoveExistingProducts` o `tray.exe` em
+  execução ficava travado → remoção deferida/reboot. **Fix (wix.json +
+  product.wxs):** novo hook `taskkill.exe /f /im focusguard-tray.exe` com
+  `when: ""` (roda antes do `InstallValidate`, liberando o .exe antes da
+  troca — padrão do `stopForBinarySwap` do daemon) + hook de start com
+  `condition: "NOT REMOVE"` (roda em instalação limpa E upgrade, não em
+  uninstall). Verificado no MSI gerado: taskkill seq=1399 antes de
+  RemoveExistingProducts (1401), start seq=5806 depois de InstallServices
+  (5800).
 
 ### Abertos
 
@@ -81,7 +93,9 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
   comum iniciado pelo hook da edição desktop; durante o `RemoveExistingProducts`
   ele pode estar com o arquivo travado → remoção falha ou agenda reboot
   (exposição já existente nos upgrades normais, só fica mais provável na troca
-  de sabor). Se virar problema real, avaliar fechar o tray antes da troca
+  de sabor). **Atenção:** o fix do upgrade (hook taskkill do tray) cobre o
+  caso desktop→desktop e também a troca de sabor; se aparecer um caso
+  residual, avaliar fechar o tray antes da troca de sabor especificamente
   (padrão do `stopForBinarySwap` do daemon).
 
 ## Testes

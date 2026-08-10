@@ -15,12 +15,12 @@
           "0409": {
             "CompanyName": "FocusGuard",
             "FileDescription": "FocusGuard watchdog — vigilância e recuperação do daemon",
-            "FileVersion": "0.16.1",
+            "FileVersion": "0.16.3",
             "InternalName": "focusguard-watchdog",
             "LegalCopyright": "© FocusGuard",
             "OriginalFilename": "focusguard-watchdog.exe",
             "ProductName": "FocusGuard",
-            "ProductVersion": "0.16.1"
+            "ProductVersion": "0.16.3"
           }
         }
       }

@@ -57,8 +57,16 @@
       "return": "ignore"
     },
     {
+      "command": "taskkill.exe /f /im focusguard-tray.exe",
+      "when": "",
+      "execute": "immediate",
+      "impersonate": "yes",
+      "return": "ignore"
+    },
+    {
       "command": "cmd.exe /c start \"\" \"[INSTALLDIR]focusguard-tray.exe\"",
       "when": "install",
+      "condition": "NOT REMOVE",
       "execute": "immediate",
       "impersonate": "yes",
       "return": "ignore"
