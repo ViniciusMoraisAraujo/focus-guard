@@ -473,6 +473,36 @@ aprovado. Recomendação futura: idem para o caminho `BlockAllInternet`
 **Critério de saída:** testes de componente (vitest) para grade overnight +
 fallback de SSE.
 
+### ✅ Resultado — executada em 2026-08-10
+
+- **Grade overnight — novo `focusguard-ui/src/components/weekly-grid.test.tsx`**
+  (9 testes, critério de saída):
+  - Janela normal (start/end, fim depois do início) → **1 segmento**;
+  - **Janela overnight (22:00–06:00) → 2 segmentos** (`22:00–24:00` e
+    `00:00–06:00`) — via `start/end` e via `windows`, com asserção por
+    conjunto (a grade ordena por `seg.start`, então o segmento da meia-noite
+    aparece primeiro no DOM — ordem ≠ bug);
+  - `windows` múltiplas → um segmento por janela, em cada dia da regra;
+  - dias fora de `days[]` não renderizam bloco;
+  - **lanes sobrepostas**: regras conflitantes no mesmo dia empilham lado a
+    lado (`left 0%/50%`, `width 50%`); horários disjuntos ocupam `100%`;
+  - regra desativada → `opacity-40`; legenda com nome da regra + "agora"
+    (asserção escopada ao swatch `size-2.5`/linha `w-4` — a v1 era vacua:
+    os blocos da grade também contêm o texto da regra).
+- **Fallback SSE — reforço no `focusguard-ui/src/context/context.test.tsx`**
+  (1 teste novo): `onerror` repetido (3× em cascata, como o EventSource do
+  browser na queda de rede) **não duplica o intervalo** — o guard do
+  `startFallback` mantém UM único polling de 30s (statusCalls 1→2, não 1→4).
+  O teste de liga/desliga (fail → fallback → reconexão desliga) já existia.
+- **Verificados por inspeção (sem bug, sem teste obrigatório):** Pomodoro com
+  `cycles > 12` — `dots = min(cycles, 12)` com preenchimento proporcional
+  (`aria-label` expõe `ciclo N de 12`); Stats — o "dia mais recente em
+  esmeralda" usa `per_day.at(-1)` (último dia com dados), então mesmo com
+  hoje vazio o último dia com foco fica destacado (comportamento desejado).
+- **Integração com o backend:** `go run ./scripts/gen-contract/main.go
+  --check` → "✔ contrato Go→TS em dia" (zero drift no `types.ts` gerado);
+  `tsc --noEmit` limpo; suíte vitest completa **32/32 verdes** (era 22).
+
 ## Etapa 7 — Plataforma (Windows e Linux)
 
 **Escopo:** scripts (`install-daemon.ps1` BOM!, `install-linux.sh`,

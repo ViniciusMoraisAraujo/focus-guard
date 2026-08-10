@@ -333,15 +333,56 @@ describe("AppProvider — eventos em tempo real (Fase 7)", () => {
       await act(async () => {
         vi.advanceTimersByTime(31_000);
       });
-      expect(statusCalls).toBeGreaterThanOrEqual(2);
+      expect(statusCalls).toBeGreaterThanOrEqual(2);    // Reconectou → fallback desliga (não vira polling permanente).
+    es?.open();
+    const before = statusCalls;
+    await act(async () => {
+      vi.advanceTimersByTime(31_000);
+    });
+    expect(statusCalls).toBe(before);
+  } finally {
+    vi.useRealTimers();
+  }
+  });
 
-      // Reconectou → fallback desliga (não vira polling permanente).
-      es?.open();
-      const before = statusCalls;
+  it("onerror repetido não duplica o intervalo de fallback (guard do startFallback)", async () => {
+    let statusCalls = 0;
+    renderApp(
+      route({
+        "/api/auth/status": authenticated,
+        "/api/ping": daemonUp,
+        "/api/action": (init) => {
+          const body = JSON.parse(String(init?.body)) as { action: string };
+          if (body.action === "status") {
+            statusCalls++;
+            return statusOk();
+          }
+          if (body.action === "presets") return presetsOk();
+          if (body.action === "stats") return ok({ success: true });
+          throw new Error(`action inesperada: ${body.action}`);
+        },
+      }),
+    );
+
+    await waitFor(() => expect(text("auth")).toBe("true"));
+    await waitFor(() => expect(text("status-ok")).toBe("true"));
+    expect(statusCalls).toBe(1);
+
+    const es = FakeEventSource.instances.at(-1);
+    es?.open(); // conectado — sem fallback
+
+    vi.useFakeTimers();
+    try {
+      // O EventSource do browser dispara onerror em cascata (rede caiu,
+      // reconexão falhou de novo) — o guard deve manter UM único intervalo.
+      es?.fail();
+      es?.fail();
+      es?.fail();
       await act(async () => {
         vi.advanceTimersByTime(31_000);
       });
-      expect(statusCalls).toBe(before);
+      // 1 (carga) + 1 (um único tick de fallback) — não 1 + 3.
+      expect(statusCalls).toBe(2);
     } finally {
       vi.useRealTimers();
     }
