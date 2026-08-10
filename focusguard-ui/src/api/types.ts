@@ -133,8 +133,8 @@ export interface TelemetrySummary {
 // Event is one detected tamper attempt.
 export interface TamperEvent {
   at: string; // RFC3339
-  source: "hosts" | "state";
-  action: "restore" | "reconcile";
+  source: "hosts" | "state" | "clock"; // Source is where the tamper was detected: the hosts file ("hosts"), the
+  action: "restore" | "reconcile" | "lockdown"; // Action is what was done: "restore" (external edit reverted), "reconcile"
   detail?: string;
 }
 

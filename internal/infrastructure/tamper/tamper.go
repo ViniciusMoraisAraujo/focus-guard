@@ -17,9 +17,15 @@ import (
 // Event is one detected tamper attempt.
 type Event struct {
 	At     time.Time `json:"at"`
-	Source string    `json:"source"` // "hosts" | "state"
-	Action string    `json:"action"` // "restore" | "reconcile"
-	Detail string    `json:"detail,omitempty"`
+	// Source is where the tamper was detected: the hosts file ("hosts"), the
+	// state.json ("state") or the wall clock ("clock" — Clock Tamper
+	// Protection, Fase 2 do features-plan).
+	Source string `json:"source"`
+	// Action is what was done: "restore" (external edit reverted), "reconcile"
+	// (state re-synced) or "lockdown" (clock tamper confirmed by NTP — the
+	// preventive all-internet block was applied).
+	Action string `json:"action"`
+	Detail string `json:"detail,omitempty"`
 }
 
 // Recorder appends events to a JSONL file. An empty path keeps the recorder in

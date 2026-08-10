@@ -75,8 +75,10 @@ var fieldHints = map[string]string{
 // source/action — see the comments on tamper.Event). If the Go field ever
 // gains real constants, move the union to the Go side and drop the override.
 var typeOverrides = map[string]string{
-	"TamperEvent.source": `"hosts" | "state"`,
-	"TamperEvent.action": `"restore" | "reconcile"`,
+	// "clock" é o source do Clock Tamper Protection (Fase 2) e "lockdown" a
+	// ação do bloqueio preventivo confirmado por NTP.
+	"TamperEvent.source": `"hosts" | "state" | "clock"`,
+	"TamperEvent.action": `"restore" | "reconcile" | "lockdown"`,
 }
 
 func main() {

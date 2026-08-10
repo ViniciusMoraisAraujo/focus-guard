@@ -40,7 +40,7 @@ export function Seguranca() {
     <Screen>
       <ScreenHeader
         title="Segurança"
-        subtitle="Tentativas de adulteração dos arquivos de bloqueio (hosts/estado) detectadas e revertidas pelo daemon."
+        subtitle="Tentativas de adulteração dos arquivos de bloqueio (hosts/estado) e do relógio do sistema detectadas e neutralizadas pelo daemon."
         actions={
           <Button variant="outline" onClick={load}>
             <RefreshCw /> Recarregar
@@ -66,20 +66,37 @@ export function Seguranca() {
         </EmptyCard>
       ) : (
         <div className="flex flex-col gap-3">
-          {events.map((e, i) => (
-            <Card key={`${e.at}-${i}`} size="sm">
-              <CardContent className="flex flex-col gap-2 px-4 py-3">
-                <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="destructive">{e.source === "hosts" ? "hosts" : "estado"}</Badge>
-                  <Badge variant="secondary">{e.action}</Badge>
-                  <span className="text-xs text-muted-foreground">{fmtDate(e.at)}</span>
-                </div>
-                {e.detail && (
-                  <p className="m-0 text-xs break-all text-muted-foreground">{e.detail}</p>
-                )}
-              </CardContent>
-            </Card>
-          ))}
+          {events.map((e, i) => {
+            const isClock = e.source === "clock";
+            return (
+              <Card key={`${e.at}-${i}`} size="sm">
+                <CardContent className="flex flex-col gap-2 px-4 py-3">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <Badge variant={isClock ? "destructive" : "default"}>
+                      {e.source === "hosts" ? "hosts" : e.source === "clock" ? "relógio" : "estado"}
+                    </Badge>
+                    <Badge variant="secondary">
+                      {e.action === "lockdown"
+                        ? "bloqueio preventivo"
+                        : e.action === "restore"
+                          ? "restaurado"
+                          : "reconciliado"}
+                    </Badge>
+                    <span className="text-xs text-muted-foreground">{fmtDate(e.at)}</span>
+                  </div>
+                  {isClock && (
+                    <p className="m-0 text-xs text-destructive/90">
+                      Relógio do sistema adulterado — bloqueio preventivo aplicado até a
+                      sincronização online validar o horário real.
+                    </p>
+                  )}
+                  {e.detail && (
+                    <p className="m-0 text-xs break-all text-muted-foreground">{e.detail}</p>
+                  )}
+                </CardContent>
+              </Card>
+            );
+          })}
         </div>
       )}
     </Screen>

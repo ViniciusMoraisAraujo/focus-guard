@@ -10,8 +10,10 @@ import {
   ShieldCheck,
   Siren,
   Timer,
+  TriangleAlert,
 } from "lucide-react";
-import type { Block } from "@/api/types";
+import { api } from "@/api/client";
+import type { Block, TamperEvent } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,6 +34,30 @@ import { cn } from "@/lib/utils";
 
 const ALL_INTERNET = "*all-internet*";
 
+// CLOCK_LOCKDOWN_WINDOW é a janela em que um lockdown do Clock Guard (Fase 2)
+// ainda é relevante para o alerta: 1h = a duração padrão do bloqueio
+// preventivo all-internet aplicado pelo guard.
+const CLOCK_LOCKDOWN_WINDOW_MS = 60 * 60 * 1000;
+
+/**
+ * clockLockdownRecente devolve o evento de lockdown do Clock Guard mais
+ * recente (source "clock" + action "lockdown") dentro da janela, ou null.
+ * O guard grava o evento no tamper-log quando o NTP confirma a burla e aplica
+ * o bloqueio preventivo — a UI lê o mesmo log da tela Segurança (sem IPC
+ * novo, Fase 2 só no front-end).
+ */
+function clockLockdownRecente(events: TamperEvent[] | undefined): TamperEvent | null {
+  const cutoff = Date.now() - CLOCK_LOCKDOWN_WINDOW_MS;
+  let latest: TamperEvent | null = null;
+  for (const e of events ?? []) {
+    if (e.source !== "clock" || e.action !== "lockdown") continue;
+    const at = new Date(e.at).getTime();
+    if (Number.isNaN(at) || at < cutoff) continue;
+    if (!latest || at > new Date(latest.at).getTime()) latest = e;
+  }
+  return latest;
+}
+
 export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
   const { daemonUp, status, stats } = useData();
 
@@ -48,6 +74,28 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
   const pomo = status?.pomodoro?.active ? status.pomodoro : null;
   const nearest = blocks[0]?.expires_at ?? null;
   const nearestMs = useCountdown(nearest);
+
+  // Alerta do Clock Guard (Fase 2): polling do tamper-log a cada 30s enquanto
+  // o painel estiver montado — detecta o lockdown de relógio adulterado sem
+  // exigir estado novo do backend (o evento já é gravado pelo guard).
+  const [clockLockdown, setClockLockdown] = useState<TamperEvent | null>(null);
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const r = await api.tamperLog();
+        if (alive) setClockLockdown(clockLockdownRecente(r.success ? r.tamper_log : []));
+      } catch {
+        if (alive) setClockLockdown(null);
+      }
+    };
+    void load();
+    const id = window.setInterval(() => void load(), 30_000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, []);
 
   const goalNs = status?.goal ?? 0;
   const goalMin = goalNs / 6e10;
@@ -145,6 +193,33 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
 
       {daemonUp !== null && (
         <>
+          {clockLockdown && (
+            <Card
+              role="alert"
+              aria-label="Inconsistência de relógio detectada"
+              className="border-destructive/40 bg-destructive/5 ring-destructive/30"
+            >
+              <CardContent className="flex items-start gap-3 px-5 py-4">
+                <TriangleAlert className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden />
+                <div className="min-w-0 flex-1">
+                  <h3 className="font-heading text-sm font-semibold text-destructive">
+                    Inconsistência de relógio detectada
+                  </h3>
+                  <p className="mt-1 text-sm text-muted-foreground">
+                    O relógio do sistema foi alterado além da tolerância e o NTP confirmou a
+                    divergência. O FocusGuard aplicou um <strong>bloqueio preventivo</strong> até a
+                    sincronização online validar o horário real — proteção reforçada contra burla.
+                  </p>
+                  {clockLockdown.detail && (
+                    <p className="mt-1 text-xs break-all text-muted-foreground/80">
+                      {clockLockdown.detail}
+                    </p>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
+          )}
+
           <Card
             className={cn(
               "flex-row items-center justify-between gap-4",
