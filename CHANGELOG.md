@@ -5,6 +5,45 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.16.4] - 2026-08-10
+
+### 🪟 Windows
+
+- **Upgrade do MSI com o tray rodando não quebra mais o ícone** — o hook
+  que inicia o `focusguard-tray.exe` tinha condição `NOT Installed` (só
+  instalação limpa): num upgrade o tray nunca voltava a subir e, durante o
+  `RemoveExistingProducts`, o exe em execução ficava travado → remoção
+  deferida/reboot e a mensagem do Windows "não pode encontrar
+  focusguard-tray.exe". O instalador agora **encerra o tray antes da troca
+  de arquivos** (taskkill no início da sequência, mesmo padrão do
+  `stopForBinarySwap` do update) e o hook de start passou a rodar também em
+  upgrades (`NOT REMOVE`), trazendo o ícone de volta imediatamente após
+  atualizar.
+- **Metadados de versão dos executáveis corrigidos** — o bump para 0.16.3
+  atualizou apenas o bloco `fixed` do `versioninfo.json`, deixando a string
+  table (o que o Explorer/PowerShell exibem) em 0.16.1. Agora `FileVersion`/
+  `ProductVersion` reportam **0.16.4** de forma consistente.
+
+### 🐛 Correções
+
+- **`Block`/`ExtendBlock` deixavam domínio "zumbi" na RAM se o `store.Save`
+  falhasse** — o bloqueio ficava visível no `status` sem timer nem regra de
+  firewall (nada o expirava); no `ExtendBlock` o timer antigo disparava e o
+  bloqueio nunca mais expirava. Agora ambos revertem a RAM na falha de
+  persistência (TDD).
+- **`SetDNSEnabled`/`SetDNSUpstream` mantinham o setting divergente do disco
+  na falha do `Save`** — revertem ao valor persistido (TDD).
+- **Mensagem de erro IPC corrigida** — `Not suported action` → `Not
+  supported action`.
+
+### 🧪 Testes e CI
+
+- **Job `-race` do CI Linux passou a rodar de verdade** — o plain scalar do
+  YAML dobrava `\` + newline em `\ ` (espaço colado no path → "malformed
+  import path"). Troca para bloco literal; com o detector ativo, o flake do
+  `TestClientSend_DecodeError` (broken pipe sob instrumentação) foi
+  corrigido — zero data races nos 8 pacotes concorrentes.
+
 ## [0.16.3] - 2026-08-10
 
 ### 🐛 Correções
