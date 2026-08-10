@@ -5,6 +5,66 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Unreleased]
+
+## [0.17.0] - 2026-08-10
+
+### ✨ Novas funcionalidades
+
+- **`focusguard doctor`** — diagnóstico completo da instalação com exit code
+  (`0` ok / `1` problemas / `2` erro): elevação, serviços, IPC, `state.json`,
+  regras de firewall órfãs, hosts vs RAM, versões da suíte e status do DNS
+  (saída PT-BR + `--json`).
+- **Telemetria do sinkhole** — o DNS registra cada query bloqueada (domínio +
+  IP de origem + timestamp) em um JSONL rotacionado (cap 1 MiB, purga no
+  boot); a tela Rede ganhou a seção "Atividade bloqueada" (domínio × contagem
+  × últimos IPs). O hook é chamado fora de lock e é best-effort — nunca
+  atrasa o caminho do DNS.
+- **Clock Tamper Protection** — novo cliente NTP (stdlib puro, UDP :123,
+  timeout 3s) + guard no daemon: `|now − lastKnown|` além de 5 min (nos dois
+  sentidos) dispara suspeita; o NTP confirma e aplica **bloqueio preventivo
+  all-internet** + registro no tamper-log, re-ancorando a referência no
+  horário real.
+- **Focus Interceptor Page** — ao abrir um site bloqueado, o navegador vê uma
+  página explicando o bloqueio (domínio, tempo restante e **frase
+  motivacional** determinística por domínio) em vez de "connection refused".
+  Funciona no **desktop** (hosts → `127.0.0.1` + `[::1]`, listener :80
+  dual-stack loopback) e no **Server** (DNS responde o IP local, listener
+  `0.0.0.0:80`). Porta 80 ocupada degrada só a página — o bloqueio continua
+  valendo (best-effort). Novo switch "Página de bloqueio" em Configurações.
+- **Regras por dispositivo (edição Server)** — catálogo persistido
+  (`devices.json`) com políticas `block_all` / `allow_list` / `inherit` por
+  IP: a regra do dispositivo decide **antes** da regra global (allowlist de
+  um device libera domínio bloqueado globalmente). Ações IPC
+  `devices-list`/`devices-upsert`/`devices-remove`, comando
+  `focusguard devices` e seção "Dispositivos" na tela Rede.
+- **Relatório semanal automático** — agendamento persistido (dia, hora,
+  pasta de export; default domingo 23:59, desligado): o daemon gera o HTML +
+  JSON autossuficientes do analytics no horário, sem reinício. Comandos
+  `focusguard report auto|now` e card "Relatório semanal" em Configurações.
+- **Gamificação (conquistas)** — catálogo puro de 12 badges derivadas das
+  stats (streak ≥ 7, foco ≥ 10h, madrugada, missões, maratonas…), calculadas
+  na leitura — sem estado persistido. Ação `achievements-get`, comando
+  `focusguard achievements` e seção "Conquistas" em Estatísticas (grid com
+  progresso por badge).
+
+### 🐛 Correções
+
+- **Respostas IPC não vazam mais campos de struct nova** — os campos
+  `device`/`report_config` passaram a ponteiros no wire (`omitempty` não
+  funciona em structs no `encoding/json`); `httpapi` volta a responder o
+  corpo exato esperado.
+
+### 🧪 Testes e CI
+
+- TDD em todos os pacotes novos: `telemetry` (rotação/leitura com linha
+  corrompida), `ntp` (socket UDP mockado), `clockguard` (clock fake nos dois
+  sentidos), `interceptor` (bind falho + página IPv6 dual-stack), `devices`
+  (precedência device > global), `reports` (agendamento/generação) e
+  `achievements` (cálculo puro).
+- Suíte completa verde: 44 pacotes Go + `contract-check` + `tsc` + 32 testes
+  vitest.
+
 ## [0.16.4] - 2026-08-10
 
 ### 🪟 Windows
