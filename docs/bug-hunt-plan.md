@@ -1,10 +1,11 @@
 # Plano — Bug Hunt do FocusGuard (pós-v0.16.0)
 
-> **Status:** documento vivo. **Criado em 2026-08-06** após a v0.16.0.
-> **Etapas 0–5 ✅ concluídas em 2026-08-10** (baseline, contrato IPC,
-> roteador, concorrência/lifecycle, domínios críticos e HTTP/SSE — ver
-> seções abaixo). Cada etapa tem escopo, técnicas, comandos e critério de
-> saída; marque a etapa com ✅ ao concluir.
+> **Status:** **✅ CONCLUÍDO.** **Criado em 2026-08-06** após a v0.16.0.
+> **Etapas 0–8 concluídas em 2026-08-10** (baseline, contrato IPC, roteador,
+> concorrência/lifecycle, domínios críticos, HTTP/SSE, frontend, plataforma e
+> fuzz/E2E — ver seções abaixo e o resumo final em "✅ Checklist final").
+> Cada etapa tem escopo, técnicas, comandos e critério de saída; todas
+> marcadas com ✅ ao concluir.
 
 **Motivação:** a v0.16.0 entrou com **40 commits de refatoração** (229 arquivos
 mudados — registry de ações, serviços de domínio, lifecycle do daemon, event
@@ -613,6 +614,61 @@ fallback de SSE.
 
 ---
 
+## ✅ Checklist final — bug-hunt concluído (2026-08-10)
+
+### Etapas — todas concluídas
+
+- [x] **Etapa 0** — Baseline de sanidade (suíte 2x; `cmd/focusguard-daemon` só
+      roda elevado no Windows — limitação de ambiente, não de código).
+- [x] **Etapa 1** — Contrato IPC: teste de paridade dos códigos do `ipcerr`.
+- [x] **Etapa 2** — Roteador IPC: edge cases (nil registry, ação vazia,
+      timeout, payload gigante).
+- [x] **Etapa 3** — Concorrência/lifecycle: `-race` no CI Linux (novo
+      `test.yml`), shutdown com atividade simultânea.
+- [x] **Etapa 4** — Domínios críticos: update Orchestrator (bloqueios ativos;
+      rename falhou → reboot) + vazamento do `startPeriodicIPRefresh` (fix).
+- [x] **Etapa 5** — HTTP/SSE: reconexão com `Last-Event-ID` + paridade de
+      timeouts (spec ↔ proxy).
+- [x] **Etapa 6** — Frontend: grade overnight (2 segmentos) + fallback SSE
+      (onerror em cascata não duplica o intervalo); `contract-check` em dia.
+- [x] **Etapa 7** — Plataforma: teste de chown roda como root no CI
+      (critério), checklist manual documentado (socket 0660, hint da CLI,
+      systemd, versioninfo, watchdog+tray no swap, UpgradeCode, BOM).
+- [x] **Etapa 8** — Fuzz/property (3 targets, 30s cada, sem crash) + smoke
+      E2E documentado.
+
+### Bugs reais encontrados e corrigidos (cada um com teste TDD)
+
+| Bug | Fix | Commit | Teste(s) |
+|---|---|---|---|
+| Regra de firewall órfã quando o último bloco expira (raça do refresh) | `Sync(nil)` no `onExpire`/`Reconcile` | `577b7a5` | `TestScheduler_LastExpiry_SweepsOrphanRules` (+ Reconcile) |
+| `BlockDomains` removia proteção de bloqueios pré-existentes (Sync só com o lote) | `Sync(allActive)` | `50b72ef` | `TestScheduler_BlockDomains_PreservesExistingBlocks` |
+| Goroutine do refresh de IPs vazava no shutdown do daemon | `Scheduler.Stop` + `StopOnly` | `d39c70e` | `stop_test.go` |
+| Janela ICS `"24:xx"` (fallback +1h cruzava a meia-noite; o pacote rejeitava a própria saída) | wrap de `e` para o dia seguinte | `43c9163` | seed de regressão no `FuzzParseICS` |
+
+### Resumo de cobertura adicionada
+
+- **Fuzz (30s cada, sem crash):** `FuzzParseICS` 1.08M execs ·
+  `FuzzWindowsPairs` 1.6M · `FuzzParseClock` 1.45M (+ re-run pós-fix 794K).
+- **Testes novos:** ipc (paridade/edge), httpapi (SSE/timeouts), scheduler
+  (limpeza + batch), update (orchestrator + tray seam), ui (grade + fallback),
+  schedule (fuzz).
+- **CI:** `test.yml` com `-race` (Linux) + teste de chown via `sudo` com
+  guard de `--- PASS`.
+
+### Pendências conhecidas (não-bloqueantes)
+
+- `cmd/focusguard-daemon` exige shell elevado para os testes no Windows
+  (documentado na Etapa 0).
+- `Last-Event-ID` negativo propaga `since=-1` ao hub (hardening candidato,
+  Etapa 5 — sem mudança de comportamento).
+- Processo residual do smoke E2E (`focusguard-daemon` de /tmp) não foi
+  encerrável pelo shell não-elevado — cai no próximo reboot.
+- Bug 1 documentado no `main.go` (limpeza de `.bak`/`.old` órfãos em todo
+  boot) permanece como item de produto fora do escopo do bug-hunt.
+
+---
+
 ## Regras transversais
 
 - Cada bug encontrado vira um **teste que falha primeiro** (TDD); commit
@@ -620,3 +676,12 @@ fallback de SSE.
 - As etapas 1–4 são as de maior risco (refatoração interna); 5–6 pegam
   regressão de produto; 7–8 pegam plataforma.
 - Flaky novos registrados aqui, com o comando que reproduz isolado.
+- **Flaky sob carga da suíte completa** (Windows, execução paralela; passam
+  isolados com `go test <pkg> -count=2`):
+  - `statewatch`: `TestDetectChange_CallsReconcile` (fsnotify — mesmo
+    padrão dos `TestWatchFsEvents_*` já registrados; timing de evento).
+  - `scheduler`: `TestScheduler_ConcurrentBlockExpiresWithReads` — o corpo
+    só faz `t.Log` (nunca `t.Error`), então uma falha real aqui indica
+    **panic em goroutine**, não timing; como o mecanismo não foi capturado
+    nas reproduções, se voltar a falhar, capture a saída completa e rode
+    com `-race` no CI Linux antes de tratar como flake.
