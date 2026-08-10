@@ -507,6 +507,12 @@ func (s *Scheduler) Reconcile() error {
 		}
 		_ = s.enforcer.BlockDoH()
 	} else {
+		// Sem blocos ativos: varre regras de domínio órfãs antes de desligar o
+		// DoH. O Sync com conjunto vazio deixa o firewall exatamente igual ao
+		// estado (nenhuma regra) — remove regras que um refresh periódico
+		// aplicou na janela da expiração (raça real) ou restos de crash, em vez
+		// de deixar um "estado limpo" com regras órfãs no SO.
+		_ = s.enforcer.Sync(nil)
 		_ = s.enforcer.UnblockDoH()
 	}
 
@@ -979,6 +985,13 @@ func (s *Scheduler) onExpire(domain string) {
 	s.mu.Unlock()
 
 	if remaining == 0 {
+		// Varredura final (fix bug-hunt): o refresh periódico pode aplicar um
+		// IP novo ao firewall na janela entre a checagem de atividade e o
+		// apply — o UnblockDomain acima só remove os IPs conhecidos do bloco.
+		// O Sync com conjunto vazio remove QUALQUER regra de domínio órfã que
+		// tenha sobrado (IP novo do refresh) e reescreve o hosts limpo, antes
+		// de desligar o DoH. Idempotente e best-effort (como o UnblockDoH).
+		_ = s.enforcer.Sync(nil)
 		_ = s.enforcer.UnblockDoH()
 	}
 	s.notifyChange()

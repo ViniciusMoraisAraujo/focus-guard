@@ -26,6 +26,8 @@ type mockEnforcer struct {
 	syncCalls        int
 	allBlockCalls    [][]string
 	unblockAllCalls  int
+	blockDoHCalls    int
+	unblockDoHCalls  int
 }
 
 func newMockEnforcer() *mockEnforcer {
@@ -61,8 +63,18 @@ func (m *mockEnforcer) Sync(activeBlocks map[string][]string) error {
 	return nil
 }
 
-func (m *mockEnforcer) BlockDoH() error   { return nil }
-func (m *mockEnforcer) UnblockDoH() error { return nil }
+func (m *mockEnforcer) BlockDoH() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.blockDoHCalls++
+	return nil
+}
+func (m *mockEnforcer) UnblockDoH() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.unblockDoHCalls++
+	return nil
+}
 func (m *mockEnforcer) BlockAll(allowlist []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
