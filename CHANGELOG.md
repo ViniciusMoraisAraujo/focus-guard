@@ -5,6 +5,52 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [0.16.3] - 2026-08-10
+
+### 🐛 Correções
+
+- **Regras de firewall órfãs quando o último bloqueio expira** — o sweep do
+  `Sync` não rodava quando o último bloco ativo terminava (raça com o refresh
+  periódico), deixando regras para trás no hosts/firewall. O fim do último
+  bloqueio agora dispara a varredura de órfãos (TDD).
+- **`block --preset` (batch) removia proteção pré-existente** — o
+  `BlockDomains` aplicava apenas o conjunto novo ao `Sync`, derrubando regras
+  de outros bloqueios ativos. Agora o batch passa **todos** os blocos ativos
+  ao sync (TDD).
+- **Goroutine do refresh de IPs vazava no shutdown** — o `Stop()` do daemon
+  agora encerra e aguarda o goroutine periódico de 15min (TDD).
+- **Janela de agenda importada do iCal cruzando a meia-noite** — o fallback
+  de +1h (DTEND ausente) com início ≥ 23:00 gerava janela `"24:xx"` inválida;
+  agora faz wrap para o dia seguinte (`23:59-00:59`, overnight já suportado).
+  Encontrado pelo fuzz do `ParseICS` (TDD).
+- **Instalador Windows: serviço do watchdog nunca era instalado/removido** —
+  o `install-daemon.ps1` usava `$WatchdogServiceName` sem declará-lo
+  (string vazia no PowerShell → `sc.exe create` sem nome). A variável agora é
+  declarada (`FocusGuardWatchdog`, alinhada ao autostart/MSI).
+- **Atalho Linux abria um terminal à toa** — o `.desktop` da CLI usava
+  `Terminal=true` (resquício da TUI); como a CLI abre a interface web no
+  navegador, agora é `Terminal=false`.
+
+### 🧪 Testes e CI
+
+- **Bug-hunt concluído (Etapas 0–8)** — plano completo em
+  `docs/bug-hunt-plan.md` com checklist final: paridade de códigos do
+  `ipcerr`, edge cases do roteador IPC, shutdown/races, teste de integração
+  do update Orchestrator, reconexão SSE com `Last-Event-ID`, paridade de
+  timeouts no httpapi, testes de UI (grade semanal + contexto) e fuzz/E2E.
+- **Fuzz targets do agendamento** — `FuzzParseICS`, `FuzzWindowsPairs` e
+  `FuzzParseClock` (30s cada, ~4,1M execs, sem crash) em
+  `internal/domain/schedule/fuzz_test.go`.
+- **CI Linux reforçado** — job `race` (`go test -race` nos pacotes
+  concorrentes) e o teste de chown do socket (`root:focusguard 0660`) rodando
+  como root via `sudo`, com guard contra falso-verde de `-run` sem match.
+
+### 📝 Documentação
+
+- `README.md` e todos os `AGENT.md` atualizados — estrutura pós-reorg,
+  interface web completa (12 telas), bugs corrigidos × abertos nos guias e
+  novo pipeline de CI (`test.yml`).
+
 ## [0.16.2] - 2026-08-07
 
 ### 🏗️ Arquitetura (refatoração interna — sem mudança de comportamento)
