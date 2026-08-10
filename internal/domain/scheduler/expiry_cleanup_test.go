@@ -168,3 +168,108 @@ func TestScheduler_Reconcile_LastExpiry_SweepsOrphanRules(t *testing.T) {
 		t.Errorf("Sync de varredura deveria receber o conjunto vazio, got %v", enf.syncedBlocks)
 	}
 }
+
+// TestScheduler_BlockDomains_PreservesExistingBlocks trava o fix da assimetria
+// do caminho de batch (bug-hunt ao vivo): o BlockDomains aplicava o lote via
+// Sync(activeIPs) com SÓ o lote — e o Sync (rewrite do hosts + sweep de
+// órfãos) tratava os domínios pré-existentes como órfãos, removendo a
+// proteção deles (hosts + firewall) com eles ATIVOS na RAM. O Sync agora
+// recebe todos os blocos ativos (pré-existentes + lote).
+func TestScheduler_BlockDomains_PreservesExistingBlocks(t *testing.T) {
+	origResolve := resolveFunc
+	resolveFunc = func(string) ([]string, error) { return []string{"1.1.1.1", "2.2.2.2"}, nil }
+	t.Cleanup(func() { resolveFunc = origResolve })
+	stubResolveFuncCtx(t, map[string][]string{
+		"a.com":     {"3.3.3.3"},
+		"www.a.com": {"4.4.4.4"},
+		"b.com":     {"5.5.5.5"},
+		"www.b.com": {"6.6.6.6"},
+	})
+
+	sched, enf, _ := setupTestScheduler(t)
+
+	// Bloqueio manual pré-existente (o youtube.com do caso real).
+	if _, err := sched.Block("youtube.com", time.Hour); err != nil {
+		t.Fatalf("Block youtube.com: %v", err)
+	}
+
+	// Lote (preset/pomodoro/schedule) por cima do bloqueio manual.
+	if _, err := sched.BlockDomains([]string{"a.com", "b.com"}, time.Hour); err != nil {
+		t.Fatalf("BlockDomains: %v", err)
+	}
+
+	// O Sync do lote deve ter recebido o youtube.com TAMBÉM — o enforcer não
+	// pode tratar a proteção dele como órfã.
+	enf.mu.Lock()
+	got := enf.syncedBlocks
+	enf.mu.Unlock()
+	if _, ok := got["youtube.com"]; !ok {
+		t.Fatalf("Sync do lote deveria incluir o bloqueio pré-existente: %v", got)
+	}
+	if !slices.Equal(got["youtube.com"], []string{"1.1.1.1", "2.2.2.2"}) {
+		t.Errorf("youtube.com IPs no Sync = %v, want [1.1.1.1 2.2.2.2]", got["youtube.com"])
+	}
+	for _, d := range []string{"a.com", "b.com"} {
+		if _, ok := got[d]; !ok {
+			t.Errorf("Sync do lote deveria incluir %s: %v", d, got)
+		}
+	}
+}
+
+// TestScheduler_BlockDomains_ExpiryCleansAll verifica a simetria de limpeza do
+// caminho de batch na expiração (a pergunta do bug-hunt): cada domínio do lote
+// expira pelo próprio timer com os MESMOS IPs da consulta, o state.json fica
+// limpo, o IsBlocked volta a false e o último bloco dispara a varredura.
+func TestScheduler_BlockDomains_ExpiryCleansAll(t *testing.T) {
+	stubResolveFuncCtx(t, map[string][]string{
+		"a.com":     {"1.1.1.1"},
+		"www.a.com": {"2.2.2.2"},
+		"b.com":     {"3.3.3.3"},
+		"www.b.com": {"4.4.4.4"},
+	})
+
+	sched, enf, st := setupTestScheduler(t)
+
+	if _, err := sched.BlockDomains([]string{"a.com", "b.com"}, 500*time.Millisecond); err != nil {
+		t.Fatalf("BlockDomains: %v", err)
+	}
+	if !sched.HasActiveBlocks() {
+		t.Fatal("lote deveria estar ativo")
+	}
+
+	done := waitForCondition(2*time.Second, func() bool {
+		enf.mu.Lock()
+		defer enf.mu.Unlock()
+		_, a := enf.unblockedDomains["a.com"]
+		_, b := enf.unblockedDomains["b.com"]
+		return a && b
+	})
+	if !done {
+		t.Fatal("domínios do lote não expiraram em 2s")
+	}
+
+	enf.mu.Lock()
+	ipsA := enf.unblockedDomains["a.com"]
+	ipsB := enf.unblockedDomains["b.com"]
+	enf.mu.Unlock()
+	if !slices.Equal(ipsA, []string{"1.1.1.1", "2.2.2.2"}) {
+		t.Errorf("a.com unblock IPs = %v, want [1.1.1.1 2.2.2.2] (mesmos da consulta)", ipsA)
+	}
+	if !slices.Equal(ipsB, []string{"3.3.3.3", "4.4.4.4"}) {
+		t.Errorf("b.com unblock IPs = %v, want [3.3.3.3 4.4.4.4]", ipsB)
+	}
+
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if len(state.Blocks) != 0 {
+		t.Errorf("state.json ainda tem %d blocos, want 0", len(state.Blocks))
+	}
+	if sched.HasActiveBlocks() {
+		t.Error("HasActiveBlocks deveria ser false após expiração do lote")
+	}
+	if sched.IsBlocked("a.com") || sched.IsBlocked("b.com") {
+		t.Error("domínios do lote ainda bloqueados após expiração")
+	}
+}

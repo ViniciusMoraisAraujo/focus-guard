@@ -745,7 +745,6 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 
 	now := time.Now()
 	blocks := make([]policy.Block, 0, len(unique))
-	activeIPs := make(map[string][]string, len(unique))
 	for _, d := range unique {
 		b := policy.Block{
 			Domain:      d,
@@ -754,13 +753,23 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 			ResolvedIPs: resolved[d],
 		}
 		blocks = append(blocks, b)
-		activeIPs[d] = resolved[d]
 	}
 
 	s.mu.Lock()
 	wasEmpty := len(s.blocks) == 0
 	for _, b := range blocks {
 		s.blocks[b.Domain] = b
+	}
+	// O Sync do enforcer recebe TODOS os blocos ativos (pré-existentes + lote),
+	// não só o lote: o Sync reescreve o hosts e varre regras órfãs com base no
+	// conjunto que recebe — passar só o lote removeria a proteção (hosts +
+	// firewall) dos domínios já bloqueados (ex.: preset/pomodoro/schedule
+	// rodando por cima de um bloqueio manual) mesmo com eles ativos na RAM.
+	allActive := make(map[string][]string, len(s.blocks))
+	for domain, b := range s.blocks {
+		if !b.CanUnblock() {
+			allActive[domain] = b.ResolvedIPs
+		}
 	}
 	s.invalidateSnapshot()
 	if err := s.store.Save(s.ramState()); err != nil {
@@ -776,7 +785,7 @@ func (s *Scheduler) BlockDomains(domains []string, duration time.Duration) ([]po
 	s.mu.Unlock()
 
 	// A single batched Sync writes the hosts file once for the whole batch.
-	if err := s.enforcer.Sync(activeIPs); err != nil {
+	if err := s.enforcer.Sync(allActive); err != nil {
 		// Reverte a RAM e o disco: um lote que falhou não pode deixar os
 		// domínios ativos sem timer (estado zumbi).
 		s.mu.Lock()
