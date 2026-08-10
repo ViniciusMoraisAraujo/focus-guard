@@ -1,10 +1,10 @@
 # Plano — Bug Hunt do FocusGuard (pós-v0.16.0)
 
 > **Status:** documento vivo. **Criado em 2026-08-06** após a v0.16.0.
-> **Etapas 0–4 ✅ concluídas em 2026-08-10** (baseline, contrato IPC,
-> roteador, concorrência/lifecycle e domínios críticos — ver seções
-> abaixo). Cada etapa tem escopo, técnicas, comandos e critério de saída;
-> marque a etapa com ✅ ao concluir.
+> **Etapas 0–5 ✅ concluídas em 2026-08-10** (baseline, contrato IPC,
+> roteador, concorrência/lifecycle, domínios críticos e HTTP/SSE — ver
+> seções abaixo). Cada etapa tem escopo, técnicas, comandos e critério de
+> saída; marque a etapa com ✅ ao concluir.
 
 **Motivação:** a v0.16.0 entrou com **40 commits de refatoração** (229 arquivos
 mudados — registry de ações, serviços de domínio, lifecycle do daemon, event
@@ -257,6 +257,42 @@ shutdown com atividade simultânea (3 cenários) verdes.
 **Critério de saída:** teste de integração do Orchestrator cobrindo "update com
 bloqueios ativos" e "renomeação falhou → reboot".
 
+### ✅ Resultado — executada em 2026-08-10
+
+- **Integração Orchestrator + Updater REAL** — novo
+  `internal/infrastructure/update/orchestrator_integration_test.go` (o
+  `CheckForUpdate` é canhão — sem rede — e o `UpdateToAll` real baixa do
+  httptest, extrai e troca binários):
+  - `TestOrchestrator_Integration_ApplyWithActiveBlocks` — **"update com
+    bloqueios ativos"**: `state.json` com bloqueios vivos ao lado dos binários
+    (mesmo dir do daemon); o update troca os binários, mantém a flag
+    `update.inprogress` e **não toca o state.json** (byte a byte) — os
+    bloqueios sobrevivem ao restart para o Reconcile do daemon novo. CleanupStale
+    mantém 1 `.bak`/binário.
+  - `TestOrchestrator_Integration_RenameFailedSchedulesReboot` — **"renomeação
+    falhou → reboot"** ponta a ponta: rename-aside do daemon falha (exe
+    travado, Windows) → suíte agendada para o próximo boot
+    (`ErrScheduledOnReboot`), `PendingReboot=true`, `Applied=false`, flag
+    REMOVIDA, binário não trocado e o `.bak` fica para o smart recovery do
+    watchdog.
+- **Vazamento do `startPeriodicIPRefresh` FIXADO** (o achado da Etapa 3): novo
+  `Scheduler.Stop()` idempotente (`sync.Once`) fecha o `refreshStop`;
+  registrado no lifecycle do daemon (`cmd/focusguard-daemon/main.go`,
+  componente `StopOnly(sched.Stop)`). Teste TDD
+  `TestScheduler_Stop_StopsPeriodicRefresh`: nenhuma resolução DNS acontece
+  após o Stop (goroutine saiu) e o Stop duplo não panic.
+- **Já coberto (verificado, não reescrito):** `UpdateToAll` — rollback atômico,
+  fail-fast de binário ausente e o próprio `ErrScheduledOnReboot` (testes de
+  update); Orchestrator — PendingReboot/flag/CleanupStale com fake
+  (`orchestrator_test.go`); Reconcile reaplicando bloqueios após drift
+  (testes do scheduler); store/replica com suíte própria.
+- Validação: suíte dos pacotes `scheduler` + `update` verdes, `go build ./...`
+  OK, `go vet` limpo, `gofmt -l` sem output.
+
+**Critério de saída atendido:** teste de integração do Orchestrator com
+"update com bloqueios ativos" e "renomeação falhou → reboot" + vazamento do
+refresh periódico corrigido e testado.
+
 ## Etapa 5 — HTTP/SSE
 
 **Escopo:** `internal/httpapi` (proxy, `/api/events`, `/api/metrics`, auth).
@@ -271,6 +307,156 @@ bloqueios ativos" e "renomeação falhou → reboot".
 
 **Critério de saída:** teste de reconexão SSE com eventos no intervalo +
 paridade de timeouts.
+
+### ✅ Resultado — executada em 2026-08-10
+
+- **Reconexão SSE com Last-Event-ID** — novo
+  `internal/transport/httpapi/events_reconnect_test.go` (3 testes):
+  - `TestEvents_ReconnectResumesFromLastEventID` — o teste do critério: o
+    browser reconecta mandando `Last-Event-ID=5` e o loop retoma do gap
+    (primeiro poll `Since=5`) — entrega SÓ os eventos do intervalo (rev
+    6..7) e não reentrega o ring. O `id:` ecoa o `resp.Rev` do lote (os
+    DOIS eventos compartilham o mesmo id — o rev é o high-water mark, não
+    o seq individual); o ciclo quieto segue com `since=7` (sem duplicar) e
+    um erro de daemon encerra com `event: error`.
+  - `TestEvents_InvalidLastEventIDFallsBackToZero` — `Last-Event-ID` não
+    inteiro (`abc`, `12abc`, `1.5`, com espaços) é ignorado → `since=0`: um
+    id corrompido nunca quebra a reconexão.
+  - `TestEvents_NegativeLastEventID_PropagatesVerbatim` — edge do parse
+    flagrado: `ParseInt` aceita `"-1"`, então um id negativo chega ao hub
+    com `since=-1` (o `Wait` entrega o ring inteiro). Um EventSource real
+    nunca manda isso (só ecoa ids ≥ 0 recebidos) — hardening candidato
+    (clampar negativos em 0 no parse), registrado sem mudança de
+    comportamento.
+- **Paridade de timeouts** — novo `internal/transport/httpapi/httpapi_parity_test.go`
+  (5 testes):
+  - `TestAction_ProxyUsesSpecTimeoutForEveryAction` — tabelado sobre TODAS
+    as ações do spec (34): o `/api/action` usa exatamente `spec.Timeout`
+    para cada uma (drift detection: ação nova com spec de 30s não pode
+    cair no `proxyTimeout` de 5s).
+  - `TestPing_UsesProxyTimeout_ParityWithSpec` — a const `proxyTimeout` é
+    o MESMO do spec de ping (paridade const ↔ tabela).
+  - `TestEvents_PollTimeoutExactParity` — o poll SSE usa exatamente
+    `spec + eventPollMargin` (o teste existente só garantia `≥`; aqui a
+    fórmula exata fica congelada).
+  - `TestMetrics_EventSubscribeExcluded` — `event-subscribe` fora do
+    registro `http` do `/api/metrics` mesmo quando o `/api/action` o
+    encaminha (controle positivo com ping prova que o registro funciona).
+  - `TestMetrics_DaemonResetDoesNotClearHTTPRegistry` — o `metrics --reset`
+    do CLI zera o registro DO DAEMON (snapshot ipc vazio) sem tocar o
+    registro local do proxy web (processo separado) — "Reset não zera
+    percentis de outro cliente".
+- **Já coberto (verificado, não reescrito):** auth 401/405/415/400, 403
+  (host/spec/permissão), 503 daemon offline; **sessão expirada → 401**
+  (`TestAction_ExpiredSession`); paridade spec ≥ orçamento interno do daemon
+  (`TestSpec_ProxyBudgetAtLeastDaemonInternal` no ipc — update/update-check/
+  event-subscribe); hub com `Last-Event-ID` estale (`TestWait_SinceSkipsOldEvents`
+  no eventhub); loop SSE completo com keepalive e `event: error`
+  (`TestEventsStreamsAndEchoesRev`, `TestEventsDaemonDownClosesWithError`).
+- Validação: suíte `internal/transport/httpapi` verde (8 testes novos +
+  34 subtests + existentes), `go vet` limpo, `gofmt -l` sem output; code
+  review aplicado (controle positivo no teste de exclusão + assert preciso
+  do count de `id:`).
+
+**Critério de saída atendido:** teste de reconexão SSE com eventos no
+intervalo (`Last-Event-ID`) + paridade de timeouts (tabela completa + ping +
+formula exata do poll SSE), verdes.
+
+## Achado ao vivo — "o YouTube não voltou" (2026-08-10)
+
+**Origem:** usuário reportou YouTube bloqueado após remover/expirar os
+bloqueios. Investigação **ao vivo na máquina** (estado real do sistema, não
+código): todos os mecanismos estavam limpos — `state.json` vazio, `hosts`
+sem entradas `# FOCUSGUARD`, zero regras `FocusGuard_*` no firewall (dump
+completo do netsh), porta 53 livre, DNS do adaptador = Cloudflare, cache
+DNS do Windows sem youtube, `nslookup youtube.com` resolvendo IP real. O
+bloqueio do dia (09:03 → expirou 09:04) havia sido removido por completo; o
+`ping youtube.com` voltou a responder após `ipconfig /flushdns` (a causa
+residual era a aba/navegador com o erro velho — cache do browser, não do
+sistema).
+
+**Descoberta 1 — o sinkhole DNS é network-wide, não do próprio PC.** O
+servidor DNS escuta em `0.0.0.0:53` e cobre OUTROS dispositivos da rede que
+apontem o DNS para esta máquina (edição Server, "Rei da Rede"). **Nenhum
+código toca o DNS do adaptador da própria máquina** (varredura por
+`Set-DnsClientServerAddress`/`netsh dns`/`dnsclient` = zero ocorrências) —
+por isso o adaptador ficava em Cloudflare estático mesmo com o sinkhole
+rodando, e não há o que "restaurar" no adaptador ao parar (o stop só
+libera a porta 53 e persiste `dns_enabled=false`). Consequência
+consistente com o diagnóstico: o bloqueio do YouTube foi aplicado por
+hosts + firewall por IP, não pelo sinkhole.
+
+**Descoberta 2 — raça real no refresh periódico (fix de produção).** O
+`startPeriodicIPRefresh` (15min) re-resolve blocos ativos e aplica IPs
+novos via `BlockDomain`; a checagem de atividade e o apply não são
+atômicos — se o bloco expirar na janela entre os dois, uma regra de
+firewall para o IP novo + a entrada do hosts **ficam órfãs**, e o
+`UnblockDomain` da expiração só remove os IPs conhecidos do bloco. Sem
+blocos ativos, `Sync` (que varre órfãos) não rodava — o órfão ficava até o
+próximo boot. Exatamente o "o sistema esquece de desbloquear?".
+
+**Fix** (`internal/domain/scheduler/scheduler.go`): quando o **último**
+bloco sai — no `onExpire` (`remaining == 0`) e no `Reconcile` (branch
+`else` sem blocos ativos) — roda `enforcer.Sync(nil)` antes de desligar o
+DoH: a varredura idempotente que remove QUALQUER regra de domínio órfã
+(inclusive o IP novo do refresh) e reescreve o hosts limpo, sem tocar
+regras DoH/DoT/AllInternet/Allow. Erro do sweep é best-effort (como o
+`UnblockDoH`); um sweep falho se auto-cura no próximo boot.
+
+**Testes** (`internal/domain/scheduler/expiry_cleanup_test.go`):
+- `TestScheduler_TimerExpiration_CleansAllMechanisms` — cadeia completa da
+expiração por timer: `UnblockDomain` com os MESMOS IPs da consulta,
+`UnblockDoH` no último bloco, `state.json` limpo, `HasActiveBlocks`/`IsBlocked`
+false (o `mockEnforcer` passou a rastrear `blockDoHCalls`/`unblockDoHCalls`).
+- `TestScheduler_LastExpiry_SweepsOrphanRules` (TDD do fix, timer) — o
+`Sync` de varredura com conjunto vazio roda na saída do último bloco.
+- `TestScheduler_Reconcile_LastExpiry_SweepsOrphanRules` (TDD do fix,
+Reconcile) — mesmo fix no caminho boot/tamper.
+
+**Validação:** suíte completa do `scheduler` (7.6s) + `enforcer` (3.0s)
+verdes, `go build ./...` OK, `go vet` limpo, `gofmt` limpo, code review
+aplicado (sinal de conclusão do teste = o próprio sweep). Trade-offs
+documentados: todo boot sem blocos faz 1 enumeração de firewall a mais
+(idempotente, cura órfãos de crash); a remoção primária por domínio mantém
+o retry original (o sweep é camada extra de higiene).
+
+### Achado 3 — assimetria do caminho de batch (`BlockDomains`)
+
+**Origem** — pergunta de acompanhamento do mesmo relato ao vivo: "o caminho
+de batch tem a mesma simetria de limpeza ao expirar?" (preset/pomodoro/
+schedule bloqueiam lotes de domínios via `BlockDomains`).
+
+**O bug (lado da APLICAÇÃO, não da expiração)** — o `BlockDomains` aplicava
+o lote com `enforcer.Sync(activeIPs)` passando **só o lote**. Como o `Sync`
+reescreve o hosts e varre regras órfãs **com base no conjunto que recebe**,
+os domínios de um bloqueio manual já ativo (ex.: youtube.com bloqueado à mão
+enquanto um pomodoro/preset começa) eram tratados como **órfãos**: a
+proteção deles (hosts + firewall) era **removida com eles ATIVOS na RAM** —
+estado dizia "bloqueado", SO dizia "livre". A expiração do lote em si já era
+simétrica (timer próprio por domínio com os mesmos IPs da consulta + a
+varredura do último bloco, Achado 2).
+
+**Fix** (`internal/domain/scheduler/scheduler.go`, commit `50b72ef`) — o
+`Sync` do lote agora recebe **`allActive` = todos os blocos ativos**
+(pré-existentes + lote, condição `!b.CanUnblock()`, a MESMA do `Reconcile`):
+pré-existentes permanecem protegidos, o lote é adicionado, expirados são
+varridos — uma única regra consistente com o caminho de reconcilição.
+Rollback em falha de `Sync` continua revertendo o lote inteiro (RAM +
+disco). A variável `activeIPs` (que ficou morta — atribuída, nunca lida —
+após a mudança) foi removida.
+
+**Testes** (`internal/domain/scheduler/expiry_cleanup_test.go`):
+- `TestScheduler_BlockDomains_PreservesExistingBlocks` (TDD do fix) —
+bloqueio manual pré-existente + lote por cima: o `Sync` do lote DEVE conter
+o domínio pré-existente com os MESMOS IPs (nunca tratado como órfão).
+- `TestScheduler_BlockDomains_ExpiryCleansAll` (simetria da expiração) —
+lote expira: `UnblockDomain` com os mesmos IPs da consulta, `state.json`
+limpo, `HasActiveBlocks` false, `IsBlocked` false.
+
+**Validação:** suítes verdes (`scheduler` 8.4s, `pomodoro`, `schedule`,
+`blocks`), `go build ./...` OK, `go vet` limpo, `gofmt` limpo, code review
+aprovado. Recomendação futura: idem para o caminho `BlockAllInternet`
+(sentinela de pânico/deep-focus), que também sobrepõe bloqueios existentes.
 
 ## Etapa 6 — Frontend
 
