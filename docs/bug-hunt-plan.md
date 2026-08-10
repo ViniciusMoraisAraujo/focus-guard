@@ -680,6 +680,10 @@ fallback de SSE.
   isolados com `go test <pkg> -count=2`):
   - `statewatch`: `TestDetectChange_CallsReconcile` (fsnotify — mesmo
     padrão dos `TestWatchFsEvents_*` já registrados; timing de evento).
+  - `ipc`: `TestClientSend_DecodeError` sob `-race` (o servidor fechava a
+    conexão antes do cliente escrever → `broken pipe` no lugar do decode
+    error) — **corrigido** no 1º run real do job `race` do CI: o servidor do
+    teste agora lê a requisição antes de responder (determinístico).
   - `scheduler`: `TestScheduler_ConcurrentBlockExpiresWithReads` — o corpo
     só faz `t.Log` (nunca `t.Error`), então uma falha real aqui indica
     **panic em goroutine**, não timing; como o mecanismo não foi capturado

@@ -1,6 +1,7 @@
 package ipc
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -188,8 +189,15 @@ func TestClientSend_DecodeError(t *testing.T) {
 	go func() {
 		conn, _ := ln.Accept()
 		if conn != nil {
-			conn.Write([]byte("invalid-json\n"))
-			conn.Close()
+			// Lê a requisição do cliente (até o \n) antes de responder: sem
+			// isso, o close imediato fazia o cliente pegar "broken pipe" no
+			// write sob -race (o servidor fechava antes do envio) e o teste
+			// falhava com "error encoding request" em vez do decode error.
+			// O deadline impede deadlock se o cliente nunca escrever.
+			_ = conn.SetReadDeadline(time.Now().Add(2 * time.Second))
+			_, _ = bufio.NewReader(conn).ReadString('\n')
+			_, _ = conn.Write([]byte("invalid-json\n"))
+			_ = conn.Close()
 		}
 	}()
 
