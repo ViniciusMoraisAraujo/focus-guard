@@ -16,7 +16,7 @@ import (
 
 // Event is one detected tamper attempt.
 type Event struct {
-	At     time.Time `json:"at"`
+	At time.Time `json:"at"`
 	// Source is where the tamper was detected: the hosts file ("hosts"), the
 	// state.json ("state") or the wall clock ("clock" — Clock Tamper
 	// Protection, Fase 2 do features-plan).

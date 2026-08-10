@@ -7,6 +7,44 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.17.1] - 2026-08-10
+
+### ✨ Novas funcionalidades
+
+- **Interceptor Page agora cobre sites HTTPS (porta 443)** — sites HTTPS-only
+  (YouTube, Instagram…) forçam TLS via HSTS e o navegador nunca cai no HTTP
+  :80, então a página de bloqueio não aparecia para eles (só "connection
+  refused"). O interceptor agora também escuta na porta 443 e responde o
+  handshake com um **certificado auto-assinado gerado sob demanda pelo SNI**
+  (com a SAN exata do domínio): o navegador mostra o aviso de certificado
+  usual e o usuário continua (Firefox: **Avançado → Continuar**) para a
+  página motivacional. Desktop: loopback dual-stack `127.0.0.1:443` +
+  `[::1]:443`; Server: `0.0.0.0:443`. Porta 443 ocupada degrada só a página
+  dos sites HTTPS — o bloqueio segue valendo (best-effort, como o :80).
+
+### 🎨 Interface web
+
+- **Alerta de Clock Guard no Painel** — quando o NTP confirma uma burla de
+  relógio e o bloqueio preventivo é aplicado, o Dashboard exibe o alert
+  destrutivo *"Inconsistência de relógio detectada"* (a Fase 2 do
+  features-plan previa o aviso; o guard já gravava o evento no tamper-log —
+  o front agora o lê, sem IPC novo). A tela Segurança também mostra os
+  eventos de relógio com badge próprio (**relógio / bloqueio preventivo**).
+
+### 🐛 Correções
+
+- **Contrato `TamperEvent` aceita os valores do Clock Guard** — o
+  `gen-contract` restringia `source` a `hosts|state`; agora inclui `clock`
+  (e `lockdown` em `action`), refletindo o que o daemon já emitia.
+
+### 🧪 Testes
+
+- TDD do TLS: página servida via HTTPS (cliente confiando no cert
+  auto-assinado), SAN do certificado escopada ao SNI, bind 443 ocupado falha
+  sem derrubar o daemon.
+- 4 testes do alerta de Clock Guard no Dashboard (renderiza com evento
+  recente, ignora antigo/outra fonte/falha) — 36 testes vitest no total.
+
 ## [0.17.0] - 2026-08-10
 
 ### ✨ Novas funcionalidades
