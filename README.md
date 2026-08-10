@@ -204,9 +204,10 @@ Cada release publicada no GitHub contém apenas os arquivos essenciais por plata
 
 | Plataforma | Arquivo | Conteúdo |
 |------------|---------|----------|
-| 🪟 Windows | `focusguard_<versão>_windows_<arch>.zip` | Executáveis (`focusguard.exe`, `focusguard-daemon.exe`, `focusguard-watchdog.exe`, `focusguard-tray.exe`) + `install-daemon.ps1` + `install.txt` |
-| 🪟 Windows | `focusguard-<versão>-amd64.msi` | Instalador único (serviços + recovery + tray + atalho) |
-| 🐧 Linux | `focusguard_<versão>_linux_<arch>.tar.gz` | Binários + `focusguard.service` + `install-linux.sh` + `install.txt` |
+| 🪟 Windows | `focusguard_<versão>_windows_<arch>.zip` | Executáveis (`focusguard.exe`, `focusguard-daemon.exe`, `focusguard-watchdog.exe`, `focusguard-tray.exe`, `focusguard-web.exe`) + `install-daemon.ps1` + `install.txt` |
+| 🪟 Windows | `focusguard-<versão>-amd64.msi` | Instalador desktop (serviços + recovery + tray + atalho) |
+| 🪟 Windows | `focusguard-server-<versão>-amd64.msi` | Instalador Server/headless (daemon + watchdog + web + CLI, sem tray) |
+| 🐧 Linux | `focusguard_<versão>_linux_<arch>.tar.gz` | Binários (incl. `focusguard-web`) + `focusguard.service` + `install-linux.sh` + `focusguard-tray.desktop` + `install.txt` |
 
 **Windows:**
 
@@ -385,13 +386,23 @@ ainda não é bloqueado automaticamente nesta versão.
 ### Makefile
 
 ```bash
-make build       # Compila CLI e daemon em ./bin/
-make install     # Build + instala como serviço (Windows: sc, Linux: systemd)
-make uninstall   # Remove da inicialização
-make test        # Executa todos os testes
-make clean       # Remove artefatos de build
-make fmt         # Formata o código Go
-make tidy        # go mod tidy
+make all            # build + test + vet
+make build          # icon + compila CLI, daemon e web em ./bin/
+make ui             # compila o frontend React e embute em cmd/focusguard-web/assets
+make icon           # regenera focusguard.ico/.png a partir do artwork
+make winres         # regenera os recursos Windows (.syso) a partir dos versioninfo.json
+make contract       # regenera focusguard-ui/src/api/types.ts a partir do contrato Go
+make contract-check # verifica que types.ts não divergiu do contrato (CI roda antes da release)
+make msi VERSION=x.y.z        # gera o instalador desktop .msi (Windows)
+make msi-server VERSION=x.y.z # gera o instalador Server .msi (Windows)
+make install        # Build + instala como serviço (Windows: sc, Linux: systemd)
+make uninstall      # Remove da inicialização
+make test           # Executa todos os testes
+make vet            # go vet ./...
+make clean          # Remove artefatos de build
+make fmt            # Formata o código Go
+make tidy           # go mod tidy
+make help           # Lista os alvos
 ```
 
 ---
@@ -400,69 +411,33 @@ make tidy        # go mod tidy
 
 ```
 focusguard/
-├── Makefile                       # Build, test, install, uninstall
+├── Makefile                       # build, test, install, ui, winres, contract, msi
+├── .goreleaser.yaml               # pipeline de release (hooks: ui, icon, winres)
+├── .github/workflows/
+│   ├── test.yml                   # CI: build+vet, -race (Linux) e chown do socket (root)
+│   └── release.yml                # tag v* → GoReleaser + instaladores MSI (desktop/server)
 ├── scripts/
-│   ├── install-daemon.ps1         # Instalação Windows via PowerShell
-│   └── focusguard.service         # Unit file systemd para Linux
+│   ├── install-daemon.ps1         # Instalação Windows (serviço, tray, watchdog, atalho)
+│   ├── install-linux.sh           # Instalação Linux (/opt/focusguard, systemd, grupo focusguard)
+│   ├── focusguard.service         # Unit systemd (template)
+│   ├── build-msi.sh               # Gera os .msi via go-msi + WiX
+│   └── msi/                       # wix.json / wix-server.json / product.wxs
+├── packaging/                     # Assets de build (ícones, manifest, server.role, install.txt)
+├── focusguard-ui/                 # Interface web React + TypeScript (build via make ui)
+│   └── src/                       # screens/, components/, context/ (auth+data), api/
 ├── cmd/
-│   ├── focusguard/                # CLI do usuário
-│   │   └── main.go                # Entrada: comandos (block, status, install, uninstall, web)
-│   └── focusguard-daemon/         # Serviço em background
-│       ├── main.go                # Inicialização do daemon (store, enforcer, scheduler, IPC)
-│       ├── service_windows.go     # Wrapper de serviço Windows (golang.org/x/sys/windows/svc)
-│       └── service_other.go       # Stub para Linux/macOS
-├── internal/
-│   ├── autostart/                 # Gerenciamento de inicialização automática
-│   │   ├── autostart.go           # Dispatcher por plataforma + IsInstalled()
-│   │   ├── autostart_svc.go       # Windows: sc create/delete/query
-│   │   └── autostart_systemd.go   # Linux: systemd service + systemctl
-│   ├── policy/                    # Modelo de dados e regras de negócio
-│   │   ├── policy.go              # Block, IsActive, CanUnblock, RemainingTime
-│   │   └── policy_test.go
-│   ├── store/                     # Persistência de estado em JSON
-│   │   ├── json.go                # Store com gravação atômica (temp file + rename)
-│   │   └── json_test.go
-│   ├── enforcer/                  # Aplicação das regras no SO
-│   │   ├── enforcer.go            # Interface Enforcer + ResolveIPs
-│   │   ├── enforcer_linux.go      # Implementação Linux (hosts + iptables)
-│   │   ├── enforcer_windows.go    # Implementação Windows (hosts + netsh)
-│   │   └── *test.go
-│   ├── scheduler/                 # Gerenciamento de timers e expiração
-│   │   ├── scheduler.go           # Block, BlockAllInternet, timer, refresh periódico
-│   │   └── scheduler_test.go
-│   ├── hostswatch/                # File watcher para /etc/hosts
-│   │   ├── hostswatch.go          # Monitora alterações com fsnotify, reaplica bloqueios
-│   │   └── hostswatch_test.go
-│   ├── preset/                    # Catálogo de presets (builtin + personalizados)
-│   │   ├── preset.go              # Store persistente: social, video, news, games + custom
-│   │   └── preset_test.go
-│   ├── schedule/                  # Agendamento recorrente
-│   │   ├── schedule.go            # Regras por dia/horário, persistência, worker de aplicação
-│   │   └── schedule_test.go
-│   ├── pomodoro/                  # Sessões de foco em ciclos trabalho/descanso
-│   │   ├── pomodoro.go            # Controller sobre o scheduler (work/rest/cycles, --strict)
-│   │   └── pomodoro_test.go
-│   ├── goal/                      # Meta diária de foco
-│   │   ├── goal.go                # Store persistente (goal.json)
-│   │   └── goal_test.go
-│   ├── analytics/                 # Histórico de sessões (JSONL)
-│   │   ├── analytics.go           # Recorder, Summarize, streak, RenderStats, ExportCSV/JSON
-│   │   └── analytics_test.go
-│   ├── processguard/              # Encerra processos da denylist (steam/discord)
-│   │   ├── processguard.go        # Scan periódico enquanto houver sessão ativa
-│   │   └── processguard_test.go
-│   ├── recovery/                  # Smart Recovery: rollback pós-update no watchdog
-│   │   └── recovery.go            # Restaura .bak se o daemon novo crashar no boot
-│   ├── ipc/                       # Comunicação cliente-servidor
-│   │   ├── ipc.go                 # Request/Response (JSON sobre Unix socket)
-│   │   ├── client.go              # Cliente IPC
-│   │   ├── server.go              # Servidor IPC
-│   │   ├── ipc_linux.go           # Unix socket (/run/focusguard.sock)
-│   │   ├── ipc_windows.go         # Unix socket (%PROGRAMDATA%/FocusGuard/)
-│   │   └── *test.go
-│   └── watchdog/                  # Systemd watchdog
-│       ├── watchdog.go            # Notificações via NOTIFY_SOCKET
-│       └── watchdog_test.go
+│   ├── focusguard/                # CLI (um arquivo por comando + tabela commands)
+│   ├── focusguard-daemon/         # Serviço em background (privilegiado)
+│   ├── focusguard-tray/           # Bandeja do sistema (sem admin)
+│   ├── focusguard-watchdog/       # Health-check + Smart Recovery
+│   ├── focusguard-web/            # UI HTTP user-space (proxy das ações IPC)
+│   └── focusguard-icon/           # Gera ícones (build-time)
+├── internal/                      # 34 pacotes em 4 camadas
+│   ├── domain/                    # Lógica de negócio (scheduler, schedule, pomodoro, ...)
+│   ├── infrastructure/            # I/O de SO (enforcer, store, dnsserver, autostart, ...)
+│   ├── transport/                 # IPC/HTTP + observabilidade (ipc, httpapi, eventhub, ...)
+│   └── system/                    # Ciclo de vida (daemon, tray, watchdog)
+├── docs/                          # Planos (ui, refactor, reorg, bug-hunt, release) + decisões
 └── go.mod
 ```
 
@@ -729,6 +704,12 @@ go test -cover ./...
 
 # Rodar testes de um pacote específico
 go test ./internal/domain/scheduler/... -v
+
+# Rodar os fuzz targets do schedule (30s por target, sem crash — critério do bug-hunt)
+go test ./internal/domain/schedule/ -run '^$' -fuzz FuzzParseICS -fuzztime=30s
+
+# Verificar que o contrato IPC ↔ types.ts não divergiu (CI roda antes da release)
+make contract-check
 ```
 
 ### Cobertura
