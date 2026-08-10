@@ -206,7 +206,10 @@ type Scheduler struct {
 	timers       map[string]*time.Timer
 	bootstrapped bool
 	refreshStop  chan struct{}
-	dns          *dnsCache
+	// stopOnce garante que Stop é idempotente: fechar um canal já fechado
+	// panicaria — o teardown do daemon pode chamá-lo mais de uma vez.
+	stopOnce sync.Once
+	dns      *dnsCache
 	// dnsEnabled persists whether the DNS sinkhole server should run. It is a
 	// setting, not a live state: starting/stopping the actual listener is the
 	// daemon's job, which reads this after the bootstrap Reconcile.
@@ -273,6 +276,14 @@ func (s *Scheduler) Start() error {
 	go s.startPeriodicIPRefresh(15 * time.Minute)
 
 	return nil
+}
+
+// Stop encerra o refresh periódico de IPs: a goroutine do
+// startPeriodicIPRefresh sai no próximo select. Idempotente — o teardown do
+// daemon pode chamá-lo mais de uma vez sem panic. Antes deste método a
+// goroutine vazava no shutdown do daemon (bug-hunt Etapa 4).
+func (s *Scheduler) Stop() {
+	s.stopOnce.Do(func() { close(s.refreshStop) })
 }
 
 type unblockEntry struct {

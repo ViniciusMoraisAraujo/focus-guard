@@ -678,6 +678,11 @@ func runDaemon() bool {
 	}
 	log.Println("[FocusGuard Daemon] Estado reconciliado com sucesso.")
 
+	// O refresh periódico de IPs roda numa goroutine do scheduler
+	// (startPeriodicIPRefresh); o lifecycle o encerra no shutdown — sem isso a
+	// goroutine vazava (bug-hunt Etapa 4).
+	components = append(components, daemon.StopOnly(sched.Stop))
+
 	if firstBoot && isServerEdition() {
 		if err := sched.SetDNSEnabled(true); err != nil {
 			log.Printf("[FocusGuard Daemon] Edição Server: falha ao habilitar DNS no primeiro boot: %v", err)
