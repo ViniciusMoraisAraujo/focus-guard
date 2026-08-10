@@ -1,6 +1,8 @@
 import type {
   ApiRequest,
   ApiResponse,
+  Device,
+  ReportConfig,
   ScheduleRule,
 } from "./types";
 
@@ -257,6 +259,28 @@ export const api = {
   dnsStatus: () => action({ action: "dns-status" }),
   dnsSetUpstream: (upstream: string) =>
     action({ action: "dns-set-upstream", upstream }),
+  dnsTelemetry: (limit?: number) =>
+    action({ action: "dns-telemetry", telemetry_limit: limit }),
+
+  // Focus Interceptor Page (Fase 3)
+  interceptorSet: (enabled: boolean) =>
+    action({ action: "interceptor-set", interceptor_enabled: enabled }),
+  interceptorStatus: () => action({ action: "interceptor-status" }),
+
+  // Dispositivos (Fase 4 — edição Server)
+  devicesList: () => action({ action: "devices-list" }),
+  devicesUpsert: (device: Device) => action({ action: "devices-upsert", device }),
+  devicesRemove: (ip: string) => action({ action: "devices-remove", device_ip: ip }),
+
+  // Conquistas (Fase 5.2)
+  achievements: () => action({ action: "achievements-get" }),
+
+  // Relatório semanal (Fase 5.1)
+  reportConfigGet: () => action({ action: "reports-config-get" }),
+  reportConfigSet: (reportConfig: ReportConfig) =>
+    action({ action: "reports-config-set", report_config: reportConfig }),
+  reportGenerate: (reportExportPath?: string) =>
+    action({ action: "reports-generate", report_export_path: reportExportPath }),
 
   // Usuários da interface web (só admin gerencia; senha própria para o resto)
   usersList: () => action({ action: "user-list" }),

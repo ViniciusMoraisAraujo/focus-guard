@@ -16,15 +16,20 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/domain/achievements"
 	"focusguard/internal/domain/analytics"
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
+	"focusguard/internal/domain/devices"
 	"focusguard/internal/domain/goal"
+	interceptordomain "focusguard/internal/domain/interceptor"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/presets"
+	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
+	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/domain/user"
 	"focusguard/internal/domain/users"
 	"focusguard/internal/infrastructure/dns"
@@ -137,6 +142,91 @@ func (f *fakeDNSPersister) SetDNSUpstream(u string) error {
 }
 
 func (f *fakeDNSPersister) DNSEnabled() bool { return f.enabled }
+
+// fakeInterceptorPersister é um interceptordomain.Persister de teste (flag em
+// memória) — Fase 3 da Focus Interceptor Page.
+type fakeInterceptorPersister struct {
+	enabled bool
+	err     error
+}
+
+func (f *fakeInterceptorPersister) SetInterceptorEnabled(v bool) error {
+	if f.err != nil {
+		return f.err
+	}
+	f.enabled = v
+	return nil
+}
+
+func (f *fakeInterceptorPersister) InterceptorEnabled() bool { return f.enabled }
+
+// fakeDevicesService é um devices.Service de teste (catálogo em memória).
+type fakeDevicesService struct {
+	byIP  map[string]devices.Device
+	order []string
+	err   error
+}
+
+func newFakeDevicesService() *fakeDevicesService {
+	return &fakeDevicesService{byIP: make(map[string]devices.Device)}
+}
+
+func (f *fakeDevicesService) List() []devices.Device {
+	out := make([]devices.Device, 0, len(f.order))
+	for _, ip := range f.order {
+		out = append(out, f.byIP[ip])
+	}
+	return out
+}
+
+func (f *fakeDevicesService) Get(ip string) (devices.Device, bool) {
+	d, ok := f.byIP[ip]
+	return d, ok
+}
+
+func (f *fakeDevicesService) Upsert(d devices.Device) error {
+	if f.err != nil {
+		return f.err
+	}
+	if _, ok := f.byIP[d.IP]; !ok {
+		f.order = append(f.order, d.IP)
+	}
+	f.byIP[d.IP] = d
+	return nil
+}
+
+func (f *fakeDevicesService) Remove(ip string) error {
+	if f.err != nil {
+		return f.err
+	}
+	delete(f.byIP, ip)
+	for i, k := range f.order {
+		if k == ip {
+			f.order = append(f.order[:i], f.order[i+1:]...)
+			break
+		}
+	}
+	return nil
+}
+
+// fakeReportsStore é um reports.ConfigStore de teste (config em memória).
+type fakeReportsStore struct {
+	cfg reports.Config
+}
+
+func newFakeReportsStore() *fakeReportsStore {
+	return &fakeReportsStore{cfg: reports.DefaultConfig()}
+}
+
+func (f *fakeReportsStore) Get() reports.Config { return f.cfg }
+
+func (f *fakeReportsStore) Set(c reports.Config) error {
+	if err := c.Valid(); err != nil {
+		return err
+	}
+	f.cfg = c
+	return nil
+}
 
 // fakeSessionsProvider é um analytics.Provider de teste (uma sessão pronta
 // para as ações stats/missions/sessions).
@@ -374,6 +464,139 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 			resp := &ipc.Response{Success: true, Message: out.Message}
 			mergeDNSWire(resp, out.Status)
 			return resp, nil
+		},
+	}.Handler())
+	// dns-telemetry via ipc.DomainAction (Fase 1.2 — mesmo padrão do
+	// composition root).
+	hTelemetry := telemetry.NewGetHandler(telemetry.NewRecorder("")) // memória
+	s.Register(ipc.DomainAction[telemetry.TelemetryInput, telemetry.TelemetryResult]{
+		Name: hTelemetry.Action(),
+		Decode: func(r *ipc.Request) (*telemetry.TelemetryInput, error) {
+			return &telemetry.TelemetryInput{Limit: r.TelemetryLimit}, nil
+		},
+		Handle: hTelemetry.Handle,
+		Encode: func(out *telemetry.TelemetryResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:          true,
+				TelemetryEntries: out.Entries,
+				TelemetrySummary: out.Summary,
+				TelemetryTotal:   out.TotalBlocked,
+				TelemetryLimit:   out.Limit,
+			}, nil
+		},
+	}.Handler())
+	// interceptor via ipc.DomainAction (Fase 3 — mesmo padrão do composition
+	// root).
+	ip := &fakeInterceptorPersister{}
+	hInterceptorSet := interceptordomain.NewSet(ip, nil)
+	s.Register(ipc.DomainAction[interceptordomain.SetInput, interceptordomain.SetResult]{
+		Name: hInterceptorSet.Action(),
+		Decode: func(r *ipc.Request) (*interceptordomain.SetInput, error) {
+			return &interceptordomain.SetInput{Enabled: r.InterceptorEnabled}, nil
+		},
+		Handle: hInterceptorSet.Handle,
+		Encode: func(out *interceptordomain.SetResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:            true,
+				Message:            out.Message,
+				InterceptorEnabled: out.Status.Enabled,
+			}, nil
+		},
+	}.Handler())
+	hInterceptorStatus := interceptordomain.NewStatus(ip)
+	s.Register(ipc.DomainAction[interceptordomain.NoInput, interceptordomain.StatusResult]{
+		Name:   hInterceptorStatus.Action(),
+		Decode: ipc.NoInputDecode[interceptordomain.NoInput](),
+		Handle: hInterceptorStatus.Handle,
+		Encode: func(out *interceptordomain.StatusResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, InterceptorEnabled: out.Status.Enabled}, nil
+		},
+	}.Handler())
+	// devices via ipc.DomainAction (Fase 4 — mesmo padrão do composition root).
+	ds := newFakeDevicesService()
+	hDevicesList := devices.NewList(ds)
+	s.Register(ipc.DomainAction[devices.NoInput, devices.ListResult]{
+		Name:   hDevicesList.Action(),
+		Decode: ipc.NoInputDecode[devices.NoInput](),
+		Handle: hDevicesList.Handle,
+		Encode: func(out *devices.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Devices: out.Devices}, nil
+		},
+	}.Handler())
+	hDevicesUpsert := devices.NewUpsert(ds)
+	s.Register(ipc.DomainAction[devices.UpsertInput, devices.UpsertResult]{
+		Name: hDevicesUpsert.Action(),
+		Decode: func(r *ipc.Request) (*devices.UpsertInput, error) {
+			if r.Device == nil {
+				return nil, ipc.Err(ipc.CodeInvalid, "dispositivo ausente")
+			}
+			return &devices.UpsertInput{Device: *r.Device}, nil
+		},
+		Handle: hDevicesUpsert.Handle,
+		Encode: func(out *devices.UpsertResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hDevicesRemove := devices.NewRemove(ds)
+	s.Register(ipc.DomainAction[devices.RemoveInput, devices.RemoveResult]{
+		Name: hDevicesRemove.Action(),
+		Decode: func(r *ipc.Request) (*devices.RemoveInput, error) {
+			return &devices.RemoveInput{IP: r.DeviceIP}, nil
+		},
+		Handle: hDevicesRemove.Handle,
+		Encode: func(out *devices.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	// reports via ipc.DomainAction (Fase 5.1 — mesmo padrão do composition
+	// root). O fake store + o fake sessions provider satisfazem as interfaces.
+	rs := newFakeReportsStore()
+	rp := &fakeSessionsProvider{sessions: []analytics.Session{
+		{Start: time.Now().Add(-time.Hour), End: time.Now(), Preset: "social", Domains: []string{"twitter.com"}, Focus: time.Hour},
+	}}
+	hReportConfigGet := reports.NewConfigGet(rs)
+	s.Register(ipc.DomainAction[reports.NoInput, reports.ConfigResult]{
+		Name:   hReportConfigGet.Action(),
+		Decode: ipc.NoInputDecode[reports.NoInput](),
+		Handle: hReportConfigGet.Handle,
+		Encode: func(out *reports.ConfigResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, ReportConfig: &out.Config}, nil
+		},
+	}.Handler())
+	hReportConfigSet := reports.NewConfigSet(rs)
+	s.Register(ipc.DomainAction[reports.ConfigInput, reports.ConfigSetResult]{
+		Name: hReportConfigSet.Action(),
+		Decode: func(r *ipc.Request) (*reports.ConfigInput, error) {
+			if r.ReportConfig == nil {
+				return nil, ipc.Err(ipc.CodeInvalid, "agendamento ausente")
+			}
+			return &reports.ConfigInput{Config: *r.ReportConfig}, nil
+		},
+		Handle: hReportConfigSet.Handle,
+		Encode: func(out *reports.ConfigSetResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, ReportConfig: &out.Config}, nil
+		},
+	}.Handler())
+	hReportGenerate := reports.NewGenerate(rs, rp)
+	s.Register(ipc.DomainAction[reports.GenerateInput, reports.GenerateResult]{
+		Name: hReportGenerate.Action(),
+		Decode: func(r *ipc.Request) (*reports.GenerateInput, error) {
+			return &reports.GenerateInput{ExportPath: r.ReportExportPath}, nil
+		},
+		Handle: hReportGenerate.Handle,
+		Encode: func(out *reports.GenerateResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, ReportPath: out.HTMLPath}, nil
+		},
+	}.Handler())
+	// achievements via ipc.DomainAction (Fase 5.2 — mesmo padrão do
+	// composition root). O fake sessions provider satisfaz a Provider.
+	hAchievements := achievements.New(rp)
+	s.Register(ipc.DomainAction[achievements.NoInput, achievements.Result]{
+		Name:   hAchievements.Action(),
+		Decode: ipc.NoInputDecode[achievements.NoInput](),
+		Handle: hAchievements.Handle,
+		Encode: func(out *achievements.Result) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Achievements: out.Achievements}, nil
 		},
 	}.Handler())
 	// users via ipc.DomainAction (mesmo padrão do composition root).
@@ -735,6 +958,16 @@ func TestDomainWiring_AllActionsDispatch(t *testing.T) {
 		{name: "dns-stop", req: ipc.Request{Action: "dns-stop"}, wantOK: true},
 		{name: "dns-status", req: ipc.Request{Action: "dns-status"}, wantOK: true},
 		{name: "dns-set-upstream", req: ipc.Request{Action: "dns-set-upstream", Upstream: "9.9.9.9"}, wantOK: true},
+		{name: "dns-telemetry", req: ipc.Request{Action: "dns-telemetry"}, wantOK: true},
+		{name: "interceptor-status", req: ipc.Request{Action: "interceptor-status"}, wantOK: true},
+		{name: "interceptor-set", req: ipc.Request{Action: "interceptor-set", InterceptorEnabled: true}, wantOK: true},
+		{name: "devices-list", req: ipc.Request{Action: "devices-list"}, wantOK: true},
+		{name: "devices-upsert", req: ipc.Request{Action: "devices-upsert", Device: &devices.Device{IP: "192.168.1.10", Policy: devices.PolicyBlockAll}}, wantOK: true},
+		{name: "devices-remove", req: ipc.Request{Action: "devices-remove", DeviceIP: "192.168.1.10"}, wantOK: true},
+		{name: "reports-config-get", req: ipc.Request{Action: "reports-config-get"}, wantOK: true},
+		{name: "reports-config-set", req: ipc.Request{Action: "reports-config-set", ReportConfig: &reports.Config{Enabled: true, DayOfWeek: 0, Hour: 8, Minute: 0}}, wantOK: true},
+		{name: "reports-generate", req: ipc.Request{Action: "reports-generate", ReportExportPath: t.TempDir()}, wantOK: true},
+		{name: "achievements-get", req: ipc.Request{Action: "achievements-get"}, wantOK: true},
 		{name: "stats", req: ipc.Request{Action: "stats"}, wantOK: true},
 		{name: "missions", req: ipc.Request{Action: "missions"}, wantOK: true},
 		{name: "sessions", req: ipc.Request{Action: "sessions"}, wantOK: true},

@@ -1,6 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
+  CalendarClock,
   Download,
+  FileText,
   KeyRound,
   Loader2,
   Plus,
@@ -13,6 +15,7 @@ import {
   Users,
 } from "lucide-react";
 import { api, DaemonError, execAction } from "@/api/client";
+import type { ReportConfig } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -34,6 +37,7 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Screen, ScreenHeader } from "@/components/screen";
+import { Switch } from "@/components/ui/switch";
 import { useAuth, useData } from "@/context";
 import { formatMinutes } from "@/hooks/useCountdown";
 import { toast } from "@/lib/toast";
@@ -71,6 +75,25 @@ export function Configuracoes() {
       }
     } catch (e) {
       toast(e instanceof DaemonError ? e.message : "Erro ao definir a meta.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // toggleInterceptor liga/desliga a Focus Interceptor Page (Fase 3): o
+  // daemon sobe/derruba o listener HTTP :80 e ajusta a resposta do DNS.
+  const toggleInterceptor = async (on: boolean) => {
+    setBusy(true);
+    try {
+      const resp = await api.interceptorSet(on);
+      if (!resp.success) {
+        toast(resp.message ?? "Falha ao alterar a página de bloqueio.", "err");
+      } else {
+        toast(resp.message ?? (on ? "Página de bloqueio ativada." : "Página de bloqueio desativada."));
+        await refresh();
+      }
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Falha ao alterar a página de bloqueio.", "err");
     } finally {
       setBusy(false);
     }
@@ -251,6 +274,21 @@ export function Configuracoes() {
             <ShieldCheck className="size-4 text-muted-foreground" />
             <h3 className="font-heading text-base font-semibold">Proteção do sistema</h3>
           </div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex flex-col gap-1">
+              <span className="text-sm font-medium">Página de bloqueio</span>
+              <span className="text-xs text-muted-foreground">
+                Ao acessar um site bloqueado, mostrar uma página explicando o bloqueio
+                (requer a porta 80 livre). Desligada: endereço morto padrão.
+              </span>
+            </div>
+            <Switch
+              checked={status?.interceptor_enabled ?? false}
+              onCheckedChange={(on) => void toggleInterceptor(on)}
+              disabled={busy || !daemonUp}
+              aria-label="Ativar página de bloqueio"
+            />
+          </div>
           {status?.protection_error ? (
             <p className="text-sm text-muted-foreground">
               Não foi possível consultar o firewall: {status.protection_error}
@@ -269,6 +307,8 @@ export function Configuracoes() {
           )}
         </CardContent>
       </Card>
+
+      <ReportCard />
 
       {auth && <UsersCard />}
 
@@ -324,6 +364,167 @@ export function Configuracoes() {
         </DialogContent>
       </Dialog>
     </Screen>
+  );
+}
+
+// ReportCard — relatório semanal automático (Fase 5.1): liga/desliga o
+// agendamento (dia da semana + hora), escolhe a pasta de export e gera na
+// hora. O daemon grava HTML + JSON autossuficientes nessa pasta.
+function ReportCard() {
+  const { daemonUp } = useData();
+  const [cfg, setCfg] = useState<ReportConfig | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [generated, setGenerated] = useState<string | null>(null);
+
+  const load = useCallback(async () => {
+    try {
+      const r = await api.reportConfigGet();
+      if (r.success) setCfg(r.report_config ?? null);
+    } catch {
+      /* best-effort */
+    }
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load]);
+
+  const save = async (next: ReportConfig) => {
+    setBusy(true);
+    try {
+      const r = await api.reportConfigSet(next);
+      toast(r.message ?? (r.success ? "Agendamento salvo." : "Falha ao salvar."), r.success ? "ok" : "err");
+      if (r.success) setCfg(r.report_config ?? next);
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Falha ao salvar.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const generateNow = async () => {
+    setBusy(true);
+    setGenerated(null);
+    try {
+      const r = await api.reportGenerate();
+      if (r.success) {
+        setGenerated(r.report_path ?? r.message ?? "Relatório gerado.");
+        toast(r.message ?? "Relatório gerado.", "ok");
+      } else {
+        toast(r.message ?? "Falha ao gerar o relatório.", "err");
+      }
+    } catch (e) {
+      toast(e instanceof DaemonError ? e.message : "Falha ao gerar o relatório.", "err");
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const enabled = cfg?.enabled === true;
+
+  return (
+    <Card className="max-w-2xl">
+      <CardContent className="flex flex-col gap-5 px-5 py-5">
+        <div className="flex items-center gap-2">
+          <CalendarClock className="size-4 text-muted-foreground" />
+          <h3 className="font-heading text-base font-semibold">Relatório semanal automático</h3>
+          <Badge variant={enabled ? "secondary" : "outline"} className="ml-auto">
+            {enabled ? "ativo" : "desativado"}
+          </Badge>
+        </div>
+        <p className="-mt-3 text-sm text-muted-foreground">
+          Gera um resumo da semana (HTML + JSON) na pasta escolhida, no dia e
+          horário configurados. Ótimo para revisar o progresso.
+        </p>
+
+        <div className="flex items-center justify-between gap-3">
+          <span className="text-sm font-medium">Gerar automaticamente</span>
+          <Switch
+            checked={enabled}
+            onCheckedChange={(on) =>
+              void save({ ...(cfg ?? { day_of_week: 0, hour: 23, minute: 59 }), enabled: on })
+            }
+            disabled={busy || !daemonUp}
+            aria-label="Ativar relatório semanal automático"
+          />
+        </div>
+
+        {enabled && (
+          <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="report-day">Dia da semana</Label>
+              <Select
+                value={String(cfg?.day_of_week ?? 0)}
+                onValueChange={(v) => void save({ ...(cfg ?? {}), day_of_week: Number(v) })}
+                disabled={busy}
+              >
+                <SelectTrigger id="report-day">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="0">domingo</SelectItem>
+                  <SelectItem value="1">segunda</SelectItem>
+                  <SelectItem value="2">terça</SelectItem>
+                  <SelectItem value="3">quarta</SelectItem>
+                  <SelectItem value="4">quinta</SelectItem>
+                  <SelectItem value="5">sexta</SelectItem>
+                  <SelectItem value="6">sábado</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5">
+              <Label htmlFor="report-hour">Horário</Label>
+              <Select
+                value={`${String(cfg?.hour ?? 23).padStart(2, "0")}:${String(cfg?.minute ?? 59).padStart(2, "0")}`}
+                onValueChange={(v) =>
+                  void save({ ...(cfg ?? {}), hour: Number(v.slice(0, 2)), minute: Number(v.slice(3)) })
+                }
+                disabled={busy}
+              >
+                <SelectTrigger id="report-hour">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {[0, 6, 12, 18, 21, 22, 23].map((h) =>
+                    [0, 30].map((m) => (
+                      <SelectItem key={`${h}:${m}`} value={`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`}>
+                        {`${String(h).padStart(2, "0")}:${String(m).padStart(2, "0")}`}
+                      </SelectItem>
+                    )),
+                  )}
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-1.5 sm:col-span-2">
+              <Label htmlFor="report-path">Pasta de export</Label>
+              <div className="flex items-center gap-2">
+                <Input
+                  id="report-path"
+                  value={cfg?.export_path ?? ""}
+                  placeholder="~/FocusGuardReports"
+                  onChange={(e) => setCfg({ ...(cfg ?? {}), export_path: e.target.value })}
+                  disabled={busy}
+                />
+                <Button
+                  variant="secondary"
+                  onClick={() => void save({ ...(cfg ?? {}), export_path: cfg?.export_path ?? "" })}
+                  disabled={busy}
+                >
+                  Salvar pasta
+                </Button>
+              </div>
+            </div>
+          </div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <Button variant="outline" onClick={() => void generateNow()} disabled={busy || !daemonUp}>
+            {busy ? <Loader2 className="animate-spin" /> : <FileText />} Gerar agora
+          </Button>
+          {generated && <span className="text-xs text-muted-foreground break-all">{generated}</span>}
+        </div>
+      </CardContent>
+    </Card>
   );
 }
 

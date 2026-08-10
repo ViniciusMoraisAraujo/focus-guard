@@ -219,6 +219,20 @@ type Scheduler struct {
 	// (dnsserver.DefaultUpstream). Like dnsEnabled, it is a setting mirrored
 	// to disk, not live state.
 	dnsUpstream string
+	// lastKnownTime é a leitura do wall clock que o daemon confiou por último
+	// (Clock Tamper Protection — Fase 2). O guard a lê para detectar saltos do
+	// relógio entre restarts; persiste no state.json junto com os blocos.
+	lastKnownTime time.Time
+	// interceptorEnabled persiste se a Focus Interceptor Page está ativa
+	// (Fase 3): quando ligada, o hosts/DNS apontam o bloqueado para o próprio
+	// host e o daemon serve uma página explicando o bloqueio em vez de
+	// "conexão recusada". Desligada por default (muda a resposta do DNS).
+	interceptorEnabled bool
+	// deviceRules é o catálogo de políticas por dispositivo (Fase 4 — edição
+	// Server): IsBlockedFor o consulta ANTES da regra global; um device com
+	// block_all/allow_list decide sozinho, inherit/IP desconhecido cai na
+	// regra global. Nil = feature desligada (comportamento clássico).
+	deviceRules DeviceRuleStore
 	// snapshot is the immutable read cache for ListBlocks, rebuilt on demand so
 	// query paths never iterate the source-of-truth map. Writers only mark it
 	// stale (invalidateSnapshot); the first reader after a mutation rebuilds it
@@ -366,7 +380,7 @@ func refreshResolvedIPs(entries []refreshEntry, timeout time.Duration, resolve f
 // DNS-enabled flag) means the disk copy no longer mirrors the in-memory state
 // and must be restored.
 func statesEqual(a, b *store.State) bool {
-	if a.DNSEnabled != b.DNSEnabled || a.DNSUpstream != b.DNSUpstream {
+	if a.DNSEnabled != b.DNSEnabled || a.DNSUpstream != b.DNSUpstream || a.InterceptorEnabled != b.InterceptorEnabled {
 		return false
 	}
 	if len(a.Blocks) != len(b.Blocks) {
@@ -392,7 +406,14 @@ func (s *Scheduler) ramState() *store.State {
 	for domain, block := range s.blocks {
 		blocks[domain] = block
 	}
-	return &store.State{Version: 1, Blocks: blocks, DNSEnabled: s.dnsEnabled, DNSUpstream: s.dnsUpstream}
+	return &store.State{
+		Version:            1,
+		Blocks:             blocks,
+		DNSEnabled:         s.dnsEnabled,
+		DNSUpstream:        s.dnsUpstream,
+		LastKnownTime:      s.lastKnownTime,
+		InterceptorEnabled: s.interceptorEnabled,
+	}
 }
 
 // invalidateSnapshot marks the ListBlocks snapshot stale so the next read
@@ -430,6 +451,8 @@ func (s *Scheduler) Reconcile() error {
 		}
 		s.dnsEnabled = state.DNSEnabled
 		s.dnsUpstream = state.DNSUpstream
+		s.lastKnownTime = state.LastKnownTime
+		s.interceptorEnabled = state.InterceptorEnabled
 		s.invalidateSnapshot()
 		s.bootstrapped = true
 		changed = true
@@ -1072,6 +1095,68 @@ func (s *Scheduler) IsBlocked(domain string) bool {
 	return false
 }
 
+// BlockRemaining returns the remaining time of the active block covering
+// domain (walking up parent domains like IsBlocked), or 0 when the domain is
+// not blocked. It backs the Focus Interceptor Page (Fase 3): the page shows
+// how long the visitor has left before the site is reachable again.
+func (s *Scheduler) BlockRemaining(domain string) time.Duration {
+	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
+
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+
+	if sentinel, ok := s.blocks[enforcer.AllInternetDomain]; ok && sentinel.IsActive() && !domainAllowlisted(sentinel.Allowlist, domain) {
+		return sentinel.RemainingTime()
+	}
+
+	for labels := domain; labels != ""; {
+		if b, ok := s.blocks[labels]; ok && b.IsActive() {
+			return b.RemainingTime()
+		}
+		i := strings.IndexByte(labels, '.')
+		if i < 0 {
+			break
+		}
+		labels = labels[i+1:]
+	}
+	return 0
+}
+
+// DeviceRuleStore is the per-device policy catalog consulted by
+// IsBlockedFor (Fase 4 — edição Server). Satisfied by *devices.Store; the
+// scheduler keeps it as an interface so the ipc package never imports the
+// devices domain (DIP — mesmo padrão das demais dependências de domínio).
+type DeviceRuleStore interface {
+	IsBlocked(domain, clientIP string) (blocked bool, decided bool)
+}
+
+// SetDeviceRules wires the per-device policy catalog (Fase 4). Nil disables
+// the feature — IsBlockedFor falls back to the global rule. The scheduler
+// only reads the store (never mutates it); the devices IPC handlers own the
+// catalog's lifecycle.
+func (s *Scheduler) SetDeviceRules(r DeviceRuleStore) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deviceRules = r
+}
+
+// IsBlockedFor reports whether the sinkhole should answer a query for domain
+// coming from clientIP (Fase 4 — edição Server): a device-specific rule
+// (block_all/allow_list) decides first; inherit/unknown IPs fall through to
+// the global IsBlocked. The DNS server passes the query's source address;
+// the desktop daemon (no devices store wired) behaves exactly like IsBlocked.
+func (s *Scheduler) IsBlockedFor(domain, clientIP string) bool {
+	s.mu.RLock()
+	rules := s.deviceRules
+	s.mu.RUnlock()
+	if rules != nil {
+		if blocked, decided := rules.IsBlocked(domain, clientIP); decided {
+			return blocked
+		}
+	}
+	return s.IsBlocked(domain)
+}
+
 // domainAllowlisted reports whether domain equals an allowlist entry or sits
 // under one (allowlist "example.com" covers "api.example.com").
 func domainAllowlisted(allowlist []string, domain string) bool {
@@ -1148,6 +1233,65 @@ func (s *Scheduler) DNSUpstream() string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.dnsUpstream
+}
+
+// SetInterceptorEnabled persists the Focus Interceptor Page flag (Fase 3).
+// It only touches the state mirror — starting/stopping the actual HTTP
+// listener is the daemon's job (it reads the flag after the bootstrap
+// Reconcile). Setting the same value is a no-op.
+func (s *Scheduler) SetInterceptorEnabled(enabled bool) error {
+	s.mu.Lock()
+	if s.interceptorEnabled == enabled {
+		s.mu.Unlock()
+		return nil
+	}
+	original := s.interceptorEnabled
+	s.interceptorEnabled = enabled
+	if err := s.store.Save(s.ramState()); err != nil {
+		// Reverte a RAM: sem o disco persistido, o setting não pode ficar
+		// divergente até o próximo boot (mesmo padrão de DNSEnabled).
+		s.interceptorEnabled = original
+		s.mu.Unlock()
+		return err
+	}
+	s.mu.Unlock()
+	s.notifyChange()
+	return nil
+}
+
+// InterceptorEnabled reports whether the Focus Interceptor Page flag is set
+// (persisted setting, not the live listener state).
+func (s *Scheduler) InterceptorEnabled() bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.interceptorEnabled
+}
+
+// LastKnownTime reports the persisted wall-clock reading the clock guard last
+// trusted (zero on first run).
+func (s *Scheduler) LastKnownTime() time.Time {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.lastKnownTime
+}
+
+// SetLastKnownTime persists the trusted wall-clock reading (Clock Tamper
+// Protection — Fase 2). The clock guard calls it after a successful NTP
+// validation; the daemon also stamps it at boot so the next restart can
+// detect a jump. Setting the same value is a no-op.
+func (s *Scheduler) SetLastKnownTime(t time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.lastKnownTime.Equal(t) {
+		return nil
+	}
+	original := s.lastKnownTime
+	s.lastKnownTime = t
+	if err := s.store.Save(s.ramState()); err != nil {
+		s.lastKnownTime = original
+		return err
+	}
+	return nil
 }
 
 type ProtectionStatus struct {

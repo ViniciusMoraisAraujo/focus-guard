@@ -33,10 +33,14 @@ import (
 	"strings"
 	"time"
 
+	"focusguard/internal/domain/achievements"
 	"focusguard/internal/domain/analytics"
+	"focusguard/internal/domain/devices"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
+	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/infrastructure/update"
 )
 
@@ -51,6 +55,10 @@ type refDeps struct {
 	analytics     AnalyticsProvider
 	schedules     ScheduleManager
 	pomodoroPrefs PomodoroPrefs
+	telemetry     TelemetryQuerier
+	interceptor   InterceptorPersister
+	devices       DevicesService
+	reports       ReportsConfigStore
 }
 
 // registerDomainReferenceHandlers registra as ações de domínio com os adapters
@@ -83,6 +91,16 @@ func registerDomainReferenceHandlers(s *Server, deps *refDeps) {
 	s.registry.Register(funcHandler{action: "dns-stop", handle: s.handleDNSStop})
 	s.registry.Register(funcHandler{action: "dns-status", handle: s.handleDNSStatus})
 	s.registry.Register(funcHandler{action: "dns-set-upstream", handle: s.handleDNSSetUpstream})
+	s.registry.Register(funcHandler{action: "dns-telemetry", handle: deps.handleDNSTelemetry})
+	s.registry.Register(funcHandler{action: "interceptor-set", handle: deps.handleInterceptorSet})
+	s.registry.Register(funcHandler{action: "interceptor-status", handle: deps.handleInterceptorStatus})
+	s.registry.Register(funcHandler{action: "devices-list", handle: deps.handleDevicesList})
+	s.registry.Register(funcHandler{action: "devices-upsert", handle: deps.handleDevicesUpsert})
+	s.registry.Register(funcHandler{action: "devices-remove", handle: deps.handleDevicesRemove})
+	s.registry.Register(funcHandler{action: "reports-config-get", handle: deps.handleReportConfigGet})
+	s.registry.Register(funcHandler{action: "reports-config-set", handle: deps.handleReportConfigSet})
+	s.registry.Register(funcHandler{action: "reports-generate", handle: deps.handleReportGenerate})
+	s.registry.Register(funcHandler{action: "achievements-get", handle: deps.handleAchievements})
 	// Serviços (pós-reorg item 1): os handlers reais vivem nos domínios
 	// (analytics/pomodoro/schedule/update) e o composition root os registra via
 	// ipc.DomainAction; aqui os testes internos usam os adapters de referência
@@ -415,6 +433,215 @@ func normalizeUpstream(in string) (string, error) {
 		return "", fmt.Errorf("porta de upstream inválida %q", port)
 	}
 	return net.JoinHostPort(host, port), nil
+}
+
+// ---------------------------------------------------------------------------
+// dns-telemetry (adapter de referência — Fase 1.2 do features-plan)
+// ---------------------------------------------------------------------------
+
+// TelemetryQuerier é a superfície de leitura do telemetria (satisfeita por
+// *telemetry.Recorder). O ipc não pode importar o domínio (ciclo), então o
+// adapter de referência usa a interface — espelho do handler real de domínio.
+type TelemetryQuerier interface {
+	Queries() ([]telemetry.BlockedQuery, error)
+}
+
+// handleDNSTelemetry lista as queries bloqueadas recentes + resumo agregado.
+func (d *refDeps) handleDNSTelemetry(_ context.Context, req *Request) (*Response, error) {
+	q := d.telemetry
+	if q == nil {
+		return nil, Err(CodeNotConfigured, "telemetria não configurada")
+	}
+	qs, err := q.Queries()
+	if err != nil {
+		return nil, err
+	}
+	limit := req.TelemetryLimit
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	return &Response{
+		Success:          true,
+		TelemetryEntries: telemetry.Recent(qs, limit),
+		TelemetrySummary: telemetry.Summarize(qs),
+		TelemetryTotal:   len(qs),
+		TelemetryLimit:   limit,
+	}, nil
+}
+
+// ---------------------------------------------------------------------------
+// interceptor-set / interceptor-status (adapters de referência — Fase 3)
+// ---------------------------------------------------------------------------
+
+// InterceptorPersister é a superfície do flag persistido da Focus Interceptor
+// Page (satisfeita pelo *scheduler.Scheduler; o ipc não pode importá-lo).
+type InterceptorPersister interface {
+	SetInterceptorEnabled(enabled bool) error
+	InterceptorEnabled() bool
+}
+
+// handleInterceptorSet persiste o flag e responde com o novo estado.
+func (d *refDeps) handleInterceptorSet(_ context.Context, req *Request) (*Response, error) {
+	p := d.interceptor
+	if p == nil {
+		return nil, Err(CodeNotConfigured, "interceptor não configurado")
+	}
+	if err := p.SetInterceptorEnabled(req.InterceptorEnabled); err != nil {
+		return nil, err
+	}
+	resp := &Response{Success: true, InterceptorEnabled: p.InterceptorEnabled()}
+	if req.InterceptorEnabled {
+		resp.Message = "Página de bloqueio ativada — domínios bloqueados agora mostram o aviso (requer porta 80 livre)"
+	} else {
+		resp.Message = "Página de bloqueio desativada — domínios bloqueados voltam a resolver para endereço morto"
+	}
+	return resp, nil
+}
+
+// handleInterceptorStatus reporta o flag persistido.
+func (d *refDeps) handleInterceptorStatus(_ context.Context, _ *Request) (*Response, error) {
+	p := d.interceptor
+	if p == nil {
+		return nil, Err(CodeNotConfigured, "interceptor não configurado")
+	}
+	return &Response{Success: true, InterceptorEnabled: p.InterceptorEnabled()}, nil
+}
+
+// ---------------------------------------------------------------------------
+// devices-list / devices-upsert / devices-remove (adapters de referência —
+// Fase 4, edição Server)
+// ---------------------------------------------------------------------------
+
+// DevicesService é a superfície do catálogo de dispositivos (satisfeita pelo
+// *devices.Store; o ipc não pode importá-lo diretamente nos adapters).
+type DevicesService interface {
+	List() []devices.Device
+	Get(ip string) (devices.Device, bool)
+	Upsert(d devices.Device) error
+	Remove(ip string) error
+}
+
+// handleDevicesList lista o catálogo de dispositivos.
+func (d *refDeps) handleDevicesList(_ context.Context, _ *Request) (*Response, error) {
+	svc := d.devices
+	if svc == nil {
+		return nil, Err(CodeNotConfigured, "catálogo de dispositivos não configurado")
+	}
+	return &Response{Success: true, Devices: svc.List()}, nil
+}
+
+// handleDevicesUpsert cria/atualiza a política de um dispositivo.
+func (d *refDeps) handleDevicesUpsert(_ context.Context, req *Request) (*Response, error) {
+	svc := d.devices
+	if svc == nil {
+		return nil, Err(CodeNotConfigured, "catálogo de dispositivos não configurado")
+	}
+	if req.Device == nil {
+		return nil, Err(CodeInvalid, "dispositivo ausente na requisição")
+	}
+	if err := svc.Upsert(*req.Device); err != nil {
+		return nil, err
+	}
+	label := req.Device.Name
+	if label == "" {
+		label = req.Device.IP
+	}
+	return &Response{Success: true, Message: fmt.Sprintf("Política de %s atualizada", label)}, nil
+}
+
+// handleDevicesRemove remove a política de um dispositivo.
+func (d *refDeps) handleDevicesRemove(_ context.Context, req *Request) (*Response, error) {
+	svc := d.devices
+	if svc == nil {
+		return nil, Err(CodeNotConfigured, "catálogo de dispositivos não configurado")
+	}
+	if err := svc.Remove(req.DeviceIP); err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Message: fmt.Sprintf("Dispositivo %s removido", req.DeviceIP)}, nil
+}
+
+// ---------------------------------------------------------------------------
+// reports-config-get / reports-config-set / reports-generate (adapters de
+// referência — Fase 5.1, relatório semanal automático)
+// ---------------------------------------------------------------------------
+
+// ReportsConfigStore é a superfície da config persistida (satisfeita por
+// *reports.Store).
+type ReportsConfigStore interface {
+	Get() reports.Config
+	Set(reports.Config) error
+}
+
+// ReportsProvider fornece as sessões para a geração (satisfeito por
+// *analytics.Recorder).
+type ReportsProvider interface {
+	Sessions() ([]analytics.Session, error)
+}
+
+// handleReportConfigGet devolve o agendamento atual.
+func (d *refDeps) handleReportConfigGet(_ context.Context, _ *Request) (*Response, error) {
+	s := d.reports
+	if s == nil {
+		return nil, Err(CodeNotConfigured, "relatório semanal não configurado")
+	}
+	cfg := s.Get()
+	return &Response{Success: true, ReportConfig: &cfg}, nil
+}
+
+// handleReportConfigSet persiste o agendamento.
+func (d *refDeps) handleReportConfigSet(_ context.Context, req *Request) (*Response, error) {
+	s := d.reports
+	if s == nil {
+		return nil, Err(CodeNotConfigured, "relatório semanal não configurado")
+	}
+	if req.ReportConfig == nil {
+		return nil, Err(CodeInvalid, "agendamento ausente na requisição")
+	}
+	if err := s.Set(*req.ReportConfig); err != nil {
+		return nil, err
+	}
+	cfg := s.Get()
+	msg := "Relatório semanal desativado"
+	if cfg.Enabled {
+		msg = "Relatório semanal ativado"
+	}
+	return &Response{Success: true, Message: msg, ReportConfig: &cfg}, nil
+}
+
+// handleReportGenerate gera o relatório agora (pasta configurada ou override).
+func (d *refDeps) handleReportGenerate(_ context.Context, req *Request) (*Response, error) {
+	s := d.reports
+	if s == nil || d.analytics == nil {
+		return nil, Err(CodeNotConfigured, "relatório semanal não configurado")
+	}
+	cfg := s.Get()
+	if req.ReportExportPath != "" {
+		cfg.ExportPath = req.ReportExportPath
+	}
+	htmlPath, _, err := reports.Generate(d.analytics, cfg, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	return &Response{Success: true, Message: "Relatório gerado: " + htmlPath, ReportPath: htmlPath}, nil
+}
+
+// ---------------------------------------------------------------------------
+// achievements-get (adapter de referência — Fase 5.2, gamificação)
+// ---------------------------------------------------------------------------
+
+// handleAchievements deriva as badges das sessões atuais (mesmo caminho do
+// handler real de domínio).
+func (d *refDeps) handleAchievements(_ context.Context, _ *Request) (*Response, error) {
+	if d.analytics == nil {
+		return nil, Err(CodeNotConfigured, "achievements não configurado")
+	}
+	sessions, err := d.analytics.Sessions()
+	if err != nil {
+		return nil, err
+	}
+	st := analytics.Summarize(sessions, 7, time.Now())
+	return &Response{Success: true, Achievements: achievements.Calculate(st, sessions)}, nil
 }
 
 // ---------------------------------------------------------------------------

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log"
+	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -13,21 +14,30 @@ import (
 	"syscall"
 	"time"
 
+	"focusguard/internal/domain/achievements"
 	"focusguard/internal/domain/analytics"
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
+	"focusguard/internal/domain/clockguard"
+	"focusguard/internal/domain/devices"
 	"focusguard/internal/domain/goal"
+	interceptordomain "focusguard/internal/domain/interceptor"
+	"focusguard/internal/domain/ipcerr"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/presets"
+	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/scheduler"
+	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/domain/user"
 	"focusguard/internal/domain/users"
 	"focusguard/internal/infrastructure/dns"
 	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/hostswatch"
+	"focusguard/internal/infrastructure/interceptor"
+	"focusguard/internal/infrastructure/ntp"
 	"focusguard/internal/infrastructure/processguard"
 	"focusguard/internal/infrastructure/statewatch"
 	"focusguard/internal/infrastructure/store"
@@ -223,6 +233,24 @@ func (a dnsCtrlAdapter) Status() ipc.DNSStatus {
 	}
 }
 
+// clockLockdownAdapter adapta o *scheduler.Scheduler ao clockguard.Lockdown
+// (o BlockAllInternet do scheduler devolve *policy.Block; o guard só quer o
+// erro). O composition root conhece os dois lados.
+type clockLockdownAdapter struct{ s *scheduler.Scheduler }
+
+func (a clockLockdownAdapter) BlockAllInternet(allowlist []string, duration time.Duration) error {
+	_, err := a.s.BlockAllInternet(allowlist, duration)
+	return err
+}
+
+// clockLoggerAdapter adapta o *tamper.Recorder (Log(Event)) ao
+// clockguard.Logger (Log(source, action, detail)).
+type clockLoggerAdapter struct{ rec *tamper.Recorder }
+
+func (a clockLoggerAdapter) Log(source, action, detail string) {
+	a.rec.Log(tamper.Event{At: time.Now(), Source: source, Action: action, Detail: detail})
+}
+
 // updateCheckerBridge adapta o ipc.UpdateChecker do wire (devolve
 // ipc.UpdateStatus) ao update.Checker do domínio (update.Status) — o domínio
 // não pode importar ipc (ciclo: ipc importa update para o adapter). Vivia no
@@ -315,6 +343,187 @@ func startScheduleWorker(mgr *schedule.Manager, resolver schedule.Resolver, b sc
 	}()
 	var once sync.Once
 	return func() { once.Do(func() { close(stop) }) }
+}
+
+// startWeeklyReportWorker gera o relatório semanal automático (Fase 5.1) no
+// horário configurado: o worker acorda quando o próximo agendamento vence,
+// gera HTML + JSON na pasta de export e re-agenda. No boot, um horário que já
+// passou hoje é gerado imediatamente (a primeira execução usa NextRun, que
+// cobre o dia atual se ainda não venceu — caso contrário pula para a semana
+// que vem; o relatório atrasado fica coberto pela geração manual/on-demand).
+// A config é relida a cada ciclo, então reports-config-set vale sem reinício.
+// Falha de escrita é best-effort (log) — nunca derruba o daemon. Retorna um
+// stop func para o lifecycle.
+func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func() time.Time) func() {
+	stop := make(chan struct{})
+	go func() {
+		generate := func(cfg reports.Config) {
+			if !cfg.Enabled {
+				return
+			}
+			htmlPath, _, err := reports.Generate(p, cfg, now())
+			if err != nil {
+				log.Printf("[FocusGuard Daemon] Relatório semanal falhou: %v", err)
+				return
+			}
+			log.Printf("[FocusGuard Daemon] Relatório semanal gerado: %s", htmlPath)
+		}
+		for {
+			cfg := store.Get()
+			if cfg.Enabled {
+				// Se o horário de hoje ainda não venceu, gera quando vencer;
+				// se já venceu, aguarda a próxima semana (o on-demand cobre o
+				// atraso). Um ciclo de espera nunca é menor que alguns minutos.
+				next := cfg.NextRun(now())
+				wait := time.Until(next)
+				if wait < time.Minute {
+					wait = time.Minute
+				}
+				timer := time.NewTimer(wait)
+				select {
+				case <-timer.C:
+					generate(cfg)
+				case <-stop:
+					timer.Stop()
+					return
+				}
+			} else {
+				// Desativado: acorda a cada 5 min para pegar uma reativação
+				// (reports-config-set) sem reinício do daemon.
+				timer := time.NewTimer(5 * time.Minute)
+				select {
+				case <-timer.C:
+				case <-stop:
+					timer.Stop()
+					return
+				}
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
+}
+
+// startClockGuardWorker roda a validação do relógio (Clock Tamper Protection
+// — Fase 2): um Check imediato no boot + um Check periódico a cada
+// clockguard.CheckInterval. O guard consulta NTP quando o gap do wall clock
+// ultrapassa a tolerância; um salto CONFIRMADO aplica o bloqueio preventivo
+// (sentinela all-internet) e registra no tamper-log. O NTP é best-effort e
+// com timeout curto — um daemon offline nunca trava o boot. Retorna um stop
+// func para o lifecycle.
+func startClockGuardWorker(st clockguard.State, lock clockguard.Lockdown, logger clockguard.Logger, interval time.Duration) func() {
+	guard := clockguard.New(clockguard.Deps{
+		State:    st,
+		NTP:      ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
+		Lockdown: lock,
+		Logger:   logger,
+	})
+	stop := make(chan struct{})
+	go func() {
+		check := func() {
+			out := guard.Check()
+			if out.Suspicion {
+				log.Printf("[ClockGuard] %s", out.Detail)
+			}
+		}
+		check()
+		if interval <= 0 {
+			return
+		}
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ticker.C:
+				check()
+			case <-stop:
+				return
+			}
+		}
+	}()
+	var once sync.Once
+	return func() { once.Do(func() { close(stop) }) }
+}
+
+// localIP4 devolve o IP IPv4 da interface de saída (a rota default), usado
+// pela Interceptor Page no modo Server: o sinkhole responde os bloqueados com
+// este endereço para o navegador da rede conectar no listener :80. Best-effort:
+// vazio sem interface de saída.
+func localIP4() string {
+	conn, err := net.Dial("udp", "8.8.8.8:80")
+	if err != nil {
+		return ""
+	}
+	defer conn.Close()
+	return strings.Split(conn.LocalAddr().String(), ":")[0]
+}
+
+// interceptorLifecycle é o estado do listener HTTP da Interceptor Page (Fase
+// 3): os servers (best-effort, porta 80 ocupada não derruba o daemon) e o IP
+// respondido pelo DNS quando ativo. O daemon os sobe no boot quando o flag
+// persistido está ligado e os troca quando interceptor-set muda o flag.
+//
+// No Desktop o listener é DUAL-STACK loopback (127.0.0.1:80 + [::1]:80): o
+// hosts do enforcer escreve as duas entradas (IPv4 e IPv6) e navegadores
+// modernos tentam IPv6 primeiro — sem o ::1, a conexão seria recusada no
+// stack IPv6 antes do fallback para o IPv4, e a página não apareceria.
+type interceptorLifecycle struct {
+	mu        sync.Mutex
+	checker   *scheduler.Scheduler
+	servers   []*interceptor.Server
+	dns       *dnsserver.Controller
+	bindAddrs []string
+	dnsAnswer string
+}
+
+// set aplica o novo estado do flag: sobe/derruba os listeners e ajusta a
+// resposta do DNS (IP local vs endereço morto). Idempotente — cada bind é
+// best-effort (porta 80 ocupada só desativa aquele listener, nunca o daemon).
+func (il *interceptorLifecycle) set(enabled bool) {
+	il.mu.Lock()
+	defer il.mu.Unlock()
+	if enabled {
+		if len(il.servers) == 0 {
+			for _, addr := range il.bindAddrs {
+				srv := interceptor.New(il.checker)
+				if err := srv.Start(addr); err != nil {
+					log.Printf("[FocusGuard Interceptor] página de bloqueio indisponível em %s (porta 80 ocupada?): %v — o bloqueio continua valendo", addr, err)
+					continue
+				}
+				il.servers = append(il.servers, srv)
+				log.Printf("[FocusGuard Interceptor] página de bloqueio ativa em %s", srv.Addr())
+			}
+		}
+		if il.dns != nil {
+			il.dns.SetInterceptIP(ipOrNil(il.dnsAnswer))
+		}
+		return
+	}
+	for _, srv := range il.servers {
+		_ = srv.Stop()
+	}
+	il.servers = nil
+	if il.dns != nil {
+		il.dns.SetInterceptIP(nil)
+	}
+}
+
+// stop derruba os listeners (shutdown do daemon).
+func (il *interceptorLifecycle) stop() {
+	il.mu.Lock()
+	defer il.mu.Unlock()
+	for _, srv := range il.servers {
+		_ = srv.Stop()
+	}
+	il.servers = nil
+}
+
+// ipOrNil converte um endereço IPv4 textual em net.IP (nil quando vazio).
+func ipOrNil(s string) net.IP {
+	if s == "" {
+		return nil
+	}
+	return net.ParseIP(s)
 }
 
 var serviceStopCh = make(chan struct{})
@@ -699,6 +908,15 @@ func runDaemon() bool {
 	// hosts/state detectadas e revertidas) — "focusguard tamper-log".
 	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
 
+	// Clock Tamper Protection (Fase 2): validação do wall clock no boot e a
+	// cada 10 min. Um salto CONFIRMADO por NTP aplica o bloqueio preventivo
+	// (sentinela all-internet, via scheduler) e registra no tamper-log. O
+	// tamperRec satifaz o clockguard.Logger (Log(source, action, detail)).
+	stopClock := startClockGuardWorker(sched, clockLockdownAdapter{s: sched}, clockLoggerAdapter{rec: tamperRec}, clockguard.CheckInterval)
+	if stopClock != nil {
+		components = append(components, daemon.StopOnly(stopClock))
+	}
+
 	hw := startHostswatch(enf, sched)
 	if hw != nil {
 		components = append(components, daemon.StopOnly(hw.Stop))
@@ -748,6 +966,15 @@ func runDaemon() bool {
 		dnsUpstream = dnsserver.DefaultUpstream
 	}
 	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsUpstream)
+	// Telemetria do sinkhole (Fase 1.2 do features-plan): log JSONL das
+	// queries bloqueadas (domínio + IP de origem) exposto no painel via
+	// dns-telemetry. O hook é não-bloqueante e best-effort — uma falha de
+	// escrita nunca afeta o caminho do DNS.
+	telRec := telemetry.NewRecorder(filepath.Join(filepath.Dir(statePath), "telemetry.jsonl"))
+	telRec.PurgeOld()
+	dnsSrv.SetOnBlocked(func(domain, clientIP string) {
+		telRec.Record(telemetry.BlockedQuery{Domain: domain, ClientIP: clientIP, Timestamp: time.Now()})
+	})
 	server.SetDNS(dnsCtrlAdapter{c: dnsSrv})
 	// Hook DoH do dns-start: fechado pela porta 853 (browsers com DoH embutido
 	// ignorariam o sinkhole). Idempotente — o scheduler também o aplica
@@ -766,6 +993,31 @@ func runDaemon() bool {
 		}
 	}
 	components = append(components, daemon.StopOnly(func() { _ = dnsSrv.Stop() }))
+
+	// Focus Interceptor Page (Fase 3): listener HTTP :80 best-effort que
+	// serve a página de bloqueio (com frase motivacional) quando o flag
+	// persistido está ativo. Desktop: loopback dual-stack (127.0.0.1 + ::1,
+	// casando com as duas entradas que o enforcer escreve no hosts) — a
+	// página funciona na edição padrão. Server: todas as interfaces, e o DNS
+	// responde os bloqueados com o IP local (em vez de 0.0.0.0) para a rede
+	// conectar no listener. Porta 80 ocupada nunca derruba o daemon — o
+	// bloqueio continua valendo sem a página.
+	interceptorBinds := []string{"127.0.0.1:80", "[::1]:80"}
+	interceptorAnswer := ""
+	if isServerEdition() {
+		interceptorBinds = []string{interceptor.DefaultBindAddr}
+		interceptorAnswer = localIP4()
+	}
+	il := &interceptorLifecycle{
+		checker:   sched,
+		dns:       dnsSrv,
+		bindAddrs: interceptorBinds,
+		dnsAnswer: interceptorAnswer,
+	}
+	if sched.InterceptorEnabled() {
+		il.set(true)
+	}
+	components = append(components, daemon.StopOnly(il.stop))
 
 	// Modo Pomodoro & Presets: ciclos de trabalho/descanso sobre as categorias
 	// (--preset social, video, news, games). O controller bloqueia via o
@@ -821,6 +1073,25 @@ func runDaemon() bool {
 	// "focusguard goal" e o status da TUI.
 	goalStore := goal.NewStore(filepath.Join(filepath.Dir(statePath), "goal.json"))
 	server.SetGoal(goalStore)
+
+	// Regras por dispositivo (Fase 4 — edição Server): catálogo de políticas
+	// por IP persistido em devices.json. O scheduler o consulta em
+	// IsBlockedFor (o DNS server decide pelo IP de origem); as ações
+	// devices-* abaixo são a superfície de edição. Na edição desktop o
+	// catálogo fica vazio e o comportamento é o clássico (sem per-device).
+	deviceStore := devices.NewStore(filepath.Join(filepath.Dir(statePath), "devices.json"))
+	sched.SetDeviceRules(deviceStore)
+
+	// Relatório semanal automático (Fase 5.1): agendamento persistido em
+	// reports.json (dia/hora/pasta). O worker abaixo gera o relatório no
+	// horário configurado (e no boot, se o horário já passou); a ação
+	// reports-generate permite gerar na hora pela UI/CLI. Falha de escrita é
+	// best-effort (log) — nunca derruba o daemon.
+	reportStore := reports.NewStore(filepath.Join(filepath.Dir(statePath), "reports.json"))
+	stopReports := startWeeklyReportWorker(reportStore, rec, time.Now)
+	if stopReports != nil {
+		components = append(components, daemon.StopOnly(stopReports))
+	}
 
 	// Composition root (Fase 5): as ações de domínio (block/block-all, apps-*,
 	// goal-*, presets, preset-*, user-*, dns-*) são atendidas pelos handlers
@@ -958,6 +1229,135 @@ func runDaemon() bool {
 			resp := &ipc.Response{Success: true, Message: out.Message}
 			mergeDNSWire(resp, out.Status)
 			return resp, nil
+		},
+	}.Handler())
+	// interceptor-set/interceptor-status via ipc.DomainAction (DIP — pós-reorg
+	// item 2). O onChanged liga/desliga o listener HTTP e a resposta do DNS
+	// (Fase 3) — o mesmo caminho do boot quando o flag persistido está ativo.
+	hInterceptorSet := interceptordomain.NewSet(sched, il.set)
+	server.Register(ipc.DomainAction[interceptordomain.SetInput, interceptordomain.SetResult]{
+		Name: hInterceptorSet.Action(),
+		Decode: func(r *ipc.Request) (*interceptordomain.SetInput, error) {
+			return &interceptordomain.SetInput{Enabled: r.InterceptorEnabled}, nil
+		},
+		Handle: hInterceptorSet.Handle,
+		Encode: func(out *interceptordomain.SetResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:            true,
+				Message:            out.Message,
+				InterceptorEnabled: out.Status.Enabled,
+			}, nil
+		},
+	}.Handler())
+	hInterceptorStatus := interceptordomain.NewStatus(sched)
+	server.Register(ipc.DomainAction[interceptordomain.NoInput, interceptordomain.StatusResult]{
+		Name:   hInterceptorStatus.Action(),
+		Decode: ipc.NoInputDecode[interceptordomain.NoInput](),
+		Handle: hInterceptorStatus.Handle,
+		Encode: func(out *interceptordomain.StatusResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, InterceptorEnabled: out.Status.Enabled}, nil
+		},
+	}.Handler())
+	// devices via ipc.DomainAction (Fase 4 — edição Server). O *devices.Store
+	// satisfaz a Service dos handlers; o scheduler o consulta em IsBlockedFor.
+	hDevicesList := devices.NewList(deviceStore)
+	server.Register(ipc.DomainAction[devices.NoInput, devices.ListResult]{
+		Name:   hDevicesList.Action(),
+		Decode: ipc.NoInputDecode[devices.NoInput](),
+		Handle: hDevicesList.Handle,
+		Encode: func(out *devices.ListResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Devices: out.Devices}, nil
+		},
+	}.Handler())
+	hDevicesUpsert := devices.NewUpsert(deviceStore)
+	server.Register(ipc.DomainAction[devices.UpsertInput, devices.UpsertResult]{
+		Name: hDevicesUpsert.Action(),
+		Decode: func(r *ipc.Request) (*devices.UpsertInput, error) {
+			if r.Device == nil {
+				return nil, ipcerr.New(ipcerr.CodeInvalid, "dispositivo ausente na requisição")
+			}
+			return &devices.UpsertInput{Device: *r.Device}, nil
+		},
+		Handle: hDevicesUpsert.Handle,
+		Encode: func(out *devices.UpsertResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	hDevicesRemove := devices.NewRemove(deviceStore)
+	server.Register(ipc.DomainAction[devices.RemoveInput, devices.RemoveResult]{
+		Name: hDevicesRemove.Action(),
+		Decode: func(r *ipc.Request) (*devices.RemoveInput, error) {
+			return &devices.RemoveInput{IP: r.DeviceIP}, nil
+		},
+		Handle: hDevicesRemove.Handle,
+		Encode: func(out *devices.RemoveResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message}, nil
+		},
+	}.Handler())
+	// reports via ipc.DomainAction (Fase 5.1 — mesmo padrão do composition
+	// root). O *reports.Store satisfaz a ConfigStore; o *analytics.Recorder a
+	// Provider de sessões.
+	hReportConfigGet := reports.NewConfigGet(reportStore)
+	server.Register(ipc.DomainAction[reports.NoInput, reports.ConfigResult]{
+		Name:   hReportConfigGet.Action(),
+		Decode: ipc.NoInputDecode[reports.NoInput](),
+		Handle: hReportConfigGet.Handle,
+		Encode: func(out *reports.ConfigResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, ReportConfig: &out.Config}, nil
+		},
+	}.Handler())
+	hReportConfigSet := reports.NewConfigSet(reportStore)
+	server.Register(ipc.DomainAction[reports.ConfigInput, reports.ConfigSetResult]{
+		Name: hReportConfigSet.Action(),
+		Decode: func(r *ipc.Request) (*reports.ConfigInput, error) {
+			if r.ReportConfig == nil {
+				return nil, ipcerr.New(ipcerr.CodeInvalid, "agendamento ausente na requisição")
+			}
+			return &reports.ConfigInput{Config: *r.ReportConfig}, nil
+		},
+		Handle: hReportConfigSet.Handle,
+		Encode: func(out *reports.ConfigSetResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, ReportConfig: &out.Config}, nil
+		},
+	}.Handler())
+	hReportGenerate := reports.NewGenerate(reportStore, rec)
+	server.Register(ipc.DomainAction[reports.GenerateInput, reports.GenerateResult]{
+		Name: hReportGenerate.Action(),
+		Decode: func(r *ipc.Request) (*reports.GenerateInput, error) {
+			return &reports.GenerateInput{ExportPath: r.ReportExportPath}, nil
+		},
+		Handle: hReportGenerate.Handle,
+		Encode: func(out *reports.GenerateResult) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Message: out.Message, ReportPath: out.HTMLPath}, nil
+		},
+	}.Handler())
+	// achievements-get via ipc.DomainAction (Fase 5.2 — mesmo padrão do
+	// composition root). O *analytics.Recorder satisfaz a Provider de sessões.
+	hAchievements := achievements.New(rec)
+	server.Register(ipc.DomainAction[achievements.NoInput, achievements.Result]{
+		Name:   hAchievements.Action(),
+		Decode: ipc.NoInputDecode[achievements.NoInput](),
+		Handle: hAchievements.Handle,
+		Encode: func(out *achievements.Result) (*ipc.Response, error) {
+			return &ipc.Response{Success: true, Achievements: out.Achievements}, nil
+		},
+	}.Handler())
+	// dns-telemetry via ipc.DomainAction (DIP — pós-reorg item 2).
+	hTelemetry := telemetry.NewGetHandler(telRec)
+	server.Register(ipc.DomainAction[telemetry.TelemetryInput, telemetry.TelemetryResult]{
+		Name: hTelemetry.Action(),
+		Decode: func(r *ipc.Request) (*telemetry.TelemetryInput, error) {
+			return &telemetry.TelemetryInput{Limit: r.TelemetryLimit}, nil
+		},
+		Handle: hTelemetry.Handle,
+		Encode: func(out *telemetry.TelemetryResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:          true,
+				TelemetryEntries: out.Entries,
+				TelemetrySummary: out.Summary,
+				TelemetryTotal:   out.TotalBlocked,
+				TelemetryLimit:   out.Limit,
+			}, nil
 		},
 	}.Handler())
 	// users via ipc.DomainAction (DIP — pós-reorg item 2).

@@ -87,6 +87,49 @@ export interface ScheduleRule {
   enabled: boolean;
 }
 
+// Device is one network device with an optional policy override.
+export interface Device {
+  ip: string;
+  mac?: string;
+  name?: string;
+  policy?: "inherit" | "block_all" | "allow_list"; // Policy "" e "inherit" são equivalentes (regra global decide).
+  allowed_domains?: string[]; // AllowedDomains are the only domains reachable under PolicyAllowList
+}
+
+// Achievement is one badge. Unlocked is derived from the stats; Progress is
+export interface Achievement {
+  id: string;
+  name: string;
+  description: string;
+  icon?: string;
+  unlocked: boolean;
+  progress: number;
+}
+
+// Config é o agendamento do relatório semanal, persistido em reports.json.
+export interface ReportConfig {
+  enabled: boolean;
+  day_of_week?: number;
+  hour?: number;
+  minute?: number;
+  export_path?: string;
+}
+
+// BlockedQuery is one sinkholed DNS request, recorded by the dnsserver hook.
+export interface TelemetryEntry {
+  domain: string;
+  client_ip: string;
+  timestamp: string; // RFC3339
+}
+
+// Summary aggregates blocked queries per domain: count, last client IPs (up
+export interface TelemetrySummary {
+  domain: string;
+  count: number;
+  last_ips: string[];
+  last_blocked?: string; // RFC3339
+}
+
 // Event is one detected tamper attempt.
 export interface TamperEvent {
   at: string; // RFC3339
@@ -139,6 +182,12 @@ export interface ApiRequest {
   replace?: boolean;
   since?: number; // Since drives the event-subscribe long-poll (Fase 7): the last event
   reset?: boolean; // Reset clears the daemon's latency metrics before snapshotting (Fase 8 —
+  telemetry_limit?: number; // TelemetryLimit bounds the dns-telemetry entries (0 = daemon default 50).
+  interceptor_enabled?: boolean; // InterceptorEnabled drives the interceptor-set action (Fase 3): whether
+  device?: Device; // Device drives the devices-upsert action (Fase 4 — edição Server): the
+  device_ip?: string; // DeviceIP drives devices-remove: the IP of the device whose rule is
+  report_config?: ReportConfig; // ReportConfig drives reports-config-set (Fase 5.1): the weekly report
+  report_export_path?: string; // ReportExportPath drives reports-generate: an optional path override
 }
 
 export interface ApiResponse {
@@ -180,6 +229,15 @@ export interface ApiResponse {
   dns_queries?: number;
   dns_blocked?: number;
   dns_bind_error?: string;
+  telemetry_entries?: TelemetryEntry[]; // Telemetry reports the DNS sinkhole's blocked-query activity
+  telemetry_summary?: TelemetrySummary[];
+  telemetry_total?: number;
+  telemetry_limit?: number; // TelemetryLimit echoes the requested limit so the UI can paginate (0 =
+  interceptor_enabled?: boolean; // InterceptorEnabled reports the persisted Focus Interceptor Page flag
+  devices?: Device[]; // Devices lists the per-device policies (devices-list, Fase 4 — edição
+  report_config?: ReportConfig; // Fase 5.1) and ReportPath the generated files (reports-generate).
+  report_path?: string;
+  achievements?: Achievement[]; // Achievements lists the gamification badges with unlock/progress derived
 }
 
 // Event is one daemon state-change notification (event-subscribe). Events are

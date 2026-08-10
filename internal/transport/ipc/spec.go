@@ -83,6 +83,15 @@ var specs = map[string]ActionSpec{
 	"dns-stop":          {Action: "dns-stop", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"dns-status":        {Action: "dns-status", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"dns-set-upstream":  {Action: "dns-set-upstream", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"dns-telemetry":     {Action: "dns-telemetry", Permission: PermAuthenticated, Timeout: 5 * time.Second}, "interceptor-set": {Action: "interceptor-set", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"interceptor-status": {Action: "interceptor-status", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"devices-list":       {Action: "devices-list", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"devices-upsert":     {Action: "devices-upsert", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"devices-remove":     {Action: "devices-remove", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"reports-config-get": {Action: "reports-config-get", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"reports-config-set": {Action: "reports-config-set", Permission: PermAuthenticated, Timeout: 5 * time.Second},
+	"reports-generate":   {Action: "reports-generate", Permission: PermAuthenticated, Timeout: 15 * time.Second},
+	"achievements-get":   {Action: "achievements-get", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 }
 
 // SpecFor returns the declarative metadata for an action. Absence means the

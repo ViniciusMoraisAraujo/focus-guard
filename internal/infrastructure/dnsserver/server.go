@@ -47,6 +47,15 @@ type PolicyChecker interface {
 	IsBlocked(domain string) bool
 }
 
+// ClientAwareChecker is the optional extension for per-device policies (Fase
+// 4 — edição Server): the sinkhole consults it with the query's source IP so
+// a device rule (block_all/allow_list) can override the global decision. A
+// checker implementing both interfaces uses this variant; the plain desktop
+// checker keeps IsBlocked.
+type ClientAwareChecker interface {
+	IsBlockedFor(domain, clientIP string) bool
+}
+
 // Server is the DNS sinkhole + forwarder. Zero-value is not usable; construct
 // with New.
 type Server struct {
@@ -62,6 +71,20 @@ type Server struct {
 
 	queries atomic.Uint64
 	blocked atomic.Uint64
+
+	// onBlocked is the telemetry hook (Fase 1.2 do features-plan): called once
+	// per sinkholed query with the domain and the client IP, outside any lock.
+	// Must be cheap and non-blocking (the DNS server runs one goroutine per
+	// request); the daemon wires it to the telemetry recorder's channel. May
+	// be nil.
+	onBlocked func(domain, clientIP string)
+
+	// interceptIP is the local address answered for blocked domains when the
+	// Focus Interceptor Page is active (Fase 3): instead of 0.0.0.0 (dead
+	// address), the sinkhole answers with the server's own IP so the browser
+	// connects to the interceptor HTTP listener on port 80. Nil = classic
+	// dead-address sinkhole.
+	interceptIP net.IP
 }
 
 // New returns a server that consults checker for sinkhole decisions and
@@ -92,6 +115,25 @@ func (s *Server) Queries() uint64 { return s.queries.Load() }
 
 // Blocked returns how many of those queries were sinkholed.
 func (s *Server) Blocked() uint64 { return s.blocked.Load() }
+
+// SetOnBlocked registers the telemetry hook: called once per sinkholed query
+// with the normalized domain and the client's IP. Replacing the hook is safe
+// at any time (guarded); the previous hook (if any) stops receiving calls.
+func (s *Server) SetOnBlocked(fn func(domain, clientIP string)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.onBlocked = fn
+}
+
+// SetInterceptIP toggles the Focus Interceptor Page answer (Fase 3): a
+// non-nil IP makes the sinkhole answer blocked A/AAAA queries with that
+// address (so the browser lands on the interceptor listener); nil restores
+// the classic dead-address sinkhole. Safe at any time.
+func (s *Server) SetInterceptIP(ip net.IP) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.interceptIP = ip
+}
 
 // Start binds addr (default DefaultBindAddr) on both UDP and TCP and begins
 // serving. It is synchronous: it returns as soon as both listeners are bound,
@@ -231,23 +273,51 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 
 	// Sinkhole: answer OK with a dead address. Returning SERVFAIL/REFUSED (or
 	// dropping the packet) would make phones and tablets retry the router's
-	// secondary DNS and leak the block (spec section 4.1).
-	if s.checker != nil && s.checker.IsBlocked(domain) {
+	// secondary DNS and leak the block (spec section 4.1). O checker com
+	// consciência de cliente (Fase 4 — edição Server) decide PRIMEIRO pelo IP
+	// de origem: a allow_list de um device pode LIBERAR um domínio que a
+	// regra global bloqueia; sem regra por dispositivo, cai na decisão
+	// global. O checker clássico (desktop) usa só o domínio.
+	blocked := false
+	if cac, ok := s.checker.(ClientAwareChecker); ok {
+		blocked = cac.IsBlockedFor(domain, clientIP(w))
+	} else if s.checker != nil {
+		blocked = s.checker.IsBlocked(domain)
+	}
+	if blocked {
 		s.blocked.Add(1)
 		m.Authoritative = true
+		// Resposta do sinkhole: 0.0.0.0/:: (endereço morto) por padrão, ou o
+		// IP local do servidor quando a Interceptor Page está ativa (Fase 3) —
+		// aí o navegador conecta no listener HTTP :80 que explica o bloqueio.
+		ip := s.interceptIPProvider()
 		switch q.Qtype {
 		case dns.TypeA:
+			a := net.IPv4zero
+			if ip != nil && ip.To4() != nil {
+				a = ip.To4()
+			}
 			m.Answer = append(m.Answer, &dns.A{
 				Hdr: dns.RR_Header{Name: q.Name, Rrtype: dns.TypeA, Class: dns.ClassINET, Ttl: sinkholeTTL},
-				A:   net.IPv4zero,
+				A:   a,
 			})
 		case dns.TypeAAAA:
+			aaaa := net.IPv6zero
+			if ip != nil && ip.To4() == nil {
+				aaaa = ip
+			}
 			m.Answer = append(m.Answer, &dns.AAAA{
 				Hdr:  dns.RR_Header{Name: q.Name, Rrtype: dns.TypeAAAA, Class: dns.ClassINET, Ttl: sinkholeTTL},
-				AAAA: net.IPv6zero,
+				AAAA: aaaa,
 			})
 		}
 		_ = w.WriteMsg(m)
+		// Telemetria (Fase 1.2): avisa o hook com o domínio bloqueado e o IP
+		// de origem — fora de qualquer lock do servidor, nunca bloqueia o
+		// caminho do DNS.
+		if fn := s.onBlockedProvider(); fn != nil {
+			fn(domain, clientIP(w))
+		}
 		return
 	}
 
@@ -262,6 +332,32 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 	}
 	clampTTL(resp)
 	_ = w.WriteMsg(resp)
+}
+
+// onBlockedProvider reads the telemetry hook under the lock — the read is
+// cheap and the handler runs outside s.mu (the hook itself must never call
+// back into the server).
+func (s *Server) onBlockedProvider() func(string, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.onBlocked
+}
+
+// interceptIPProvider reads the interceptor answer IP under the lock.
+func (s *Server) interceptIPProvider() net.IP {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.interceptIP
+}
+
+// clientIP extracts the client's IP from the remote address (host:port). The
+// IP is what the telemetry needs for per-device attribution.
+func clientIP(w dns.ResponseWriter) string {
+	host, _, err := net.SplitHostPort(w.RemoteAddr().String())
+	if err != nil {
+		return w.RemoteAddr().String()
+	}
+	return host
 }
 
 // recoverPanic converts a panic in a request goroutine into a logged SERVFAIL

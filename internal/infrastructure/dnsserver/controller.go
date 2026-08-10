@@ -2,6 +2,7 @@ package dnsserver
 
 import (
 	"fmt"
+	"net"
 	"sync"
 	"time"
 )
@@ -34,6 +35,15 @@ type Controller struct {
 	addr      string
 	startErr  error
 	startedAt time.Time
+
+	// onBlocked é o hook de telemetria repassado a cada Server criado pelo
+	// Start (Fase 1.2): o daemon o registra uma vez e ele sobrevive a
+	// restarts de listener (SetUpstream recria o Server).
+	onBlocked func(domain, clientIP string)
+	// interceptIP é o IP da Interceptor Page repassado a cada Server criado
+	// pelo Start (Fase 3) — o daemon o seta uma vez e ele sobrevive aos
+	// restarts.
+	interceptIP net.IP
 }
 
 // NewController wires a checker and the listen/forward targets into a
@@ -56,6 +66,8 @@ func (c *Controller) Start() error {
 	}
 
 	srv := New(c.checker, c.upstream)
+	srv.SetOnBlocked(c.onBlocked)
+	srv.SetInterceptIP(c.interceptIP)
 	if err := srv.Start(c.bindAddr); err != nil {
 		c.startErr = fmt.Errorf("%w%s", err, bindHint(c.bindAddr))
 		return c.startErr
@@ -83,6 +95,29 @@ func (c *Controller) Stop() error {
 	c.listening = false
 	c.addr = ""
 	return err
+}
+
+// SetOnBlocked registers the telemetry hook forwarded to every Server this
+// controller creates. Safe to call before or after Start (a running server
+// picks it up on its next sinkholed query via its own provider).
+func (c *Controller) SetOnBlocked(fn func(domain, clientIP string)) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.onBlocked = fn
+	if c.server != nil {
+		c.server.SetOnBlocked(fn)
+	}
+}
+
+// SetInterceptIP toggles the Interceptor Page answer forwarded to every
+// Server this controller creates (Fase 3).
+func (c *Controller) SetInterceptIP(ip net.IP) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.interceptIP = ip
+	if c.server != nil {
+		c.server.SetInterceptIP(ip)
+	}
 }
 
 // SetUpstream changes the upstream resolver the server forwards allowed
@@ -116,6 +151,8 @@ func (c *Controller) SetUpstream(upstream string) error {
 	c.addr = ""
 
 	srv := New(c.checker, c.upstream)
+	srv.SetOnBlocked(c.onBlocked)
+	srv.SetInterceptIP(c.interceptIP)
 	if err := srv.Start(c.bindAddr); err != nil {
 		c.startErr = fmt.Errorf("%w%s", err, bindHint(c.bindAddr))
 		return c.startErr

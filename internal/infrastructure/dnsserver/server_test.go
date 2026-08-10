@@ -2,6 +2,7 @@ package dnsserver
 
 import (
 	"net"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -272,6 +273,155 @@ func TestDomainNormalizedBeforeChecker(t *testing.T) {
 
 // TestPanicInCheckerDoesNotKillServer: um panic no checker vira SERVFAIL
 // logado; o servidor continua atendendo as próximas consultas (§5).
+// TestInterceptIPAnswersLocalAddress: com a Interceptor Page ativa (Fase 3),
+// o sinkhole responde o IP local no A (e mantém :: no AAAA sem IPv6 local) em
+// vez de 0.0.0.0 — o navegador conecta no listener :80 que explica o bloqueio.
+func TestInterceptIPAnswersLocalAddress(t *testing.T) {
+	checker := newFakeChecker("youtube.com")
+	s := startSUT(t, checker, "127.0.0.1:9")
+	s.SetInterceptIP(net.ParseIP("192.168.1.100"))
+
+	resp := doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+	if len(resp.Answer) != 1 {
+		t.Fatalf("Answer len = %d, want 1", len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok {
+		t.Fatalf("Answer[0] = %T, want *dns.A", resp.Answer[0])
+	}
+	if !a.A.Equal(net.ParseIP("192.168.1.100")) {
+		t.Errorf("A = %v, want 192.168.1.100 (IP local do interceptor)", a.A)
+	}
+
+	// AAAA com intercept IPv4: sem endereço IPv6 local, continua :: (morto).
+	resp6 := doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeAAAA)
+	aaaa, ok := resp6.Answer[0].(*dns.AAAA)
+	if !ok || !aaaa.AAAA.Equal(net.IPv6zero) {
+		t.Errorf("AAAA = %v, want :: sem IPv6 local", aaaa)
+	}
+}
+
+// TestInterceptIPNilKeepsDeadAddress: interceptor desligado (nil) = sinkhole
+// clássico 0.0.0.0.
+func TestInterceptIPNilKeepsDeadAddress(t *testing.T) {
+	checker := newFakeChecker("youtube.com")
+	s := startSUT(t, checker, "127.0.0.1:9")
+
+	resp := doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok || !a.A.Equal(net.IPv4zero) {
+		t.Errorf("A = %v, want 0.0.0.0 sem interceptor", a.A)
+	}
+}
+
+// TestOnBlockedHookFiresForSinkholedQuery: o hook de telemetria (Fase 1.2)
+// é chamado exatamente uma vez por query bloqueada, com o domínio normalizado
+// e o IP de origem; queries permitidas NUNCA disparam o hook.
+func TestOnBlockedHookFiresForSinkholedQuery(t *testing.T) {
+	checker := newFakeChecker("youtube.com")
+	upstream, _ := startFakeUpstream(t, 60)
+	s := startSUT(t, checker, upstream)
+
+	var (
+		mu  sync.Mutex
+		got []string
+	)
+	s.SetOnBlocked(func(domain, clientIP string) {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, domain+"|"+clientIP)
+	})
+
+	doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+	doQuery(t, s.Addr(), "udp", "allowed.com", dns.TypeA) // não bloqueado — sem hook
+
+	mu.Lock()
+	defer mu.Unlock()
+	if len(got) != 1 {
+		t.Fatalf("hook chamado %d vezes, want 1 (só bloqueadas)", len(got))
+	}
+	parts := strings.Split(got[0], "|")
+	if parts[0] != "youtube.com" {
+		t.Errorf("hook domain = %q, want youtube.com", parts[0])
+	}
+	if parts[1] == "" {
+		t.Error("hook clientIP vazio")
+	}
+}
+
+// TestOnBlockedHookUnset: sem hook registrado, o sinkhole segue funcionando
+// normal (telemetria é best-effort, nunca afeta o caminho do DNS).
+func TestOnBlockedHookUnset(t *testing.T) {
+	checker := newFakeChecker("youtube.com")
+	s := startSUT(t, checker, "127.0.0.1:9")
+	resp := doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+		t.Fatalf("sinkhole sem hook quebrou: rcode=%s answer=%d", dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+}
+
+// fakeClientChecker é um PolicyChecker + ClientAwareChecker de teste (Fase 4):
+// bloqueia por (domínio, IP de origem), como o scheduler com o devices store.
+type fakeClientChecker struct {
+	mu      sync.Mutex
+	blocked map[string]bool // domínio → bloqueado globalmente
+	rules   map[string]bool // "ip|domain" → decisão por dispositivo
+}
+
+func (f *fakeClientChecker) IsBlocked(domain string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.blocked[domain]
+}
+
+func (f *fakeClientChecker) IsBlockedFor(domain, clientIP string) bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if v, ok := f.rules[clientIP+"|"+domain]; ok {
+		return v
+	}
+	return f.blocked[domain]
+}
+
+// TestClientAwareCheckerOverridesPerDevice: quando o checker implementa
+// ClientAwareChecker (Fase 4 — edição Server), o sinkhole decide pelo IP de
+// origem: um device com allow_list libera o domínio para ELE enquanto a regra
+// global ainda bloqueia os demais.
+func TestClientAwareCheckerOverridesPerDevice(t *testing.T) {
+	// O cliente real do teste conecta de 127.0.0.1 (o socket local) — a regra
+	// do device é chaveada pelo IP de origem que o sinkhole vê na query.
+	checker := &fakeClientChecker{
+		blocked: map[string]bool{"youtube.com": true},
+		rules: map[string]bool{
+			"127.0.0.1|youtube.com": false, // allow_list: liberado para o device
+		},
+	}
+	s := startSUT(t, checker, "127.0.0.1:9")
+
+	// Device com allow_list: youtube.com NÃO é bloqueado → tenta encaminhar
+	// (upstream morto → SERVFAIL, provando que saiu do caminho do sinkhole).
+	resp := doQuery(t, s.Addr(), "tcp", "youtube.com", dns.TypeA)
+	if resp.Rcode != dns.RcodeServerFailure {
+		t.Errorf("device permitido: Rcode = %s, want SERVFAIL (upstream morto, domínio liberado)", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// TestClientAwareCheckerGlobalStillApplies: sem regra por dispositivo, o
+// checker com consciência de cliente cai na decisão global (block_all local).
+func TestClientAwareCheckerGlobalStillApplies(t *testing.T) {
+	checker := &fakeClientChecker{blocked: map[string]bool{"youtube.com": true}}
+	s := startSUT(t, checker, "127.0.0.1:9")
+
+	resp := doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+		t.Fatalf("regra global não aplicada para device sem regra: rcode=%s answer=%d", dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok || !a.A.Equal(net.IPv4zero) {
+		t.Errorf("A = %v, want 0.0.0.0 (sinkhole global)", a.A)
+	}
+}
+
 func TestPanicInCheckerDoesNotKillServer(t *testing.T) {
 	checker := newFakeChecker()
 	checker.panicOn = "crash.example"

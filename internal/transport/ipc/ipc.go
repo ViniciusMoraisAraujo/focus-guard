@@ -4,11 +4,15 @@ import (
 	"context"
 	"time"
 
+	"focusguard/internal/domain/achievements"
 	"focusguard/internal/domain/analytics"
+	"focusguard/internal/domain/devices"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
+	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
+	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/infrastructure/tamper"
 	"focusguard/internal/transport/metrics"
 )
@@ -79,6 +83,26 @@ type Request struct {
 	// Reset clears the daemon's latency metrics before snapshotting (Fase 8 —
 	// "focusguard metrics --reset" marks the start of a measurement window).
 	Reset bool `json:"reset,omitempty"`
+	// TelemetryLimit bounds the dns-telemetry entries (0 = daemon default 50).
+	TelemetryLimit int `json:"telemetry_limit,omitempty"`
+	// InterceptorEnabled drives the interceptor-set action (Fase 3): whether
+	// the Focus Interceptor Page should serve blocked domains.
+	InterceptorEnabled bool `json:"interceptor_enabled,omitempty"`
+	// Device drives the devices-upsert action (Fase 4 — edição Server): the
+	// per-device policy override for a network client. devices-remove uses
+	// DeviceIP only. Ponteiro de propósito: omitempty não omite structs no
+	// encoding/json, e um device vazio não pode vazar em TODA requisição.
+	Device *devices.Device `json:"device,omitempty"`
+	// DeviceIP drives devices-remove: the IP of the device whose rule is
+	// being deleted.
+	DeviceIP string `json:"device_ip,omitempty"`
+	// ReportConfig drives reports-config-set (Fase 5.1): the weekly report
+	// schedule (enabled, day, hour, minute, export path). Ponteiro pelo mesmo
+	// motivo de Device (omitempty em struct não omite).
+	ReportConfig *reports.Config `json:"report_config,omitempty"`
+	// ReportExportPath drives reports-generate: an optional path override
+	// (empty = the configured export folder).
+	ReportExportPath string `json:"report_export_path,omitempty"`
 }
 
 // Event is one daemon state-change notification (event-subscribe). Events are
@@ -181,6 +205,29 @@ type Response struct {
 	DNSQueries   uint64 `json:"dns_queries,omitempty"`
 	DNSBlocked   uint64 `json:"dns_blocked,omitempty"`
 	DNSBindError string `json:"dns_bind_error,omitempty"`
+	// Telemetry reports the DNS sinkhole's blocked-query activity
+	// (dns-telemetry): recent entries, the aggregate summary per domain and
+	// the total count. Additive — old clients ignore it.
+	TelemetryEntries []telemetry.BlockedQuery `json:"telemetry_entries,omitempty"`
+	TelemetrySummary []telemetry.Summary      `json:"telemetry_summary,omitempty"`
+	TelemetryTotal   int                      `json:"telemetry_total,omitempty"`
+	// TelemetryLimit echoes the requested limit so the UI can paginate (0 =
+	// daemon default applied).
+	TelemetryLimit int `json:"telemetry_limit,omitempty"`
+	// InterceptorEnabled reports the persisted Focus Interceptor Page flag
+	// (Fase 3) — additive, old clients ignore it.
+	InterceptorEnabled bool `json:"interceptor_enabled,omitempty"`
+	// Devices lists the per-device policies (devices-list, Fase 4 — edição
+	// Server) — additive, old clients ignore it.
+	Devices []devices.Device `json:"devices,omitempty"` // ReportConfig carries the weekly report schedule (reports-config-get,
+	// Fase 5.1) and ReportPath the generated files (reports-generate).
+	// Ponteiro de propósito (omitempty em struct não omite — mesmo padrão de
+	// Pomodoro/Stats).
+	ReportConfig *reports.Config `json:"report_config,omitempty"`
+	ReportPath   string          `json:"report_path,omitempty"`
+	// Achievements lists the gamification badges with unlock/progress derived
+	// from the stats (achievements-get, Fase 5.2) — additive.
+	Achievements []achievements.Achievement `json:"achievements,omitempty"`
 }
 
 // UpdateStatus holds the outcome of an auto-update check.

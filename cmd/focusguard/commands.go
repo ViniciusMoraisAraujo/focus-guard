@@ -70,6 +70,22 @@ var commands = map[string]Command{
 			"  focusguard dns upstream <host[:porta]>  Alterar o upstream DNS (ex: 9.9.9.9)",
 		},
 	},
+	"interceptor": {
+		Name: "interceptor",
+		Run:  handleInterceptorCommand,
+		Usage: []string{
+			"  focusguard interceptor [on|off]        Ligar/desligar a página de bloqueio (porta 80)",
+		},
+	},
+	"devices": {
+		Name: "devices",
+		Run:  handleDevicesCommand,
+		Usage: []string{
+			"  focusguard devices [list]                Listar políticas por dispositivo (Server)",
+			"  focusguard devices set <ip> --policy <block_all|allow_list|inherit> [--name X] [--allow d1,d2]",
+			"  focusguard devices remove <ip>           Remover a política de um dispositivo",
+		},
+	},
 	"pomodoro": {
 		Name: "pomodoro",
 		Run:  handlePomodoroCommand,
@@ -102,9 +118,19 @@ var commands = map[string]Command{
 	},
 	"report": {
 		Name: "report",
-		Run:  func(c *ipc.Client, _ []string) { handleReportCommand(c) },
+		Run:  handleReportCommandDispatch,
 		Usage: []string{
 			"  focusguard report                     Resumo semanal de foco",
+			"  focusguard report now [--path <pasta>]  Gerar relatório HTML+JSON agora",
+			"  focusguard report auto on|off [--day 0-6] [--hour 0-23] [--minute 0-59] [--path <pasta>]",
+			"  focusguard report auto status        Mostrar o agendamento do relatório",
+		},
+	},
+	"achievements": {
+		Name: "achievements",
+		Run:  func(c *ipc.Client, _ []string) { handleAchievementsCommand(c) },
+		Usage: []string{
+			"  focusguard achievements                Conquistas de foco (badges)",
 		},
 	},
 	"tamper-log": {
@@ -127,6 +153,13 @@ var commands = map[string]Command{
 		Run:  func(c *ipc.Client, _ []string) { handleStatusCommand(c) },
 		Usage: []string{
 			"  focusguard status",
+		},
+	},
+	"doctor": {
+		Name: "doctor",
+		Run:  handleDoctorCommand,
+		Usage: []string{
+			"  focusguard doctor [--json]           Diagnóstico de instalação (exit 0 ok / 1 problemas)",
 		},
 	},
 	"metrics": {
@@ -207,8 +240,8 @@ var missionCommand = Command{
 // usageOrder preserva a ordem de exibição da seção "Uso:" do help (mapas não
 // têm ordem). Nomes canônicos — aliases ficam de fora (mission é o canônico).
 var usageOrder = []string{
-	"block", "presets", "preset", "schedule", "apps", "dns", "pomodoro",
-	"pomodoro-defaults", "mission", "pomodoro-stop", "stats", "report",
-	"tamper-log", "goal", "status", "metrics", "web", "update", "install", "uninstall",
+	"block", "presets", "preset", "schedule", "apps", "dns", "interceptor", "devices", "pomodoro",
+	"pomodoro-defaults", "mission", "pomodoro-stop", "stats", "report", "achievements",
+	"tamper-log", "goal", "status", "doctor", "metrics", "web", "update", "install", "uninstall",
 	"install-watchdog", "uninstall-watchdog", "install-tray", "uninstall-tray",
 }

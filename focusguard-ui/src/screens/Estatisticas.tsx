@@ -1,10 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
-import { Download, Flame } from "lucide-react";
+import { Download, Flame, Trophy } from "lucide-react";
 import { api } from "@/api/client";
-import type { FocusSession, LabelStat } from "@/api/types";
+import type { Achievement, FocusSession, LabelStat } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
 import { useData } from "@/context";
@@ -37,6 +38,7 @@ export function Estatisticas() {
   const { stats, daemonUp } = useData();
   const [missions, setMissions] = useState<LabelStat[] | null>(null);
   const [sessions, setSessions] = useState<FocusSession[] | null>(null);
+  const [achievements, setAchievements] = useState<Achievement[] | null>(null);
   // Dispara a animação de crescimento das barras após o primeiro paint.
   const [grown, setGrown] = useState(false);
   useEffect(() => {
@@ -56,6 +58,13 @@ export function Estatisticas() {
       .sessions()
       .then((r) => setSessions(r.success ? (r.sessions ?? []) : []))
       .catch(() => setSessions([]));
+  }, []);
+
+  useEffect(() => {
+    api
+      .achievements()
+      .then((r) => setAchievements(r.success ? (r.achievements ?? []) : []))
+      .catch(() => setAchievements([]));
   }, []);
 
   const s = stats?.stats;
@@ -238,6 +247,64 @@ export function Estatisticas() {
                     </li>
                   ))}
                 </ul>
+              )}
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardContent className="flex flex-col gap-3 px-5 py-4">
+              <div className="flex flex-wrap items-center gap-2">
+                <Trophy className="size-4 text-muted-foreground" />
+                <h3 className="font-heading text-base font-semibold">Conquistas</h3>
+                {achievements && (
+                  <Badge variant="secondary" className="ml-auto">
+                    {achievements.filter((a) => a.unlocked).length}/{achievements.length} desbloqueadas
+                  </Badge>
+                )}
+              </div>
+              {achievements === null ? (
+                <div
+                  className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3"
+                  aria-busy="true"
+                  aria-label="Carregando conquistas"
+                >
+                  {[0, 1, 2, 3].map((i) => (
+                    <Skeleton key={i} className="h-28 w-full rounded-xl" />
+                  ))}
+                </div>
+              ) : achievements.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  Nenhuma conquista disponível — complete sessões de foco para desbloquear badges.
+                </p>
+              ) : (
+                <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                  {achievements.map((a) => (
+                    <div
+                      key={a.id}
+                      className={cn(
+                        "flex flex-col gap-2 rounded-xl border p-3.5 transition-all duration-200",
+                        a.unlocked
+                          ? "border-primary/30 bg-primary/5 hover:-translate-y-0.5 hover:shadow-md"
+                          : "border-border bg-muted/30 opacity-60",
+                      )}
+                      title={a.description}
+                    >
+                      <div className="flex items-center gap-2">
+                        <span className="text-xl" aria-hidden>
+                          {a.unlocked ? a.icon || "🏅" : "🔒"}
+                        </span>
+                        <div className="min-w-0">
+                          <p className="truncate text-sm font-semibold">{a.name}</p>
+                          <p className="truncate text-[11px] text-muted-foreground">
+                            {a.unlocked ? "desbloqueada" : `${a.progress}% para desbloquear`}
+                          </p>
+                        </div>
+                      </div>
+                      <p className="line-clamp-2 text-xs text-muted-foreground">{a.description}</p>
+                      {!a.unlocked && <Progress value={a.progress} className="h-1.5" />}
+                    </div>
+                  ))}
+                </div>
               )}
             </CardContent>
           </Card>

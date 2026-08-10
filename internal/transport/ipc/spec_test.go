@@ -106,9 +106,13 @@ func TestSpecActions_CoversProxyableActions(t *testing.T) {
 		"pomodoro": true, "pomodoro-stop": true, "pomodoro-defaults": true,
 		"goal-get": true, "goal-set": true,
 		"stats": true, "missions": true, "sessions": true,
-		"dns-start": true, "dns-stop": true, "dns-status": true, "dns-set-upstream": true,
-		"event-subscribe": true,
-		"metrics":         true,
+		"dns-start": true, "dns-stop": true, "dns-status": true, "dns-set-upstream": true, "dns-telemetry": true,
+		"interceptor-set": true, "interceptor-status": true,
+		"devices-list": true, "devices-upsert": true, "devices-remove": true,
+		"reports-config-get": true, "reports-config-set": true, "reports-generate": true,
+		"achievements-get": true,
+		"event-subscribe":  true,
+		"metrics":          true,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("SpecActions = %d ações (%v), want %d", len(got), got, len(want))

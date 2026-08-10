@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"time"
 
 	"focusguard/internal/domain/policy"
 )
@@ -22,6 +23,20 @@ type State struct {
 	// forwards allowed queries to. Additive field: empty loads fall back to
 	// dnsserver.DefaultUpstream, so no migration is needed.
 	DNSUpstream string `json:"dns_upstream,omitempty"`
+	// LastKnownTime persists the wall clock the daemon last trusted (Clock
+	// Tamper Protection — Fase 2). Written on every save; on boot (and
+	// periodically) the clock guard compares it with the current wall clock
+	// to detect jumps in BOTH directions (rewinding to delay expiry, or
+	// advancing to expire blocks early before a restart). Additive field:
+	// old state files load with zero, which the guard treats as "first run"
+	// (no suspicion).
+	LastKnownTime time.Time `json:"last_known_time,omitempty"`
+	// InterceptorEnabled persists whether the Focus Interceptor Page is active
+	// (Fase 3): when on, blocked hosts resolve to this machine and the daemon
+	// serves a page explaining the block (with a motivational phrase) instead
+	// of "connection refused". Additive field: off by default — the feature
+	// changes DNS/hosts answers, so it must be an explicit opt-in.
+	InterceptorEnabled bool `json:"interceptor_enabled,omitempty"`
 }
 
 type Store struct {

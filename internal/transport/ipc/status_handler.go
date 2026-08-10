@@ -54,5 +54,8 @@ func (s *Server) handleStatus(_ context.Context, _ *Request) (*Response, error) 
 	} else {
 		resp.DNSEnabled = s.scheduler.DNSEnabled()
 	}
+	// Focus Interceptor Page (Fase 3): flag persistido para a tela
+	// Configurações ligar/desligar a página de bloqueio.
+	resp.InterceptorEnabled = s.scheduler.InterceptorEnabled()
 	return resp, nil
 }
