@@ -199,8 +199,9 @@ install_desktop_shortcut() {
   fi
 
   desktop_file="${desktop_dir}/focusguard.desktop"
-  # Terminal=true: a CLI sem argumentos abre a TUI (que exige um terminal).
-  # Sem isso, clicar no atalho não mostraria nada ao usuário.
+  # A CLI sem argumentos abre a interface web no navegador (a TUI foi
+  # removida) — Terminal=false: clicar no atalho não precisa de console e
+  # abre o painel em http://127.0.0.1:48902 direto.
   cat > "${desktop_file}" <<EOF
 [Desktop Entry]
 Type=Application
@@ -208,7 +209,7 @@ Name=FocusGuard
 Comment=Bloqueio focado de distrações
 Exec=${INSTALL_DIR}/focusguard
 Icon=focusguard
-Terminal=true
+Terminal=false
 Categories=Utility;Security;
 EOF
   chmod 0755 "${desktop_file}" 2>/dev/null || true
