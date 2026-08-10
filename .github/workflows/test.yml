@@ -50,3 +50,19 @@ jobs:
           ./internal/domain/scheduler/ \
           ./internal/infrastructure/processguard/ \
           ./internal/infrastructure/store/
+
+      # Etapa 7 do bug-hunt (docs/bug-hunt-plan.md): o teste de chown do
+      # socket (root:focusguard 0660, TestListen_ChownsSocketToFocusGuardGroup)
+      # faz Skip sem root — o job acima roda como usuário runner, então o
+      # chown nunca é verificado no CI. Este step roda o teste via sudo com um
+      # GOCACHE separado (root escreve em /root, não no cache do runner). O
+      # grep no '--- PASS' evita o falso-verde de um go test -run sem match
+      # (teste renomeado/removido sairia com exit 0 silenciosamente).
+      - name: Socket group chown test (Linux, root)
+        run: |
+          out="$(sudo -E env "PATH=$PATH" GOCACHE=/tmp/fg-root-gocache \
+            go test -count=1 -timeout=120s -run 'TestListen_ChownsSocketToFocusGuardGroup' -v \
+            ./internal/transport/ipc/)"
+          echo "$out"
+          echo "$out" | grep -q -- '--- PASS: TestListen_ChownsSocketToFocusGuardGroup' \
+            || { echo 'chown test não passou (renomeado/skipado?)'; exit 1; }

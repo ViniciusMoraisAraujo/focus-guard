@@ -518,6 +518,49 @@ fallback de SSE.
 **Critério de saída:** checklist manual documentado + teste Linux de chown
 (já existe — rodar no CI).
 
+### ✅ Resultado — executada em 2026-08-10
+
+- **Gap corrigido: teste de chown agora roda no CI** — o
+  `TestListen_ChownsSocketToFocusGuardGroup` (chown do socket para
+  `root:focusguard 0660`) fazia `Skip` sem root, e o `test.yml` roda como
+  usuário runner → o chown nunca era verificado no CI. Novo step
+  **"Socket group chown test (Linux, root)"** no `.github/workflows/test.yml`:
+  roda o teste via `sudo` com `GOCACHE` separado (root escreve em /root, não
+  no cache do runner). YAML validado (js-yaml) e `GOOS=linux go vet` limpo.
+- **Checklist manual (Windows e Linux) — verificado ao vivo nesta sessão:**
+  - ✅ **Linux — socket por grupo**: `Listen()` (ipc_linux.go) faz
+    `Chmod(0660)` + `Chown` para o grupo `focusguard` (best-effort; sem o
+    grupo fica `root:root`, só root). O install-linux.sh cria o grupo
+    (`groupadd --system focusguard`) e adiciona o usuário do sudo;
+  - ✅ **Linux — CLI sem grupo → hint**: `client.go` dá a dica exata no
+    erro de dial: "seu usuário precisa estar no grupo focusguard — sudo
+    usermod -aG focusguard $USER e re-logar" (Linux only; o prefixo
+    "error connecting to ipc" preservado para testes/CLI);
+  - ✅ **Linux — systemd `User=` correto**: o unit `focusguard.service` NÃO
+    tem `User=` → roda como root (necessário: chown do socket, hosts,
+    firewall); `Restart=always`, `WatchdogSec=30` e
+    `NotifyAccess=main` coerentes com o watchdog;
+  - ✅ **Windows — versioninfo**: os 3 executáveis (daemon/tray/watchdog)
+    em `0.16.2.0` (acima do 0.16.0 do plano; bump release já feito);
+  - ✅ **Windows — update para watchdog+tray antes do swap**: o
+    `StopForBinarySwap` (updateswap.go) para o serviço `FocusGuardWatchdog`
+    (se running) + `taskkill`/wait do `focusguard-tray.exe` (SÓ quando o
+    tray está na lista de binários — o seam `includesBinary`), com restore
+    que religa o watchdog pós-update. Linux = no-op (rename livre);
+  - ✅ **Windows — MSI desktop/server UpgradeCode compartilhado**: o MESMO
+    UUID (`6a87f38f-…c4b0b`) nos dois `wix.json` — instalar uma edição
+    sobre a outra converte a máquina (`AllowSameVersionUpgrades`);
+  - ✅ **Windows — BOM do install-daemon.ps1**: `EF BB BF` presente
+    (correto para acentos no PowerShell 5.1).
+- **Teste novo** (`internal/infrastructure/update/updateswap_test.go`, 2
+  testes): `TestIncludesBinary_TrayDecision` — o seam da decisão "para o
+  tray antes do swap" (base name, case-insensitive, com/sem caminho, nunca
+  substring do path) e `TestIncludesBinary_FilePathBase`. O `StopForBinarySwap`
+  em si é stubado nos testes do orchestrator (não toca serviços/processos
+  reais) — o seam puro agora tem cobertura direta.
+- **Validação:** suíte `internal/infrastructure/update` verde, vet/gofmt
+  limpos, YAML do workflow válido.
+
 ## Etapa 8 — Fuzz/property + E2E
 
 - `go test -fuzz` no parser de duração (`time.ParseDuration`), janelas do
