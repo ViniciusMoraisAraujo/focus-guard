@@ -661,6 +661,11 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	s.blocks[domain] = block
 	s.invalidateSnapshot()
 	if err := s.store.Save(s.ramState()); err != nil {
+		// Reverte a RAM: sem o disco persistido, o domínio não pode ficar
+		// ativo sem timer e sem regra aplicada (estado zumbi) — o bloqueio
+		// é descartado, como BlockDomains/BlockAllInternet já fazem.
+		delete(s.blocks, domain)
+		s.invalidateSnapshot()
 		s.mu.Unlock()
 		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
 	}
@@ -716,10 +721,18 @@ func (s *Scheduler) ExtendBlock(domain string, duration time.Duration) (*policy.
 	s.mu.Lock()
 	existing, ok := s.blocks[domain]
 	if ok && existing.IsActive() {
+		original := existing
 		existing.Extend(duration)
 		s.blocks[domain] = existing
 		s.invalidateSnapshot()
 		if err := s.store.Save(s.ramState()); err != nil {
+			// Reverte a RAM: sem o disco persistido, a extensão não pode
+			// ficar vigente — o timer antigo (expiração original) continuaria
+			// armado e, ao disparar, onExpire veria o bloco ativo na RAM e
+			// retornaria sem re-armar (zumbi que nunca expira). Restaura o
+			// bloco original, consistente com o timer e o disco.
+			s.blocks[domain] = original
+			s.invalidateSnapshot()
 			s.mu.Unlock()
 			return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
 		}

@@ -95,14 +95,17 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   (`"Not suported action"` → `"Not supported action"`); corrigido junto com
   os testes que asseravam o texto (`server_test.go`, `integration_test.go`,
   `router_edge_test.go`, `domain_wiring_test.go`).
+- **`scheduler/scheduler.go` (`Block` e `ExtendBlock`)** — na falha do
+  `store.Save`, a RAM mantinha o domínio em estado zumbi: no `Block`, o
+  domínio ficava ativo sem timer e sem regra (visível no status para sempre);
+  no `ExtendBlock`, a extensão ficava na RAM com o timer antigo armado — ao
+  disparar, `onExpire` via o bloco ativo e retornava sem re-armar (nunca
+  expirava). Corrigido: `Block` reverte (`delete` + `invalidateSnapshot`) e
+  `ExtendBlock` restaura o bloco original no erro do Save, como
+  `BlockDomains`/`BlockAllInternet` já faziam — testes TDD
+  (`save_rollback_test.go`).
 
 ### Abertos (candidatos a hardening)
-
-- **`scheduler/scheduler.go` (`Block`)** — na falha do `store.Save` a RAM
-  mantém o domínio sem timer e sem regra aplicada (estado zumbi): o `delete`
-  só ocorre se `enforcer.BlockDomain` falhar depois. Compare com
-  `BlockDomains`/`BlockAllInternet`, que revertem a RAM na falha do Save.
-  Corrigir para também remover de `s.blocks` no erro do Save.
 
 - **`ipc/server.go` (update)** — o handler `update` roda `Check(apply=true)`
   dentro de um timeout de 30s; para downloads grandes o `UpdateToAll` (que
@@ -132,6 +135,11 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   criam `time.NewTicker` sem `Stop` (goroutines vivas para sempre). Aceitável
   para o processo do tray, mas documentar; se um dia o controller ganhar
   teardown, parar os tickers.
+
+- **`scheduler/scheduler.go` (`SetDNSEnabled`/`SetDNSUpstream`)** — mutam a
+  RAM e, no erro do `Save`, retornam com a configuração divergente do disco
+  até o próximo boot (menor: é setting, não bloqueio). Se um dia quiser
+  atomicidade total, reverter a RAM no erro do Save como os demais caminhos.
 
 ## Testes
 
