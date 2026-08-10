@@ -8,6 +8,10 @@
 )
 
 $ServiceName = "FocusGuard"
+# Nome do serviço do watchdog externo — usado por Install-Watchdog e
+# Uninstall-Daemon. Precisa casar com o internal/autostart (FocusGuardWatchdog)
+# e com o wix.json, para que a desinstalação pelo MSI/CLI ache o mesmo serviço.
+$WatchdogServiceName = "FocusGuardWatchdog"
 $StateDir = "$env:PROGRAMDATA\FocusGuard"
 
 # Pasta protegida: os binários vivem em Program Files, cuja ACL padrão dá ao
