@@ -223,6 +223,17 @@ func checkState(env doctorEnv) doctorResult {
 	}
 	f, err := os.OpenFile(env.statePath, os.O_WRONLY|os.O_APPEND, 0)
 	if err != nil {
+		// Shell não elevado (CLI comum) não consegue abrir para escrita mesmo
+		// com permissões corretas — o daemon elevado é quem grava. Degrada para
+		// warn (não falha) nesse caso, evitando o falso positivo de "state.json
+		// não é gravável" quando a instalação está saudável.
+		if env.isAdmin != nil && !env.isAdmin() && os.IsPermission(err) {
+			return doctorResult{
+				Name: "Estado", Status: statusWarn,
+				Message: "não foi possível confirmar a gravabilidade (shell não elevado): " + err.Error(),
+				Fix:     "Rode o doctor como administrador para confirmar a gravação, ou ignore se o daemon grava normalmente.",
+			}
+		}
 		return doctorResult{
 			Name: "Estado", Status: statusFail,
 			Message: "state.json não é gravável: " + err.Error(),

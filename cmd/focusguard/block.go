@@ -8,26 +8,37 @@ import (
 	"focusguard/internal/transport/ipc"
 )
 
-// splitExtendReplaceArgs removes the --extend/--replace tokens from anywhere in
-// args and returns the remaining tokens plus the extracted booleans. Go's flag
-// package stops parsing at the first positional argument, so a user writing
-// "focusguard block twitter.com --extend 30m" would never have the flag parsed
-// (it would become Arg(1) and be mistaken for the duration); extracting it
-// before Parse makes the flag position-independent.
-func splitExtendReplaceArgs(args []string) ([]string, bool, bool) {
-	var extend, replace bool
-	out := make([]string, 0, len(args))
-	for _, a := range args {
-		switch a {
-		case "--extend":
+// splitBlockFlags removes the position-independent flags (--extend/--replace
+// and --duration/--d with their values) from anywhere in args and returns the
+// remaining tokens plus the extracted values. Go's flag package stops parsing
+// at the first positional argument, so a user writing "focusguard block
+// twitter.com --duration 30m --extend" would never have the flags parsed
+// (they would become Arg(1)+ and be mistaken for the duration); extracting
+// them before Parse makes the flags position-independent. Both "--duration
+// 30m" and "--duration=30m" forms are accepted.
+func splitBlockFlags(args []string) (out []string, extend, replace bool, duration string) {
+	out = make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--extend":
 			extend = true
-		case "--replace":
+		case a == "--replace":
 			replace = true
+		case a == "--duration" || a == "-duration" || a == "--d" || a == "-d":
+			if i+1 < len(args) {
+				duration = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(a, "--duration=") || strings.HasPrefix(a, "-duration="):
+			duration = strings.TrimPrefix(strings.TrimPrefix(a, "--duration="), "-duration=")
+		case strings.HasPrefix(a, "--d=") || strings.HasPrefix(a, "-d="):
+			duration = strings.TrimPrefix(strings.TrimPrefix(a, "--d="), "-d=")
 		default:
 			out = append(out, a)
 		}
 	}
-	return out, extend, replace
+	return out, extend, replace, duration
 }
 
 func handleBlockCommand(client *ipc.Client, args []string) {
@@ -41,9 +52,9 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	replaceFlag := blockCmd.Bool("replace", false, "Reiniciar o bloqueio do domínio a partir de agora, descartando o anterior")
 
 	// Go's flag package para de parsear no primeiro argumento posicional —
-	// "focusguard block <dominio> --extend 30m" deixaria --extend sem efeito.
-	// Extrai esses flags de qualquer posição antes do Parse.
-	args, argExtend, argReplace := splitExtendReplaceArgs(args)
+	// "focusguard block <dominio> --duration 30m --extend" deixaria os flags
+	// sem efeito. Extrai esses flags de qualquer posição antes do Parse.
+	args, argExtend, argReplace, argDuration := splitBlockFlags(args)
 	_ = blockCmd.Parse(args)
 	extend := *extendFlag || argExtend
 	replace := *replaceFlag || argReplace
@@ -62,6 +73,9 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	durationStr := *durationFlag
 	if durationStr == "" {
 		durationStr = *durationShortFlag
+	}
+	if durationStr == "" {
+		durationStr = argDuration
 	}
 
 	if durationStr == "" && blockCmd.NArg() > 1 {

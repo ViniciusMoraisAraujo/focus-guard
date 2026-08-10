@@ -180,6 +180,52 @@ func TestDoctor_HostsOrphanClearedPasses(t *testing.T) {
 	}
 }
 
+// TestDoctor_StateNotWritableNonElevatedWarns cobre o falso positivo real:
+// o CLI não elevado não consegue abrir o state.json para escrita mesmo com a
+// instalação saudável (o daemon elevado é quem grava) — deve virar WARN, não
+// FAIL, para o doctor não acusar problema numa máquina OK.
+func TestDoctor_StateNotWritableNonElevatedWarns(t *testing.T) {
+	env := healthyEnv(t)
+	env.isAdmin = func() bool { return false }
+	// Torna o arquivo somente-leitura (no Windows define FILE_ATTRIBUTE_READONLY).
+	if err := os.Chmod(env.statePath, 0400); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(env.statePath, 0600) })
+
+	results := runDoctor(env)
+	st := findResult(results, "Estado")
+	if st == nil {
+		t.Fatal("checagem Estado ausente")
+	}
+	if st.Status != statusWarn {
+		t.Errorf("Estado não-gravável com shell não elevado = %v, want warn — %s", st.Status, st.Message)
+	}
+	if code := doctorExitCode(results); code != 1 {
+		t.Errorf("exit = %d, want 1 (warn ainda sinaliza problemas)", code)
+	}
+}
+
+// TestDoctor_StateNotWritableElevatedFails garante que com elevação a falha de
+// gravação continua sendo FAIL (permite distinguir instalação quebrada).
+func TestDoctor_StateNotWritableElevatedFails(t *testing.T) {
+	env := healthyEnv(t)
+	env.isAdmin = func() bool { return true }
+	if err := os.Chmod(env.statePath, 0400); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(env.statePath, 0600) })
+
+	results := runDoctor(env)
+	st := findResult(results, "Estado")
+	if st == nil {
+		t.Fatal("checagem Estado ausente")
+	}
+	if st.Status != statusFail {
+		t.Errorf("Estado não-gravável com shell elevado = %v, want fail — %s", st.Status, st.Message)
+	}
+}
+
 func TestDoctor_StateCorruptedFails(t *testing.T) {
 	env := healthyEnv(t)
 	if err := os.WriteFile(env.statePath, []byte("{corrompido"), 0600); err != nil {

@@ -7,6 +7,20 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🐛 Correções
+
+- **`focusguard block <domínio> --duration <tempo>` falhava com "Duration
+  invalid"** — o `flag` do Go para no primeiro argumento posicional, então
+  `--duration` depois do domínio virava `Arg(1)` e era enviado como duração
+  (encontrado na validação ao vivo). O split pré-Parse agora extrai
+  `--duration`/`-d` (e as formas com `=`/traço simples) de **qualquer posição**
+  junto com `--extend`/`--replace` (TDD com 9 casos).
+- **`focusguard doctor` acusava FAIL "state.json não é gravável" num shell não
+  elevado** — falso positivo: o CLI comum não abre o arquivo para escrita mesmo
+  com a instalação saudável (o daemon elevado é quem grava). Agora degrada para
+  WARN quando o erro é de permissão e o shell não é elevado (TDD nos dois
+  sentidos).
+
 ## [0.17.1] - 2026-08-10
 
 ### ✨ Novas funcionalidades
