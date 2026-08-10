@@ -69,15 +69,18 @@ rules). It's a client-server application:
 Main features: temporary blocks (no manual unblock), panic mode
 (`block --internet`) with allowlist, category presets, pomodoro, recurring
 scheduling, daily goals + streaks, analytics with export, process guard
-(kills denylisted processes), tamper detection (tamper log), and
-multi-binary auto-update with rollback.
+(kills denylisted processes), tamper detection (tamper log), DNS sinkhole
+(port 53, "Rei da Rede"), multi-binary auto-update with rollback, and a
+**complete web UI**.
 
-> 🚧 **Web interface (in progress):** `focusguard-web` (user-space, on
-> demand) serves the React + TS UI (`focusguard-ui/`) and **proxies IPC
-> actions to the daemon** at `http://127.0.0.1:48902` — **no changes to the
-> daemon**. F1 (HTTP server) and F2 (10 screens) were implemented on
-> 2026-08-03; see the full plan and roadmap in `docs/ui-plan.md` before
-> writing related code.
+> ✅ **Web interface (complete):** `focusguard-web` (user-space, on demand)
+> serves the React + TS UI (`focusguard-ui/`) and **proxies IPC actions to
+> the daemon** at `http://127.0.0.1:48902` — **no changes to the daemon**.
+> All 12 screens are implemented (Dashboard, Bloquear, Pânico, Pomodoro,
+> Agenda, Apps, Presets, Estatísticas, Segurança, Configurações, Login,
+> Rede) with login/sessions, SSE real-time events, and auth-gated actions.
+> See the plan and API contract in `docs/ui-plan.md` before writing related
+> code.
 
 ### Platforms
 
@@ -288,15 +291,20 @@ go test ./... -count=1 -timeout=60s   # make test
 
 ```
 ├── AGENT.md                    # this guide
-├── docs/ui-plan.md             # web UI plan (F1+F2 implemented, roadmap)
-├── docs/release.md             # release checklist and process
-├── Makefile                    # build, icon, winres, ui, test, vet, fmt, tidy, clean, install, uninstall
-├── cmd/focusguard-web/         # web interface server (user-space, embeds the UI)
+├── docs/
+│   ├── ui-plan.md              # web UI plan + API contract (12 screens)
+│   ├── bug-hunt-plan.md        # completed bug-hunt (Etapas 0–8, 4 real bugs fixed)
+│   ├── reorg-plan.md           # internal/ layering + packaging reorg
+│   ├── release.md              # release checklist and process
+│   └── perf-2026-08-05.md / dns-sinkhole-spec.md
+├── Makefile                    # build, icon, winres, ui, contract(-check), msi, test, vet, fmt, tidy, clean, install, uninstall
 ├── internal/transport/httpapi/  # HTTP: IPC proxy + static assets + localhost security
-├── focusguard-ui/              # React + Vite + TS frontend (10 screens)
-│   └── src/screens/              # Dashboard, Block, Panic, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security
+├── focusguard-ui/              # React + Vite + TS frontend (12 screens)
+│   └── src/screens/              # Dashboard, Block, Panic, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security, Login, Rede
 ├── .goreleaser.yaml            # release pipeline
-├── .github/workflows/release.yml  # CI: tag v* → GoReleaser
+├── .github/workflows/
+│   ├── release.yml             # CI: tag v* → GoReleaser + MSI (desktop/server)
+│   └── test.yml                # CI: build+vet, -race (Linux), socket chown as root
 ├── .gitattributes              # *.sh → eol=lf
 ├── packaging/                  # build-time assets
 │   ├── artwork/focusguard.png  # canonical artwork (1024px)
@@ -309,7 +317,8 @@ go test ./... -count=1 -timeout=60s   # make test
 │   ├── focusguard-daemon/      # service (+ rsrc_windows_*.syso)
 │   ├── focusguard-icon/        # icon generator (build-time)
 │   ├── focusguard-tray/        # systray (+ icon-only versioninfo.json)
-│   └── focusguard-watchdog/    # health-check / Smart Recovery (+ versioninfo.json with icon)
+│   ├── focusguard-watchdog/    # health-check / Smart Recovery (+ versioninfo.json with icon)
+│   └── focusguard-web/         # web server (user-space, no manifest)
 ├── internal/                   # 34 packages in 4 layers (see the map in section 3)
 │   ├── domain/                 # business logic (13 packages)
 │   ├── infrastructure/         # OS I/O (13 packages)
@@ -317,9 +326,11 @@ go test ./... -count=1 -timeout=60s   # make test
 │   └── system/                 # daemon/tray/watchdog lifecycle (3 packages)
 └── scripts/
     ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
-    ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart)
+    ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart, socket group)
     ├── focusguard.service      # systemd unit
     ├── focusguard-tray.desktop # tray shortcut template (Linux)
+    ├── build-msi.sh            # .msi build via go-msi + WiX
+    ├── msi/                    # wix.json / wix-server.json / product.wxs
     └── verifyicon/             # verifies the embedded icon matches focusguard.ico
 ```
 
@@ -460,6 +471,14 @@ confirm the version/tag with the person before pushing the tag
   `versioninfo.json` are versioned and change when you run `make icon`/
   `make winres`; don't ignore them or accidentally commit them in code
   commits.
+- **Bug-hunt is done, don't regress the fixes** — `docs/bug-hunt-plan.md`
+  records Etapas 0–8 (2026-08-10) and the 4 real bugs fixed with TDD tests:
+  orphan firewall rule left when the last block expires (`scheduler`),
+  `BlockDomains` batch dropping pre-existing protection, refresh goroutine
+  leaking on shutdown, and the ICS `+1h` fallback emitting a `"24:xx"`
+  window past midnight. The scheduler package has `fuzz_test.go` (3 targets)
+  and the repo runs `-race` + the socket-chown test as root in CI
+  (`.github/workflows/test.yml`).
 
 ---
 

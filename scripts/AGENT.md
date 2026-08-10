@@ -50,25 +50,29 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 
 ## Bugs e correções potenciais
 
-- **`install-daemon.ps1` — `$WatchdogServiceName` não é definido** em lugar
-  nenhum (linhas 66–74, 180–184 usam a variável, mas só `$ServiceName`/
-  `$StateDir`/`$InstallDir` são declarados no topo). Em PowerShell, uma
-  variável inexistente vira string vazia → `sc.exe create binPath=...` sem
-  nome, e o watchdog não é instalado/removido corretamente (a remoção via MSI
-  e via `focusguard uninstall` usa o nome correto `FocusGuardWatchdog`).
-  **Correção:** declarar `$WatchdogServiceName = "FocusGuardWatchdog"` junto
-  com `$ServiceName`, e alinhar o recovery às `actions=restart/5000/...`.
+### ✅ Corrigidos (2026-08-10)
+
+- **`install-daemon.ps1` — `$WatchdogServiceName` não era definido** (as
+  linhas de instalação/remoção do watchdog usavam a variável, mas só
+  `$ServiceName`/`$StateDir`/`$InstallDir` eram declarados no topo). Em
+  PowerShell, variável inexistente vira string vazia → `sc.exe create
+  binPath=...` sem nome, e o watchdog não era instalado/removido. **Fix:**
+  `$WatchdogServiceName = "FocusGuardWatchdog"` declarado junto com
+  `$ServiceName`, com o recovery alinhado às `actions=restart/5000/...`
+  (consistente com o `wix.json`/`internal/autostart`).
+- **`install-linux.sh` — atalho desktop com `Terminal=true` e comentário da
+  TUI** — a TUI foi removida e a CLI sem argumentos abre a interface web no
+  navegador. **Fix:** comentário atualizado e `Terminal=false` (clicar no
+  atalho não abre console; o navegador abre direto).
+
+### Abertos
 
 - **`install-daemon.ps1` — serviço watchdog e daemon usam o mesmo padrão de
   recovery mas com constantes divergentes do `wix.json`/`autostart`** — ao
   alterar nomes/políticas, mantenha um único ponto de verdade (o
   `FocusGuardWatchdog` do `scripts/msi/wix.json` e do `internal/autostart`).
 
-- **`install-linux.sh` — atalho desktop ainda diz "a CLI sem argumentos abre a
-  TUI (que exige um terminal)"** (linha ~202, `Terminal=true`). A TUI foi
-  removida: a CLI sem argumentos agora **abre a interface web no navegador**.
-  Revisar o comentário e avaliar se `Terminal=true` ainda faz sentido (abrir
-  terminal para depois abrir o navegador é indesejável).- **`build-msi.sh` — versão e paths**: `MSI_NAME` é relativo (`--msi` sem
+- **`build-msi.sh` — versão e paths**: `MSI_NAME` é relativo (`--msi` sem
    caminho → grava na raiz); se um dia quiserem build fora da raiz, use caminho
    absoluto Windows. Também vale validar `$VERSION` com um regex de semver
    antes de chamar o go-msi (erro do WiX com versão inválida é obscuro).

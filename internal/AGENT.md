@@ -73,16 +73,32 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 
 ## Bugs e correções potenciais
 
+### ✅ Corrigidos no bug-hunt (2026-08-10) — não regredir
+
+- **`scheduler/scheduler.go` (último bloco expira)** — quando o último
+  bloqueio expirava, o sweep de regras órfãs do `Sync` não rodava e regras
+  de firewall ficavam para trás (raça com o refresh). Corrigido com teste
+  TDD (`expiry_cleanup_test.go`, commit `577b7a5`).
+- **`scheduler/scheduler.go` (`BlockDomains`)** — o batch aplicava só o
+  conjunto novo ao `Sync`, removendo proteção pré-existente de outros
+  bloqueios ativos. Corrigido: passa **todos** os blocos ativos ao `Sync`
+  (commit `50b72ef`).
+- **`scheduler/scheduler.go` (`startPeriodicIPRefresh`)** — a goroutine de
+  refresh (15min) vazava no shutdown do daemon. Corrigido: `Stop()` fecha o
+  canal e aguarda a goroutine sair (commit `d39c70e`).
+- **`domain/schedule/ics.go` (`icsWindow`)** — o fallback de +1h (DTEND
+  ausente/malformado) com DTSTART ≥ 23:00 emitia janela `"24:xx"`, que o
+  próprio pacote rejeita (`parseClock` exige h ≤ 23). Corrigido: wrap para
+  o dia seguinte (janela overnight já suportada); descoberto pelo review do
+  `FuzzParseICS` + seed de regressão (commit `43c9163`).
+
+### Abertos (candidatos a hardening)
+
 - **`scheduler/scheduler.go` (`Block`)** — na falha do `store.Save` a RAM
   mantém o domínio sem timer e sem regra aplicada (estado zumbi): o `delete`
   só ocorre se `enforcer.BlockDomain` falhar depois. Compare com
   `BlockDomains`/`BlockAllInternet`, que revertem a RAM na falha do Save.
   Corrigir para também remover de `s.blocks` no erro do Save.
-
-- **`scheduler/scheduler.go` (`startPeriodicIPRefresh`)** — o goroutine de
-  refresh (15min) não tem teardown: `refreshStop` nunca é fechado, então o
-  goroutine vaza no shutdown do daemon. Sem impacto funcional relevante (o
-  processo morre junto), mas vale fechar o canal num eventual `Stop()`.
 
 - **`ipc/server.go` (`default`)** — mensagem de ação desconhecida tem typo:
   `"Not suported action"` (falta um *p*). Corrigir exige atualizar os testes
@@ -122,3 +138,8 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 - `go test ./internal/... -count=1 -timeout=60s` (não exigem admin — mockam o SO).
 - Rodar com `-race` ao tocar em scheduler/pomodoro/processguard (há
   `race_test.go`, `concurrency_test.go`, `benchmark_test.go` dedicados).
+- Fuzz: `internal/domain/schedule/fuzz_test.go` tem `FuzzParseICS`,
+  `FuzzWindowsPairs` e `FuzzParseClock` (rodar 30s cada sem crash —
+  `go test ./internal/domain/schedule/ -run '^$' -fuzz FuzzParseICS -fuzztime=30s`).
+- CI (`.github/workflows/test.yml`): `-race` no Linux + teste de chown do
+  socket como root (o teste faz `Skip` sem root — o step usa `sudo`).
