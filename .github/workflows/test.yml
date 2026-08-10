@@ -40,16 +40,21 @@ jobs:
           go build ./...
           go vet ./...
 
+      # Plain scalar NÃO: o folding do YAML dobra a \ + newline em "\ " e o
+      # shell escapa o espaço, colando um espaço à frente de cada path
+      # ("malformed import path"). Usar run: | (literal block) preserva os
+      # newlines e a continuação de linha do shell funciona de verdade.
       - name: Race detector — pacotes concorrentes
-        run: go test -race -count=1 -timeout=180s \
-          ./internal/system/daemon/ \
-          ./internal/transport/eventhub/ \
-          ./internal/transport/ipc/ \
-          ./internal/domain/pomodoro/ \
-          ./internal/domain/schedule/ \
-          ./internal/domain/scheduler/ \
-          ./internal/infrastructure/processguard/ \
-          ./internal/infrastructure/store/
+        run: |
+          go test -race -count=1 -timeout=180s \
+            ./internal/system/daemon/ \
+            ./internal/transport/eventhub/ \
+            ./internal/transport/ipc/ \
+            ./internal/domain/pomodoro/ \
+            ./internal/domain/schedule/ \
+            ./internal/domain/scheduler/ \
+            ./internal/infrastructure/processguard/ \
+            ./internal/infrastructure/store/
 
       # Etapa 7 do bug-hunt (docs/bug-hunt-plan.md): o teste de chown do
       # socket (root:focusguard 0660, TestListen_ChownsSocketToFocusGuardGroup)
