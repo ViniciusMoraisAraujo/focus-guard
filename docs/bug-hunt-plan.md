@@ -570,6 +570,47 @@ fallback de SSE.
 
 **Critério de saída:** 1 fuzz target sem crash em 30s + 1 smoke E2E documentado.
 
+### ✅ Resultado — executada em 2026-08-10
+
+- **3 fuzz targets novos** (`internal/domain/schedule/fuzz_test.go`), todos
+  com property checks além do "sem crash":
+  - `FuzzParseICS` — bytes arbitrários no parser RFC 5545 (upload de
+    calendário): contrato "nunca erro duro" garantido para qualquer entrada,
+    dias 0..6 e janela `HH:MM-HH:MM` válida em toda regra devolvida;
+  - `FuzzWindowsPairs` — janelas `HH:MM-HH:MM` (persistidas e enviadas via
+    IPC/CLI/UI): quando o parse passa, extremos em 0..1439 e janela nunca
+    vazia (`start != end` — o invariante que evita bloqueio sempre-ativo);
+  - `FuzzParseClock` — relógio individual: sucesso ⇒ minutos 0..1439.
+  - **Resultado: 30s cada, sem crash** — ParseICS 1.08M execs (147
+    interesting), WindowsPairs 1.6M (136), ParseClock 1.45M (127), todos
+    PASS. Critério de saída superado (3x o mínimo).
+  - **Bug real encontrado na property de ParseICS (e corrigido)**: o
+    `icsWindow` assumia que o fallback de +1h (DTEND ausente/malformado)
+    nunca cruza a meia-noite — com DTSTART 23:00+, a janela viraria
+    `"24:xx"`, que o `parseClock` do MESMO pacote rejeita (o parser emitia
+    uma regra que o próprio domínio recusa). O fuzzer não chegou ao caso em
+    30s (mutações específicas demais), mas a property check o expôs por
+    análise. Fix: wrap de `e` para o dia seguinte (`23:59-00:59`, janela
+    overnight já suportada pelo `windowsPairs`) + seed de regressão no fuzz.
+    Re-rodado 30s após o fix: PASS (794K execs, 182 interesting).
+- **Smoke E2E real documentado (2026-08-10, Windows)** — binários compilados
+  do HEAD em `/tmp`, daemon iniciado fora do serviço:
+  1. `focusguard status` ↔ daemon ao vivo → `🛡 Proteção DoH/DoT: inativa`,
+     `0 regras`, `Nenhum bloqueio ativo`;
+  2. `focusguard block example.com 1m` → `✔ Domain example.com blocked`;
+  3. `focusguard status` → `example.com 10:45 10/08 10:46 10/08 43s` (bloco
+     refletido; expirou sozinho em 1m e sumiu);
+  4. `focusguard-web` no ar: `GET /api/ping` → `200 {"success":true,
+     "message":"pong"}`; `POST /api/login` com credencial inválida → 401
+     amigável (`usuário ou senha inválidos`); `GET /api/events` sem sessão →
+     `não autenticado` (SSE protegido por sessão).
+  - Limitação documentada: o teste de UI (bloco → SSE → Dashboard atualiza)
+    exige browser — coberto pela suíte de componente/contexto (Etapa 6) com
+    o FakeEventSource; o SSE real exige sessão válida (não automatizado).
+  - Nota: o daemon de teste não pôde ser encerrado pelo shell não-elevado
+    (o daemon se protege; taskkill → acesso negado) — processo residual
+    inofensivo (binários em /tmp, estado limpo), cai no próximo reboot.
+
 ---
 
 ## Regras transversais

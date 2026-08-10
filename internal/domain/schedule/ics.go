@@ -153,6 +153,13 @@ func icsWindow(start, end string) (string, bool) {
 	e, ok := icsClock(end)
 	if !ok {
 		e = s + 60 // DTEND ausente → 1h
+		// A hipótese de 1h pode cruzar a meia-noite (DTSTART 23:00+): sem o
+		// wrap a janela viraria "24:xx", que o parseClock rejeita — o pacote
+		// recusaria a própria saída. Wrap para o dia seguinte ("23:59-00:59"
+		// é uma janela overnight válida para o windowsPairs).
+		if e >= 1440 {
+			e -= 1440
+		}
 	}
 	if s == e {
 		return "", false
