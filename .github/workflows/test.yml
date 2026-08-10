@@ -1,0 +1,52 @@
+name: test
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  # Etapa 3 do bug-hunt (docs/bug-hunt-plan.md): o -race não roda no Windows
+  # local (CGO_ENABLED=0) — a verificação de data races vive aqui, no CI Linux,
+  # nos pacotes concorrentes (lifecycle do daemon, event hub, roteador IPC,
+  # pomodoro, schedule, scheduler, processguard e store).
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ./... inclui o internal/system/tray, cgo no Linux — sem os headers o
+      # go build/vet falham (mesma dependência que o release.yml instala).
+      - name: Install tray build dependencies (Linux cgo)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev libgtk-3-dev
+
+      - name: Build + vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      - name: Race detector — pacotes concorrentes
+        run: go test -race -count=1 -timeout=180s \
+          ./internal/system/daemon/ \
+          ./internal/transport/eventhub/ \
+          ./internal/transport/ipc/ \
+          ./internal/domain/pomodoro/ \
+          ./internal/domain/schedule/ \
+          ./internal/domain/scheduler/ \
+          ./internal/infrastructure/processguard/ \
+          ./internal/infrastructure/store/
