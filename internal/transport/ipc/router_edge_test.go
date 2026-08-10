@@ -20,7 +20,7 @@ func TestDispatch_NilRegistry_FallsBackToUnknownAction(t *testing.T) {
 	if resp.Success || resp.Code != CodeUnknownAction {
 		t.Fatalf("esperava CodeUnknownAction com registry nil, got %+v", resp)
 	}
-	if resp.Message != "Not suported action: ping" {
+	if resp.Message != "Not supported action: ping" {
 		t.Errorf("mensagem legada divergiu: %q", resp.Message)
 	}
 }
@@ -53,7 +53,7 @@ func TestDispatch_EmptyAction_FallsBackToUnknownAction(t *testing.T) {
 	if resp.Success || resp.Code != CodeUnknownAction {
 		t.Fatalf("esperava CodeUnknownAction para ação vazia, got %+v", resp)
 	}
-	if resp.Message != "Not suported action: " {
+	if resp.Message != "Not supported action: " {
 		t.Errorf("mensagem para ação vazia: %q", resp.Message)
 	}
 }
@@ -61,7 +61,7 @@ func TestDispatch_EmptyAction_FallsBackToUnknownAction(t *testing.T) {
 func TestHandleConnection_EmptyAction(t *testing.T) {
 	s := setupTestServer(t)
 	resp := executeRequest(t, s, Request{Action: ""})
-	if resp.Success || resp.Code != CodeUnknownAction || resp.Message != "Not suported action: " {
+	if resp.Success || resp.Code != CodeUnknownAction || resp.Message != "Not supported action: " {
 		t.Fatalf("resposta inesperada: %+v", resp)
 	}
 }
@@ -85,7 +85,7 @@ func TestDispatch_HandlerNilNil_FallsBackToUnknownAction(t *testing.T) {
 	if resp.Success || resp.Code != CodeUnknownAction {
 		t.Fatalf("handler (nil,nil) deveria cair no fallback legado, got %+v", resp)
 	}
-	if resp.Message != "Not suported action: edge-nil-nil" {
+	if resp.Message != "Not supported action: edge-nil-nil" {
 		t.Errorf("mensagem legada: %q", resp.Message)
 	}
 }
@@ -178,7 +178,7 @@ func TestHandleConnection_GiantPayload_ValidJSON_StillDispatches(t *testing.T) {
 
 // TestHandleConnection_GiantActionName_EchoesLegacyMessage trava o eco da ação
 // desconhecida na mensagem (comportamento legado): o fallback devolve
-// "Not suported action: <nome>" — o nome inteiro volta na resposta. O socket
+// "Not supported action: <nome>" — o nome inteiro volta na resposta. O socket
 // IPC não tem limite de tamanho (diferente do proxy HTTP, que tem
 // MaxBytesReader de 1 MiB) — a nota fica registrada como candidata a
 // hardening, não como bug (IPC é loopback, daemon admin).
@@ -202,7 +202,7 @@ func TestHandleConnection_GiantActionName_EchoesLegacyMessage(t *testing.T) {
 	if resp.Code != CodeUnknownAction {
 		t.Fatalf("esperava CodeUnknownAction, got %+v", resp)
 	}
-	want := "Not suported action: " + action
+	want := "Not supported action: " + action
 	if resp.Message != want {
 		t.Errorf("eco da mensagem legada divergiu (len=%d, want %d)", len(resp.Message), len(want))
 	}

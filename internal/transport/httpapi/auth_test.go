@@ -235,7 +235,7 @@ func TestAction_UserVerifyRejected(t *testing.T) {
 
 // TestAction_UnknownAction_Forbidden trava a allowlist por spec (B6): ação
 // sem ActionSpec (desconhecida ou web-only) não é encaminhada ao daemon — o
-// proxy responde 403 em vez de repassar e depender do "Not suported action".
+// proxy responde 403 em vez de repassar e depender do "Not supported action".
 func TestAction_UnknownAction_Forbidden(t *testing.T) {
 	srv, h := newTestServer(&stubClient{}, uiFS())
 	rec := doJSON(t, h, adminCookie(t, srv), "POST", "/api/action", "application/json",

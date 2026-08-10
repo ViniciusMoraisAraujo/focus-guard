@@ -91,6 +91,10 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   próprio pacote rejeita (`parseClock` exige h ≤ 23). Corrigido: wrap para
   o dia seguinte (janela overnight já suportada); descoberto pelo review do
   `FuzzParseICS` + seed de regressão (commit `43c9163`).
+- **`ipc/server.go` (`default`)** — mensagem de ação desconhecida tinha typo
+  (`"Not suported action"` → `"Not supported action"`); corrigido junto com
+  os testes que asseravam o texto (`server_test.go`, `integration_test.go`,
+  `router_edge_test.go`, `domain_wiring_test.go`).
 
 ### Abertos (candidatos a hardening)
 
@@ -99,10 +103,6 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   só ocorre se `enforcer.BlockDomain` falhar depois. Compare com
   `BlockDomains`/`BlockAllInternet`, que revertem a RAM na falha do Save.
   Corrigir para também remover de `s.blocks` no erro do Save.
-
-- **`ipc/server.go` (`default`)** — mensagem de ação desconhecida tem typo:
-  `"Not suported action"` (falta um *p*). Corrigir exige atualizar os testes
-  `server_test.go:245` e `integration_test.go:258` que asseram o texto.
 
 - **`ipc/server.go` (update)** — o handler `update` roda `Check(apply=true)`
   dentro de um timeout de 30s; para downloads grandes o `UpdateToAll` (que

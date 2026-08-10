@@ -261,7 +261,7 @@ func TestServer_HandleConnection_UnsupportedAction(t *testing.T) {
 	if resp.Success {
 		t.Error("expected response success to be false for unsupported action")
 	}
-	expectedMsg := "Not suported action: delete"
+	expectedMsg := "Not supported action: delete"
 	if resp.Message != expectedMsg {
 		t.Errorf("expected message %q, got %q", expectedMsg, resp.Message)
 	}

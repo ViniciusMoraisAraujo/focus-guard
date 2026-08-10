@@ -308,7 +308,7 @@ func TestIntegration_UnsupportedAction(t *testing.T) {
 	if resp.Success {
 		t.Fatal("expected failure for unsupported action")
 	}
-	if resp.Message != "Not suported action: unsupported" {
+	if resp.Message != "Not supported action: unsupported" {
 		t.Errorf("unexpected message: %s", resp.Message)
 	}
 }

@@ -503,7 +503,7 @@ func (s *Server) Dispatch(req *Request) *Response {
 		resp = &Response{
 			Success: false,
 			Code:    CodeUnknownAction,
-			Message: "Not suported action: " + req.Action,
+			Message: "Not supported action: " + req.Action,
 		}
 	}
 

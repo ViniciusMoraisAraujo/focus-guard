@@ -675,7 +675,7 @@ func TestDomainWiring_ComposesWithRouter(t *testing.T) {
 
 	// Ação desconhecida → CodeUnknownAction + mensagem legada preservada.
 	resp = s.Dispatch(&ipc.Request{Action: "nope"})
-	if resp.Success || resp.Code != ipc.CodeUnknownAction || resp.Message != "Not suported action: nope" {
+	if resp.Success || resp.Code != ipc.CodeUnknownAction || resp.Message != "Not supported action: nope" {
 		t.Fatalf("desconhecida: success=%v code=%q msg=%q", resp.Success, resp.Code, resp.Message)
 	}
 
