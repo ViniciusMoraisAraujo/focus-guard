@@ -7,6 +7,17 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.18.1] - 2026-08-11
+
+### 📝 Documentação
+
+- **`docs/features-plan.md` limpo** — a cópia duplicada/legada do plano (as 5
+  fases repetidas em formato antigo) foi removida; o check-list de Definition
+  of Done agora marca as fases **entregues** (Fases 1–5 na v0.17.0 + polish da
+  v0.18.0) e o documento passou a listar **apenas os itens em aberto**:
+  seleção do IP LAN no modo Server (multi-NIC/VPN) e pausa responsável
+  (cooldown) no backlog, aguardando decisão de produto.
+
 ## [0.18.0] - 2026-08-11
 
 ### ✨ Novas funcionalidades
