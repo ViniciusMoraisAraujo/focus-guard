@@ -77,6 +77,20 @@ var commands = map[string]Command{
 			"  focusguard interceptor [on|off]        Ligar/desligar a página de bloqueio (porta 80)",
 		},
 	},
+	"ca-install": {
+		Name: "ca-install",
+		Run:  func(_ *ipc.Client, _ []string) { handleCAInstallCommand() },
+		Usage: []string{
+			"  focusguard ca-install               Instalar a CA local no trust store (página HTTPS sem aviso; elevado)",
+		},
+	},
+	"ca-uninstall": {
+		Name: "ca-uninstall",
+		Run:  func(_ *ipc.Client, _ []string) { handleCAUninstallCommand() },
+		Usage: []string{
+			"  focusguard ca-uninstall             Remover a CA local do trust store (elevado)",
+		},
+	},
 	"devices": {
 		Name: "devices",
 		Run:  handleDevicesCommand,
@@ -240,7 +254,7 @@ var missionCommand = Command{
 // usageOrder preserva a ordem de exibição da seção "Uso:" do help (mapas não
 // têm ordem). Nomes canônicos — aliases ficam de fora (mission é o canônico).
 var usageOrder = []string{
-	"block", "presets", "preset", "schedule", "apps", "dns", "interceptor", "devices", "pomodoro",
+	"block", "presets", "preset", "schedule", "apps", "dns", "interceptor", "ca-install", "ca-uninstall", "devices", "pomodoro",
 	"pomodoro-defaults", "mission", "pomodoro-stop", "stats", "report", "achievements",
 	"tamper-log", "goal", "status", "doctor", "metrics", "web", "update", "install", "uninstall",
 	"install-watchdog", "uninstall-watchdog", "install-tray", "uninstall-tray",

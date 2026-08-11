@@ -42,6 +42,7 @@ import (
 	"focusguard/internal/infrastructure/statewatch"
 	"focusguard/internal/infrastructure/store"
 	"focusguard/internal/infrastructure/tamper"
+	"focusguard/internal/infrastructure/tlsca"
 	"focusguard/internal/infrastructure/update"
 	"focusguard/internal/system/daemon"
 	"focusguard/internal/system/watchdog"
@@ -471,9 +472,11 @@ func localIP4() string {
 //
 // O listener TLS (:443) cobre sites HTTPS-only (YouTube, Instagram...): o
 // HSTS força TLS e o navegador nunca cai no HTTP. Ele responde com
-// certificado auto-assinado por SNI — o usuário continua pelo aviso do
-// navegador e vê a página. Best-effort como o HTTP: 443 ocupada degrada só a
-// página dos sites HTTPS.
+// certificado assinado pela CA local (tlsca) quando disponível — com a CA
+// instalada no trust store do SO (feito aqui no boot, best-effort) a página
+// abre sem o aviso de "conexão não segura". Sem CA, o fallback histórico é o
+// cert auto-assinado por SNI (usuário continua pelo aviso). Best-effort como
+// o HTTP: 443 ocupada degrada só a página dos sites HTTPS.
 type interceptorLifecycle struct {
 	mu        sync.Mutex
 	checker   *scheduler.Scheduler
@@ -482,6 +485,49 @@ type interceptorLifecycle struct {
 	bindAddrs []string // HTTP (:80)
 	tlsAddrs  []string // HTTPS (:443)
 	dnsAnswer string
+	// caDir é onde a CA local vive (ao lado do state.json). Vazio = sem CA
+	// (fallback auto-assinado).
+	caDir string
+	// ca é a CA local carregada no boot — o TLS listener a usa para assinar.
+	ca *tlsca.CA
+}
+
+// ensureCAInstalled instala a CA local no trust store do SO — stubbable nos
+// testes (a suíte não pode tocar no trust store real da máquina). O default
+// usa o runner real (certutil/update-ca-certificates), que funciona porque o
+// daemon roda como SYSTEM/root.
+var ensureCAInstalled = func(ca *tlsca.CA) error {
+	return ca.InstallIntoStore(tlsca.DefaultStoreRunner())
+}
+
+// ensureCA carrega (ou gera, no primeiro boot) a CA local e a instala no
+// trust store do SO. Best-effort: o daemon roda como SYSTEM/root, então a
+// instalação funciona — mas uma falha (ex.: trust store não gravável) apenas
+// loga e degrada para o fallback auto-assinado, nunca derruba o boot.
+// Idempotente: CA já existente não é regenerada e a já instalada não é
+// reinstalada.
+func (il *interceptorLifecycle) ensureCA() {
+	// Idempotente: sem caDir (fallback auto-assinado) ou CA já carregada, é
+	// no-op — garante que a CA é gerada/instalada UMA vez por lifecycle, seja
+	// no boot (interceptor já ativo) ou no interceptor-set on pelo IPC/web.
+	if il.caDir == "" || il.ca != nil {
+		return
+	}
+	// Higiene: remove .cer temporários órfãos (crash no meio do certutil no
+	// boot anterior) — best-effort, os artefatos reais (.crt/.key) não são
+	// tocados.
+	tlsca.CleanupTempCER(il.caDir)
+	ca, err := tlsca.LoadOrCreate(il.caDir)
+	if err != nil {
+		log.Printf("[FocusGuard Interceptor] CA local indisponível (%v) — página HTTPS seguirá com certificado auto-assinado (aviso no navegador)", err)
+		return
+	}
+	il.ca = ca
+	if err := ensureCAInstalled(ca); err != nil {
+		log.Printf("[FocusGuard Interceptor] CA local não instalada no trust store: %v — página HTTPS seguirá com o aviso de certificado até instalar (focusguard ca-install)", err)
+		return
+	}
+	log.Printf("[FocusGuard Interceptor] CA local no trust store — página de bloqueio HTTPS abre sem aviso de certificado")
 }
 
 // set aplica o novo estado do flag: sobe/derruba os listeners e ajusta a
@@ -491,6 +537,11 @@ func (il *interceptorLifecycle) set(enabled bool) {
 	il.mu.Lock()
 	defer il.mu.Unlock()
 	if enabled {
+		// Garante a CA local em TODOS os caminhos de ativação (boot e
+		// interceptor-set on via IPC/web) — sem isso, habilitar a página depois
+		// do boot deixava o TLS no fallback auto-assinado. Idempotente (ver
+		// ensureCA).
+		il.ensureCA()
 		if len(il.servers) == 0 {
 			for _, addr := range il.bindAddrs {
 				srv := interceptor.New(il.checker)
@@ -503,6 +554,9 @@ func (il *interceptorLifecycle) set(enabled bool) {
 			}
 			for _, addr := range il.tlsAddrs {
 				srv := interceptor.New(il.checker)
+				if il.ca != nil {
+					srv.SetCA(il.ca)
+				}
 				if err := srv.StartTLS(addr); err != nil {
 					log.Printf("[FocusGuard Interceptor] página HTTPS indisponível em %s (porta 443 ocupada?): %v — sites HTTPS ficam sem a página, o bloqueio segue valendo", addr, err)
 					continue
@@ -533,6 +587,31 @@ func (il *interceptorLifecycle) stop() {
 		_ = srv.Stop()
 	}
 	il.servers = nil
+}
+
+// registerInterceptorSet registra a ação "interceptor-set" no server — o
+// handler de domínio persiste o flag no scheduler e dispara o onChanged (o
+// il.set do daemon: sobe/derruba os listeners + garante a CA local). Helper
+// ÚNICO compartilhado pelo composition root (runDaemon) e pelo teste de
+// integração — qualquer mudança na wiring reflete nos dois, sem divergência.
+// O onChanged pode ser nil (consultas/outros callers usam o handler de status
+// separado).
+func registerInterceptorSet(srv *ipc.Server, sched *scheduler.Scheduler, onChanged func(enabled bool)) {
+	hSet := interceptordomain.NewSet(sched, onChanged)
+	srv.Register(ipc.DomainAction[interceptordomain.SetInput, interceptordomain.SetResult]{
+		Name: hSet.Action(),
+		Decode: func(r *ipc.Request) (*interceptordomain.SetInput, error) {
+			return &interceptordomain.SetInput{Enabled: r.InterceptorEnabled}, nil
+		},
+		Handle: hSet.Handle,
+		Encode: func(out *interceptordomain.SetResult) (*ipc.Response, error) {
+			return &ipc.Response{
+				Success:            true,
+				Message:            out.Message,
+				InterceptorEnabled: out.Status.Enabled,
+			}, nil
+		},
+	}.Handler())
 }
 
 // ipOrNil converte um endereço IPv4 textual em net.IP (nil quando vazio).
@@ -1034,8 +1113,12 @@ func runDaemon() bool {
 		bindAddrs: interceptorBinds,
 		tlsAddrs:  interceptorTLS,
 		dnsAnswer: interceptorAnswer,
+		caDir:     filepath.Join(filepath.Dir(statePath), "ca"),
 	}
 	if sched.InterceptorEnabled() {
+		// Com a página ativa, o set(true) garante a CA local no boot: o daemon
+		// (SYSTEM/root) gera a CA e a instala no trust store — a página HTTPS
+		// abre sem aviso.
 		il.set(true)
 	}
 	components = append(components, daemon.StopOnly(il.stop))
@@ -1255,21 +1338,7 @@ func runDaemon() bool {
 	// interceptor-set/interceptor-status via ipc.DomainAction (DIP — pós-reorg
 	// item 2). O onChanged liga/desliga o listener HTTP e a resposta do DNS
 	// (Fase 3) — o mesmo caminho do boot quando o flag persistido está ativo.
-	hInterceptorSet := interceptordomain.NewSet(sched, il.set)
-	server.Register(ipc.DomainAction[interceptordomain.SetInput, interceptordomain.SetResult]{
-		Name: hInterceptorSet.Action(),
-		Decode: func(r *ipc.Request) (*interceptordomain.SetInput, error) {
-			return &interceptordomain.SetInput{Enabled: r.InterceptorEnabled}, nil
-		},
-		Handle: hInterceptorSet.Handle,
-		Encode: func(out *interceptordomain.SetResult) (*ipc.Response, error) {
-			return &ipc.Response{
-				Success:            true,
-				Message:            out.Message,
-				InterceptorEnabled: out.Status.Enabled,
-			}, nil
-		},
-	}.Handler())
+	registerInterceptorSet(server, sched, il.set)
 	hInterceptorStatus := interceptordomain.NewStatus(sched)
 	server.Register(ipc.DomainAction[interceptordomain.NoInput, interceptordomain.StatusResult]{
 		Name:   hInterceptorStatus.Action(),

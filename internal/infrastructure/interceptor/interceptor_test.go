@@ -3,12 +3,15 @@ package interceptor
 import (
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/pem"
 	"io"
 	"net"
 	"net/http"
 	"strings"
 	"testing"
 	"time"
+
+	"focusguard/internal/infrastructure/tlsca"
 )
 
 // fakeChecker decide bloqueio por domínio e devolve um tempo restante fixo.
@@ -242,6 +245,103 @@ func TestBusyPortFailsStartWithoutPanic(t *testing.T) {
 		t.Fatal("StartTLS numa porta ocupada deveria falhar")
 	}
 	_ = s2.Stop() // idempotente
+}
+
+// startTLSSUTWithCA monta um listener TLS cujos leafs são assinados pela CA
+// local (tlsca) — o cenário do fix: com a CA no trust store do SO, o
+// navegador valida o certificado SEM o aviso de "conexão não segura".
+func startTLSSUTWithCA(t *testing.T, c Checker, dir string) (string, *http.Client, *tlsca.CA) {
+	t.Helper()
+	ca, err := tlsca.LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("tlsca.LoadOrCreate: %v", err)
+	}
+	s := New(c)
+	s.SetCA(ca)
+	if err := s.StartTLS("127.0.0.1:0"); err != nil {
+		t.Fatalf("StartTLS: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	// Cliente que confia APENAS na CA local (equivalente ao trust store do SO
+	// após o ca-install) — sem InsecureSkipVerify: se o leaf não for assinado
+	// pela CA, o handshake falha. Este é o contrato do fix.
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert(t, ca))
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "youtube.com"},
+	}}
+	return "https://" + s.Addr(), client, ca
+}
+
+// caCert extrai o *x509.Certificate da CA a partir do CertPEM (para montar o
+// pool de raízes do cliente).
+func caCert(t *testing.T, ca *tlsca.CA) *x509.Certificate {
+	t.Helper()
+	block, _ := pem.Decode(ca.CertPEM())
+	if block == nil {
+		t.Fatal("CertPEM inválido")
+	}
+	crt, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return crt
+}
+
+// TestBlockedDomainOverHTTPSWithCA: com a CA no trust store, a página HTTPS de
+// bloqueio abre SEM warning de certificado — o navegador (cliente com a CA nas
+// raízes) valida o leaf assinado pela CA e recebe a página 200. Antes do fix,
+// o leaf auto-assinado falhava este handshake.
+func TestBlockedDomainOverHTTPSWithCA(t *testing.T) {
+	base, client, _ := startTLSSUTWithCA(t, &fakeChecker{blocked: map[string]bool{"youtube.com": true}, remain: 2 * time.Hour}, t.TempDir())
+
+	req, _ := http.NewRequest("GET", base+"/", nil)
+	req.Host = "youtube.com"
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("handshake com a CA falhou (leaf não confiável): %v", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("status = %d, want 200", resp.StatusCode)
+	}
+	text := string(body)
+	if !strings.Contains(text, "youtube.com") {
+		t.Errorf("página HTTPS com CA sem o domínio: %s", text)
+	}
+}
+
+// TestWithoutCA_FailsCAOnlyClient: controle negativo — um servidor SEM CA
+// (fallback auto-assinado histórico) falha o handshake de um cliente que só
+// confia numa CA. Garante que o teste positivo (com CA) está de fato validando
+// a cadeia da CA, e não passando por acidente.
+func TestWithoutCA_FailsCAOnlyClient(t *testing.T) {
+	// Mesma montagem do startTLSSUT, mas o cliente confia numa CA externa
+	// (não no leaf auto-assinado): o handshake precisa falhar.
+	s := New(&fakeChecker{blocked: map[string]bool{"youtube.com": true}, remain: time.Hour})
+	if err := s.StartTLS("127.0.0.1:0"); err != nil {
+		t.Fatalf("StartTLS: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	ca, err := tlsca.LoadOrCreate(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pool := x509.NewCertPool()
+	pool.AddCert(caCert(t, ca))
+	client := &http.Client{Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "youtube.com"},
+	}}
+
+	req, _ := http.NewRequest("GET", "https://"+s.Addr()+"/", nil)
+	req.Host = "youtube.com"
+	if _, err := client.Do(req); err == nil {
+		t.Fatal("leaf auto-assinado não deveria validar contra uma CA externa")
+	}
 }
 
 func TestQuoteForIsDeterministic(t *testing.T) {

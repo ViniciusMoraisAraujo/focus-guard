@@ -7,6 +7,7 @@ import (
 	"runtime"
 
 	"focusguard/internal/infrastructure/autostart"
+	"focusguard/internal/infrastructure/tlsca"
 )
 
 func daemonExePath() string {
@@ -114,6 +115,11 @@ func handleInstallCommand() {
 }
 
 func handleUninstallCommand() {
+	// Higiene da âncora de confiança: o uninstall remove a CA local do trust
+	// store do SO (best-effort — o uninstall já roda elevado). Sem isso, a CA
+	// ficaria órfã na máquina, capaz de validar sites por anos.
+	removeTrustedCAIfPresent()
+
 	if runtime.GOOS == "linux" {
 		if err := autostart.UninstallSvc(); err != nil {
 			fmt.Printf("Falha ao desinstalar: %v\n", err)
@@ -139,6 +145,26 @@ func handleUninstallCommand() {
 		fmt.Printf("⚠ Aviso: não foi possível remover o tray da inicialização: %v\n", err)
 	}
 	fmt.Println("✔ Daemon removido da inicialização automática.")
+}
+
+// removeTrustedCAIfPresent remove a CA local do trust store do SO, se existir
+// e estiver instalada. Best-effort como o resto do uninstall: a CA ausente é
+// no-op e a falha de remoção só vira aviso (nunca aborta o uninstall).
+func removeTrustedCAIfPresent() {
+	caDir := caDirPath()
+	if !tlsca.Exists(caDir) {
+		return
+	}
+	ca, err := tlsca.LoadOrCreate(caDir)
+	if err != nil {
+		fmt.Printf("⚠ Aviso: não foi possível ler a CA local para removê-la do trust store: %v\n", err)
+		return
+	}
+	if err := ca.RemoveFromStore(tlsca.DefaultStoreRunner()); err != nil {
+		fmt.Printf("⚠ Aviso: não foi possível remover a CA do trust store: %v\n", err)
+		return
+	}
+	fmt.Println("✔ CA do FocusGuard removida do trust store do sistema.")
 }
 
 func watchdogExePath() string {

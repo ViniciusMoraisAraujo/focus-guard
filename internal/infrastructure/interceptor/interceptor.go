@@ -36,6 +36,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"focusguard/internal/infrastructure/tlsca"
 )
 
 // DefaultBindAddr is where the daemon binds the HTTP listener: loopback in
@@ -100,10 +102,19 @@ type Server struct {
 	srv  *http.Server
 	addr string
 
-	// certCache is the SNI → self-signed certificate map for the TLS
-	// listener (guarded by mu). Regenerated on demand — a certificate always
-	// carries the SAN of the exact hostname the browser is connecting to, so
-	// the warning page can be continued without hostname-mismatch errors.
+	// ca é a CA local que assina os certificados da página de bloqueio (via
+	// SetCA). Quando definida, o TLS listener serve leafs assinados por ela —
+	// e com a CA no trust store do SO o navegador abre a página sem o aviso
+	// de "conexão não segura". Sem CA, o fallback histórico é o certificado
+	// auto-assinado por SNI (o usuário continua pelo aviso).
+	ca *tlsca.CA
+
+	// certCache is the SNI → certificate map for the TLS listener (guarded by
+	// mu). Regenerated on demand — a certificate always carries the SAN of the
+	// exact hostname the browser is connecting to, so the warning page can be
+	// continued without hostname-mismatch errors. Os leafs assinados pela CA
+	// também passam por aqui (o CA mantém o próprio cache, mas o cache do
+	// Server isola o ciclo de vida do listener).
 	certCache map[string]*tls.Certificate
 }
 
@@ -111,6 +122,14 @@ type Server struct {
 // never matches, the listener still answers 404).
 func New(checker Checker) *Server {
 	return &Server{checker: checker, certCache: make(map[string]*tls.Certificate)}
+}
+
+// SetCA define a CA local que assina os certificados da página HTTPS (pode ser
+// chamado antes de StartTLS; sem CA o listener segue com cert auto-assinado).
+func (s *Server) SetCA(ca *tlsca.CA) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.ca = ca
 }
 
 // Start binds addr (default DefaultBindAddr) and begins serving plain HTTP.
@@ -183,10 +202,12 @@ func (s *Server) start(ln net.Listener, tlsCfg *tls.Config) error {
 	return nil
 }
 
-// certificateFor returns a self-signed certificate for the SNI hostname,
-// generating it on first use and caching it. A certificate is scoped to the
-// exact host (SAN DNS + IP when the SNI is an IP), so after clicking through
-// the browser warning the page loads without a hostname-mismatch error.
+// certificateFor returns a certificate for the SNI hostname: assinado pela CA
+// local quando configurada (SetCA), auto-assinado no fallback. Gerado no
+// primeiro uso e cacheado. O certificado é escopado ao host exato (SAN DNS +
+// IP quando o SNI é um IP), então — com a CA no trust store do SO — a página
+// abre sem warning; no fallback, após continuar pelo aviso, não há
+// hostname-mismatch.
 func (s *Server) certificateFor(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 	host := strings.TrimSuffix(strings.ToLower(strings.TrimSpace(hello.ServerName)), ".")
 	if host == "" {
@@ -199,7 +220,13 @@ func (s *Server) certificateFor(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 		return cert, nil
 	}
 
-	cert, err := selfSigned(host, time.Now())
+	var cert *tls.Certificate
+	var err error
+	if s.ca != nil {
+		cert, err = s.ca.LeafFor(host)
+	} else {
+		cert, err = selfSigned(host, time.Now())
+	}
 	if err != nil {
 		return nil, err
 	}

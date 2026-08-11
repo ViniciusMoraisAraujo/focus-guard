@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"focusguard/internal/infrastructure/store"
+	"focusguard/internal/infrastructure/tlsca"
 	"focusguard/internal/transport/ipc"
 )
 
@@ -107,6 +108,49 @@ func runDoctor(env doctorEnv) []doctorResult {
 		checkFirewall(env),
 		checkVersions(env),
 		checkDNS(env),
+		checkCA(env),
+	}
+}
+
+// checkCA diagnostica a CA local da página de bloqueio HTTPS: sem CA gerada é
+// configuração (fallback auto-assinado com aviso no navegador); CA gerada mas
+// não instalada no trust store é warn com a correção (ca-install elevado); CA
+// instalada é pass — página HTTPS sem aviso de certificado.
+func checkCA(env doctorEnv) doctorResult {
+	caDir := filepath.Join(filepath.Dir(env.statePath), "ca")
+	if !tlsca.Exists(caDir) {
+		return doctorResult{
+			Name: "CA local", Status: statusPass,
+			Message: "CA local não gerada (página HTTPS usa certificado auto-assinado com aviso no navegador)",
+			Fix:     "Habilite a página de bloqueio (interceptor) e rode 'focusguard ca-install' como administrador para abrir sem aviso.",
+		}
+	}
+	ca, err := tlsca.LoadOrCreate(caDir)
+	if err != nil {
+		return doctorResult{
+			Name: "CA local", Status: statusWarn,
+			Message: "CA local corrompida: " + err.Error(),
+			Fix:     "Remova o diretório 'ca' ao lado do state.json e reinicie o daemon para ele regenerar.",
+		}
+	}
+	if env.exec == nil {
+		return doctorResult{Name: "CA local", Status: statusWarn, Message: "não foi possível consultar o trust store (executor ausente)", Fix: ""}
+	}
+	installed, err := ca.IsInStore(env.exec)
+	if err != nil {
+		return doctorResult{
+			Name: "CA local", Status: statusWarn,
+			Message: "não foi possível consultar o trust store: " + err.Error(),
+			Fix:     "Rode 'focusguard ca-install' como administrador/root para confirmar.",
+		}
+	}
+	if installed {
+		return doctorResult{Name: "CA local", Status: statusPass, Message: "CA local no trust store — página HTTPS sem aviso de certificado"}
+	}
+	return doctorResult{
+		Name: "CA local", Status: statusWarn,
+		Message: "CA local gerada, mas não instalada no trust store — página HTTPS mostra o aviso de certificado",
+		Fix:     "Rode 'focusguard ca-install' como administrador/root (uma vez).",
 	}
 }
 

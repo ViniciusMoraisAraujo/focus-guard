@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"focusguard/internal/domain/policy"
+	"focusguard/internal/infrastructure/tlsca"
 	"focusguard/internal/transport/ipc"
 )
 
@@ -299,8 +300,8 @@ func TestDoctor_JSONOutput(t *testing.T) {
 	for _, r := range results {
 		out.Checks = append(out.Checks, doctorCheckJSON{Name: r.Name, Status: string(r.Status), Message: r.Message})
 	}
-	if len(out.Checks) != 8 {
-		t.Errorf("JSON com %d checagens, want 8", len(out.Checks))
+	if len(out.Checks) != 9 {
+		t.Errorf("JSON com %d checagens, want 9", len(out.Checks))
 	}
 	for _, c := range out.Checks {
 		if c.Status != "pass" {
@@ -310,6 +311,62 @@ func TestDoctor_JSONOutput(t *testing.T) {
 	if out.Overall != 0 {
 		t.Errorf("overall = %d, want 0", out.Overall)
 	}
+}
+
+// TestDoctor_CAInstalledPasses: CA gerada e presente no trust store (runner
+// fake devolvendo o CN) → pass.
+func TestDoctor_CAInstalledPasses(t *testing.T) {
+	env := healthyEnv(t)
+	ca := seedCA(t, env)
+	env.exec = func(_ string, _ ...string) ([]byte, error) {
+		return []byte("Subject: CN=" + ca.SubjectCN()), nil
+	}
+
+	results := runDoctor(env)
+	c := findResult(results, "CA local")
+	if c == nil || c.Status != statusPass {
+		t.Fatalf("CA no trust store deveria passar — got %+v", c)
+	}
+}
+
+// TestDoctor_CAGeneratedButNotInstalledWarns: CA gerada mas ausente do trust
+// store → warn com a correção de ca-install.
+func TestDoctor_CAGeneratedButNotInstalledWarns(t *testing.T) {
+	env := healthyEnv(t)
+	seedCA(t, env)
+	env.exec = func(_ string, _ ...string) ([]byte, error) {
+		return []byte("Subject: CN=Outra CA"), nil
+	}
+
+	results := runDoctor(env)
+	c := findResult(results, "CA local")
+	if c == nil || c.Status != statusWarn {
+		t.Fatalf("CA sem trust store deveria virar warn — got %+v", c)
+	}
+	if !strings.Contains(c.Message, "não instalada") {
+		t.Errorf("mensagem CA = %q, want mencionando não instalada", c.Message)
+	}
+}
+
+// TestDoctor_CANotGeneratedPasses: sem CA gerada é configuração legítima
+// (fallback auto-assinado) → pass, nunca falha o doctor.
+func TestDoctor_CANotGeneratedPasses(t *testing.T) {
+	env := healthyEnv(t)
+	results := runDoctor(env)
+	c := findResult(results, "CA local")
+	if c == nil || c.Status != statusPass {
+		t.Fatalf("CA ausente deveria passar (configuração) — got %+v", c)
+	}
+}
+
+// seedCA gera uma CA real no diretório ca ao lado do state.json do env.
+func seedCA(t *testing.T, env doctorEnv) *tlsca.CA {
+	t.Helper()
+	ca, err := tlsca.LoadOrCreate(filepath.Join(filepath.Dir(env.statePath), "ca"))
+	if err != nil {
+		t.Fatalf("seedCA: %v", err)
+	}
+	return ca
 }
 
 // ---------------------------------------------------------------------------

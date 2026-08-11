@@ -1,0 +1,261 @@
+// Package tlsca mantém a CA local do FocusGuard: uma âncora de confiança
+// gerada uma única vez e persistida ao lado do state.json. O interceptor usa
+// essa CA para assinar os certificados da página de bloqueio (em vez de
+// certificados auto-assinados por SNI), e — quando a CA é instalada no trust
+// store do sistema — o navegador abre a página HTTPS **sem** o aviso de
+// "conexão não segura".
+//
+// Segurança: a chave privada da CA é uma âncora de confiança da máquina —
+// quem a possuir consegue se passar por qualquer site. Por isso o LoadOrCreate
+// restringe as permissões do arquivo da chave (0600 no Linux; no Windows o
+// mode POSIX é fictício e a proteção real vem das ACLs do diretório
+// %PROGRAMDATA%\FocusGuard — restrito a SYSTEM/Administradores, onde o daemon
+// roda), a instalação no trust store é opt-in/best-effort e documentada, e a
+// remoção (uninstall) a tira do store.
+package tlsca
+
+import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"encoding/pem"
+	"fmt"
+	"math/big"
+	"net"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+)
+
+const (
+	// caCertFile e caKeyFile são os nomes dos artefatos persistidos no
+	// diretório da CA (ao lado do state.json).
+	caCertFile = "focusguard-ca.crt"
+	caKeyFile  = "focusguard-ca.key"
+
+	// commonName é o assunto da CA (e o rótulo usado na detecção/remoção do
+	// trust store).
+	commonName = "FocusGuard Local CA"
+
+	// caValidity é a validade da CA (10 anos) — geração é única e persistida;
+	// a renovação antes do vencimento fica para um futuro ciclo.
+	caValidity = 10 * 365 * 24 * time.Hour
+)
+
+// CA é a autoridade certificadora local: chave + certificado persistidos e um
+// cache de leafs assinados por hostname (mesmo cache por-SNI do interceptor,
+// agora assinado pela CA). Zero-value não é utilizável; construa com
+// LoadOrCreate.
+type CA struct {
+	dir string
+	key *ecdsa.PrivateKey
+	crt *x509.Certificate
+
+	mu    sync.Mutex
+	leafs map[string]*tls.Certificate
+}
+
+// LoadOrCreate carrega a CA persistida em dir ou a gera na primeira execução.
+// Idempotente e seguro para chamar em todo boot do daemon: uma CA existente é
+// reutilizada (nunca regenerada — regenerar invalidaria os certificados já
+// instalados no trust store). A chave é gravada com 0600.
+func LoadOrCreate(dir string) (*CA, error) {
+	if dir == "" {
+		return nil, fmt.Errorf("tlsca: diretório da CA vazio")
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, fmt.Errorf("tlsca: criar diretório %s: %w", dir, err)
+	}
+
+	certPath := filepath.Join(dir, caCertFile)
+	keyPath := filepath.Join(dir, caKeyFile)
+
+	if certPEM, err := os.ReadFile(certPath); err == nil {
+		keyPEM, kerr := os.ReadFile(keyPath)
+		if kerr != nil {
+			return nil, fmt.Errorf("tlsca: chave da CA ausente (%s), cert órfão: %w", keyPath, kerr)
+		}
+		return loadCA(dir, certPEM, keyPEM)
+	}
+
+	ca, err := generateCA(dir, certPath, keyPath)
+	if err != nil {
+		return nil, err
+	}
+	return ca, nil
+}
+
+// generateCA gera uma CA ECDSA P-256 nova, grava os artefatos e devolve o CA
+// carregado. Os tempos usam time.Now (testes de expiração usam o relógio real
+// com folga de validade de 10 anos).
+func generateCA(dir, certPath, keyPath string) (*CA, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, fmt.Errorf("tlsca: gerar chave da CA: %w", err)
+	}
+
+	now := time.Now()
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 128))
+	if err != nil {
+		return nil, fmt.Errorf("tlsca: serial da CA: %w", err)
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber:          serial,
+		Subject:               pkix.Name{CommonName: commonName, Organization: []string{"FocusGuard"}},
+		NotBefore:             now.Add(-time.Hour),
+		NotAfter:              now.Add(caValidity),
+		KeyUsage:              x509.KeyUsageCertSign | x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, &tmpl, &key.PublicKey, key)
+	if err != nil {
+		return nil, fmt.Errorf("tlsca: criar certificado da CA: %w", err)
+	}
+
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, fmt.Errorf("tlsca: serializar chave da CA: %w", err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+
+	if err := os.WriteFile(certPath, certPEM, 0o644); err != nil {
+		return nil, fmt.Errorf("tlsca: gravar %s: %w", certPath, err)
+	}
+	if err := os.WriteFile(keyPath, keyPEM, 0o600); err != nil {
+		return nil, fmt.Errorf("tlsca: gravar %s: %w", keyPath, err)
+	}
+	return loadCA(dir, certPEM, keyPEM)
+}
+
+// loadCA interpreta os PEMs persistidos e devolve o CA carregado.
+func loadCA(dir string, certPEM, keyPEM []byte) (*CA, error) {
+	certBlock, _ := pem.Decode(certPEM)
+	if certBlock == nil {
+		return nil, fmt.Errorf("tlsca: %s não é um certificado PEM válido", filepath.Join(dir, caCertFile))
+	}
+	keyBlock, _ := pem.Decode(keyPEM)
+	if keyBlock == nil {
+		return nil, fmt.Errorf("tlsca: %s não é uma chave PEM válida", filepath.Join(dir, caKeyFile))
+	}
+	key, err := x509.ParseECPrivateKey(keyBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("tlsca: chave da CA inválida: %w", err)
+	}
+	crt, err := x509.ParseCertificate(certBlock.Bytes)
+	if err != nil {
+		return nil, fmt.Errorf("tlsca: certificado da CA inválido: %w", err)
+	}
+	return &CA{dir: dir, key: key, crt: crt, leafs: make(map[string]*tls.Certificate)}, nil
+}
+
+// Exists reporta se uma CA já está persistida em dir — sem efeitos colaterais
+// (não gera nada). Usado pelo doctor para diagnosticar sem criar artefatos.
+func Exists(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	_, err1 := os.Stat(filepath.Join(dir, caCertFile))
+	_, err2 := os.Stat(filepath.Join(dir, caKeyFile))
+	return err1 == nil && err2 == nil
+}
+
+// CleanupTempCER remove o arquivo .cer temporário órfão do diretório da CA.
+// O installIntoStore (Windows) grava o cert como <caCertFile>.cer ao lado do
+// PEM para o certutil consumir e o remove com defer — se o processo morrer
+// entre a escrita e o defer (crash/kill no meio da instalação), o .cer fica
+// para trás. Este passo é best-effort e cirúrgico: remove SOMENTE o nome
+// exato do temp (caCertFile+".cer"), nunca outros arquivos do diretório
+// (nem um .cer legítimo que um dia venha a existir, ex.: export para o
+// Firefox). O daemon o chama no boot (ensureCA); no Linux o arquivo nunca
+// existe e o Remove é no-op.
+func CleanupTempCER(dir string) {
+	if dir == "" {
+		return
+	}
+	_ = os.Remove(filepath.Join(dir, caCertFile+".cer"))
+}
+
+// CertPEM devolve o certificado da CA em PEM (o artefato a instalar no trust
+// store do sistema).
+func (c *CA) CertPEM() []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: c.crt.Raw})
+}
+
+// SubjectCN devolve o nome comum da CA ("FocusGuard Local CA") — usado na
+// detecção/remoção no trust store.
+func (c *CA) SubjectCN() string {
+	return c.crt.Subject.CommonName
+}
+
+// LeafFor devolve (gerando e cacheando) um certificado de servidor assinado
+// pela CA, com SAN cobrindo host (nome DNS ou IP). Cacheado por hostname —
+// cada domínio bloqueado tem um cert estável, reutilizado entre conexões.
+func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if cert, ok := c.leafs[host]; ok {
+		return cert, nil
+	}
+	cert, err := c.signLeaf(host, time.Now())
+	if err != nil {
+		return nil, err
+	}
+	c.leafs[host] = cert
+	return cert, nil
+}
+
+// signLeaf monta um leaf ECDSA P-256 assinado pela CA com validade de 1 ano —
+// folga confortável para o interceptor (cert efêmero por domínio; renovação
+// automática a cada geração/reboot do daemon). A SAN cobre o host exato (DNS
+// name ou endereço IP).
+func (c *CA) signLeaf(host string, now time.Time) (*tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return nil, err
+	}
+	serial, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), 120))
+	if err != nil {
+		return nil, err
+	}
+
+	tmpl := x509.Certificate{
+		SerialNumber: serial,
+		Subject:      pkix.Name{CommonName: host, Organization: []string{"FocusGuard"}},
+		NotBefore:    now.Add(-time.Hour),
+		NotAfter:     now.AddDate(1, 0, 0),
+		KeyUsage:     x509.KeyUsageDigitalSignature | x509.KeyUsageKeyEncipherment,
+		ExtKeyUsage:  []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		tmpl.IPAddresses = []net.IP{ip}
+	} else {
+		tmpl.DNSNames = []string{host}
+	}
+
+	der, err := x509.CreateCertificate(rand.Reader, &tmpl, c.crt, &key.PublicKey, c.key)
+	if err != nil {
+		return nil, err
+	}
+	keyDER, err := x509.MarshalECPrivateKey(key)
+	if err != nil {
+		return nil, err
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: keyDER})
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+
+	pair, err := tls.X509KeyPair(certPEM, keyPEM)
+	if err != nil {
+		return nil, err
+	}
+	// A chain inclui o leaf + a CA: o navegador valida o leaf pela âncora do
+	// trust store sem precisar de intermediates.
+	pair.Certificate = [][]byte{der, c.crt.Raw}
+	return &pair, nil
+}
