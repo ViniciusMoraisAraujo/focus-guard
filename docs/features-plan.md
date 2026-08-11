@@ -26,6 +26,11 @@ Fase 5 (engajamento) ── relatório semanal + gamificação (usam analytics)
 
 Cada fase é **entregável isolada** (release própria), não bloqueia a seguinte.
 
+**Status:** Fases 1–5 **entregues** (v0.17.0); a v0.18.0 fechou a última
+limitação da Fase 3 (HTTPS com aviso de certificado — resolvido pela CA local,
+ver seção Fase 3). Itens em aberto: seção [Itens em aberto](#itens-em-aberto)
+no fim do documento (seleção do IP LAN no modo Server + pausa responsável).
+
 ---
 
 ## Fase 1 — Fundação: `doctor` + telemetria do sinkhole
@@ -253,257 +258,27 @@ batida N dias seguidos); calculadas na leitura → sem migração de estado.
 
 ---
 
-## Riscos transversais e decisões pendentes
+## Itens em aberto
 
-| Item | Decisão | Impacto |
+> Próxima versão.
+
+| Item | Origem | Ação pendente |
 |---|---|---|
-| Interceptor page ligada por default? | **Não** (flag) — muda resposta do DNS/hosts | Fase 3 |
-| Log de telemetria: só bloqueadas ou todas? | Só bloqueadas (+ erro upstream) | Fase 1.2 |
-| Pausa responsável (cooldown) | **Não entra sem decisão de produto** (AGENT.md) | Backlog |
-| `IsBlocked` ganha `clientIP` | Quebra de assinatura — testes existentes no mesmo commit | Fase 4 |
-| NTP falha (offline) | Suspeita mantida, bloqueio preventivo permanece | Fase 2 |
+| **Seleção do IP LAN no modo Server** | Fase 3 | Regra de seleção clara do IP que o DNS responde na rede (ex.: IP da rota default, configurável) — com multi-NIC/VPN a página quebra. |
+| **Pausa responsável (cooldown)** | Backlog | **Não entra sem decisão de produto** (AGENT.md). |
+
+> Decisões de design já tomadas nas fases ficam registradas nas próprias
+> seções (ex.: interceptor desligado por default, telemetria só de bloqueadas,
+> `IsBlocked` com `clientIP`, NTP offline mantém suspeita).
 
 ## Check-list por fase (Definition of Done)
 
-- [ ] `go build ./...` / `go vet ./...` / `gofmt -l` limpos
-- [ ] `go test ./... -count=1` verde (TDD cobrindo a mudança)
-- [ ] IPC mudou → CLI + tray + web + `types.ts` no mesmo commit + `contract-check`
-- [ ] `state.json` mudou → campo **aditivo**, compatível com estado em disco
-- [ ] UI mudou → `make ui` + `make contract`
-- [ ] Binários de plataforma novos → `_windows.go`/`_linux.go` com interface no base
-
-
-
-Fase 1 — Fundação: doctor + Telemetria
-1.1 focusguard doctor (CLI)
-
-Objetivo: Uma ferramenta de diagnóstico de linha de comando que verifica a saúde da instalação e reporta problemas.
-
-Backend (Go - cmd/focusguard/doctor.go):
-
-    Implementação: Criar uma cadeia de verificações (type Check func() Result).
-
-    Verificações Específicas:
-
-        Elevação: os.Getuid() == 0 (Linux) ou checagem de Token (Windows via _windows.go).
-
-        Serviços: Usar os/exec para systemctl is-active focusguard (Linux) ou sc query focusguard (Windows).
-
-        IPC Ping: Tentar conectar no socket IPC local.
-
-        State.json: os.Stat e tentar os.OpenFile com permissão de escrita.
-
-        Enforcer: Ler regras do firewall/hosts e comparar com regras em memória.
-
-    Contrato de Saída:
-
-        Texto padrão: [ PASS ], [ WARN ], [ FAIL ] com cores do terminal.
-
-        --json: Saída estruturada {"checks": [{"name": "IPC", "status": "pass", "message": "..."}], "overall_status": 1}.
-
-    TDD: Mockar o sistema de arquivos, chamadas de SO (usar interfaces OSExecuter) e cliente IPC para testar as falhas sem depender do ambiente real.
-
-1.2 Telemetria do sinkhole
-
-Objetivo: Registrar domínios bloqueados localmente para visualização no painel.
-
-Backend (Go - internal/domain/telemetry & dnsserver):
-
-    Armazenamento: Arquivo telemetry.jsonl (JSON Lines). Tamanho máximo de 1MB (~10k linhas). Ao exceder, rotaciona para telemetry.old.jsonl e limpa o atual (best-effort em concorrência).
-
-    Interceptação: No server.go do DNS, se IsBlocked retornar true, criar struct BlockedQuery{Domain, ClientIP, Timestamp} e enviar para um canal não-bloqueante lido pelo worker de telemetria.
-
-    IPC Contract (types.ts):
-    TypeScript
-
-    // Action: "dns-telemetry"
-    type TelemetryRequest = { limit?: number };
-    type TelemetryResponse = {
-      entries: Array<{ domain: string, ip: string, timestamp: string }>;
-      total_blocked: number;
-    };
-
-    Frontend (React/shadcn):
-
-        Nova aba/seção em "Rede".
-
-        Componentes: Card contendo um Table (shadcn) ou ScrollArea com a lista.
-
-        Atualização a cada 5 segundos (polling silencioso via IPC) se a aba estiver aberta.
-
-    TDD: Escrever no arquivo JSONL, simular uma linha truncada/corrompida no meio do arquivo e garantir que o leitor a ignore sem falhar a requisição IPC.
-
-Fase 2 — Clock Tamper Protection (Anti-Fuso)
-
-Objetivo: Evitar que usuários alterem a data/hora do sistema operacional para expirar bloqueios prematuramente.
-
-Backend (Go - internal/infrastructure/ntp & scheduler):
-
-    Cliente NTP Mínimo: Criar um cliente UDP puro na porta 123 buscando de pool.ntp.org. Timeout de 3 segundos.
-
-    Lógica de Detecção:
-
-        No state.json, adicionar last_known_time (timestamp Unix). Aditivo, não quebra versões antigas.
-
-        No startup e a cada 10 minutos (worker), comparar time.Now() com last_known_time.
-
-        Se math.Abs(time.Now().Sub(last_known_time)) > 5 * time.Minute, acionar Suspeita de Burla.
-
-    Ação de Mitigação (Lockdown):
-
-        Se suspeita: Fazer requisição NTP.
-
-        Se NTP confirmar a burla: Gravar no log de tamper, recalcular o ExpiresAt dos timers ativos somando/subtraindo o delta, e atualizar last_known_time.
-
-        Se NTP falhar (sem internet): Manter o estado de "bloqueio preventivo de segurança" (sentinela network-wide block) até a internet voltar e o NTP validar.
-
-    Frontend:
-
-        Se Lockdown ativo: Exibir um Alert destrutivo (shadcn) no topo do Dashboard: "Inconsistência de relógio detectada. Bloqueio preventivo ativado até sincronização online."
-
-    TDD: Criar um mock TimeProvider interface. Testar o cenário onde o tempo recua 1 hora e avança 1 hora. Verificar se os timers internos (já baseados no relógio monotônico do Go) não quebram.
-
-Fase 3 — Focus Interceptor Page
-
-Objetivo: Servir uma página HTML local avisando que o site foi bloqueado, em vez de um erro genérico de DNS.
-
-Backend (Go - internal/transport/httpapi & dnsserver):
-
-    Listener HTTP (:80): O Daemon deve tentar fazer net.Listen("tcp", ":80").
-
-        Se falhar (ex: porta ocupada pelo Apache/IIS), não dar panic. Fazer log de erro e seguir normalmente (Fallback).
-
-    Lógica do Enforcer/DNS:
-
-        Se Interceptor == true: Regras de hosts apontam para 127.0.0.1. Servidor DNS devolve o IP local da máquina (w.LocalAddr()).
-
-        Se Interceptor == false: Mantém o padrão 0.0.0.0.
-
-    Endpoint / (na porta 80): Ler o header Host. Se o Host estiver na lista de bloqueados, renderizar um template HTML estático html/template injetando o domínio e o tempo restante (IsBlocked(host) -> time_left).
-
-    Contrato de Configuração (IPC): Adicionar propriedade enable_interceptor: boolean nas configurações gerais.
-
-    Frontend (React/shadcn):
-
-        Aba Configurações: Adicionar um Switch (shadcn) "Ativar página de bloqueio (Requer porta 80 livre)".
-
-    TDD: Simular porta 80 ocupada no teste e garantir que o serviço continua rodando. Testar binding dinâmico no hosts generator.
-
-Fase 4 — Regras por Dispositivo (Server Edition)
-
-Objetivo: Permitir políticas flexíveis (Block, Allowlist, Inherit) baseadas em IP/MAC da rede local.
-
-Backend (Go - internal/domain/devices & scheduler):
-
-    Armazenamento: Novo arquivo devices.json ao lado do state.json.
-
-    Refatoração de Assinatura:
-
-        Mudar IsBlocked(domain string) bool para IsBlocked(domain string, clientIP string) bool.
-
-        Esta mudança afeta os testes antigos, devendo ser refatorados no mesmo commit (usar 127.0.0.1 nos testes legados).
-
-    Identificação (Best-effort MAC):
-
-        Tentar resolver MAC a partir do IP executando arp -a (Linux/Windows) via exec.Command. Parsear a saída em cache (TTL de 5 min). O controle primário é por IP.
-
-    IPC Contract (types.ts):
-    TypeScript
-
-    type Policy = "inherit" | "block_all" | "allow_list";
-
-    // Actions: "devices-list", "devices-upsert", "devices-remove"
-    type Device = {
-      ip: string;
-      mac?: string;
-      name: string;
-      policy: Policy;
-      allowed_domains?: string[];
-    };
-
-    Frontend (React/shadcn):
-
-        Nova tela "Dispositivos".
-
-        Componente base: DataTable (shadcn) listando os IPs conhecidos (alimentado também pela telemetria da fase 1).
-
-        Ações: Clicar num dispositivo abre um Sheet ou Dialog para definir Nome e Política.
-
-        Formulário com Select para política. Se allow_list, exibir um Textarea ou lista de tags para domínios.
-
-    TDD: Criar testes de precedência: Regra Específica do Dispositivo > Regra Global do Servidor.
-
-Fase 5 — Engajamento: Relatório e Gamificação
-5.1 Relatório Semanal Automático
-
-Objetivo: Exportar os dados de analytics para HTML de forma automática.
-
-Backend (Go):
-
-    Agendador: Usar time.Ticker alinhado ao relógio. Calcular quanto tempo falta para o horário alvo (ex: Domingo, 23h59) e dar time.Sleep / time.AfterFunc no worker.
-
-    Ação: Instanciar o gerador HTML já existente no módulo de analytics. Gravar no caminho configurado pelo usuário.
-
-    IPC & Config:
-
-        Adicionar ao state: report_schedule: { day_of_week: 0, hour: 23, minute: 59, export_path: "~/FocusGuardReports", enabled: true }.
-
-    Frontend (React/shadcn):
-
-        Configurações de Engajamento: Switch para habilitar, Select (dias da semana, horas) e um Input para o caminho de salvamento.
-
-    TDD: Mockar o relógio (interface abstrata de tempo) para adiantar o relógio virtual para Domingo 23h59 e verificar se o callback de exportação foi chamado exatamente uma vez.
-
-5.2 Gamificação (Conquistas)
-
-Objetivo: Analisar os logs locais e premiar o usuário com badges sem adicionar carga de estado no sistema.
-
-Backend (Go - internal/domain/achievements):
-
-    Lógica Funcional (Sem banco de dados extra):
-
-        Criar função pura: CalculateAchievements(stats AnalyticsData) []Achievement.
-
-        Regras de exemplo:
-
-            "Foco de Aço": stats.total_focus_hours >= 10
-
-            "Imparável": stats.current_streak_days >= 7
-
-            "Guardião da Madrugada": stats.focus_sessions_after_midnight >= 5
-
-    IPC Contract (types.ts):
-    TypeScript
-
-    // Action: "achievements-get"
-    type Achievement = {
-      id: string;
-      name: string;
-      description: string;
-      unlocked: boolean;
-      progress: number; // 0 a 100
-    };
-
-    Frontend (React/shadcn):
-
-        Tela "Estatísticas": Adicionar uma aba "Conquistas".
-
-        Componentes: Grid de Cards pequenos. Usar lucide-react para os ícones (ex: 🏆, 🔥, 🌙).
-
-        Se unlocked == false, usar opacidade reduzida e Progress bar (shadcn) para mostrar quão perto está.
-
-    TDD: Injetar structs falsos de AnalyticsData na função de cálculo e assegurar que as badges corretas alternam o booleano unlocked e preenchem corretamente o progress.
-
-Processo de Execução (Definition of Done do Agente)
-
-Para cada fase e cada commit, o agente deve obrigatoriamente garantir que o ciclo abaixo foi cumprido:
-
-    TDD First: O teste deve ser escrito antes (ou junto no mesmo commit) da implementação. Não fazer push de código de produção sem cobertura do caso de uso.
-
-    Verificação IPC (make contract): Se qualquer pacote Go alterar os payloads, o types.ts deve ser atualizado no mesmo commit.
-
-    Cross-Compilation Safety: Ao usar funções OS-specific (como sc query vs systemctl), implementar interfaces em os_windows.go e os_linux.go com build tags (//go:build windows).
-
-    Graceful Degradation (Best-Effort): Se NTP falhar, rede cair, ou porta HTTP 80 estiver tomada, o daemon principal (bloqueio DNS/Hosts) nunca pode falhar (panic). Use logrus ou a lib de log padrão para Warn/Error e continue a execução.
-
-    Schema do JSON: O state.json nunca pode quebrar no downgrade. Todos os novos campos (ex: last_known_time, políticas de devices) devem ter omitempty e a ausência deles deve instanciar o valor default seguro.
+**Status:** Fases 1–5 entregues (v0.17.0) — o check-list abaixo foi cumprido;
+a v0.18.0 fechou a limitação HTTPS da Fase 3 (CA local).
+
+- [x] `go build ./...` / `go vet ./...` / `gofmt -l` limpos
+- [x] `go test ./... -count=1` verde (TDD cobrindo a mudança)
+- [x] IPC mudou → CLI + tray + web + `types.ts` no mesmo commit + `contract-check`
+- [x] `state.json` mudou → campo **aditivo**, compatível com estado em disco
+- [x] UI mudou → `make ui` + `make contract`
+- [x] Binários de plataforma novos → `_windows.go`/`_linux.go` com interface no base
