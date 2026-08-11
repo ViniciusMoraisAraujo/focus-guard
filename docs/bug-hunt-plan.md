@@ -664,8 +664,13 @@ fallback de SSE.
   Etapa 5 — sem mudança de comportamento).
 - Processo residual do smoke E2E (`focusguard-daemon` de /tmp) não foi
   encerrável pelo shell não-elevado — cai no próximo reboot.
-- Bug 1 documentado no `main.go` (limpeza de `.bak`/`.old` órfãos em todo
-  boot) permanece como item de produto fora do escopo do bug-hunt.
+- ~~Bug 1 documentado no `main.go` (limpeza de `.bak`/`.old` órfãos em todo
+  boot) permanece como item de produto fora do escopo do bug-hunt.~~
+  **Resolvido depois do bug-hunt:** `CleanupStale` passou a expirar os `.bak`
+  que ultrapassam a janela de retenção do smart recovery (`recovery.BackupMaxAge`,
+  1h — o mesmo limite que o watchdog usa em `FindRecentBackup`), então a
+  cópia da versão antiga some da pasta de instalação no primeiro boot após o
+  update.
 
 ---
 

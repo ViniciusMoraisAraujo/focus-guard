@@ -166,10 +166,17 @@ bloqueio (domínio, motivo, tempo restante).
   rota com permissão para Hosts externos **somente** no modo interceptor.
 - **Server:** DNS responde com o IP LAN do servidor; mesmo listener :80 serve
   a página para a rede.
-- **Limitações documentadas:** HTTPS puro não exibe a página (erro de
-  certificado) — a página aparece para HTTP e para o fluxo
-  hosts/sinkhole-tradicional; e o IP LAN precisa de regra de seleção clara
-  (ex.: IP da rota default, configurável) — multi-NIC/VPN quebram a página.
+- **Limitações documentadas:** HTTPS puro originalmente não exibia a página
+  (erro de certificado) — resolvido pela **CA local** (`internal/infrastructure/tlsca`):
+  o daemon gera uma CA persistente, assina os leafs do listener TLS com ela e
+  a instala no trust store do SO (best-effort, daemon roda como SYSTEM/root),
+  então a página HTTPS abre **sem aviso** em Chrome/Edge. Fallback: sem CA no
+  store, o listener serve cert auto-assinado por SNI (usuário continua pelo
+  aviso). Firefox usa trust store próprio — passo extra documentado
+  (`security.enterprise_roots.enabled` ou importação manual; comandos
+  `ca-install`/`ca-uninstall` no CLI e checagem no doctor). Ainda limitado:
+  IP LAN precisa de regra de seleção clara (ex.: IP da rota default,
+  configurável) — multi-NIC/VPN quebram a página.
 
 **Riscos:** mexer no `IsBlocked`/resposta DNS é mudança de comportamento
 visível — feature **desligada por default** (flag/config), TDD da resposta DNS
