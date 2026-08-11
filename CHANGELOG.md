@@ -7,6 +7,32 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.18.0] - 2026-08-11
+
+### ✨ Novas funcionalidades
+
+- **Página de bloqueio HTTPS sem aviso de certificado (CA local)** — o
+  interceptor HTTPS (:443) passou a assinar os certificados por domínio com
+  uma **CA própria persistente** (ECDSA P-256, em
+  `%PROGRAMDATA%\FocusGuard\ca` no Windows / `/var/lib/focusguard/ca` no
+  Linux) instalada no trust store do sistema quando o interceptor é ativado
+  (Windows: `certutil -addstore Root`; Linux: `update-ca-certificates`).
+  Resultado: o navegador abre a página motivacional **direto, sem o aviso
+  "sua conexão não é privada"**. Sem CA instalada, mantém o fallback
+  auto-assinado histórico (zero regressão). O **Firefox** usa trust store
+  próprio: ative `security.enterprise_roots.enabled` no `about:config` ou
+  importe a CA com `focusguard ca-install`.
+- **`focusguard ca-install` / `ca-uninstall`** (elevados) — gerar/instalar ou
+  remover a CA local manualmente; o `focusguard uninstall` agora também remove
+  a CA do trust store (higiene da âncora).
+- **Doctor: checagem da CA local** — ausente = pass (config); gerada sem
+  instalar = WARN com o passo da correção.
+- **Update: os `.bak` da versão antiga agora são expirados** — o `CleanupStale`
+  remove o backup mais novo por binário quando ele passa da janela de retenção
+  do smart recovery (`recovery.BackupMaxAge`, **1h**): a cópia da versão antiga
+  sai da pasta de instalação no primeiro boot após o update, em vez de ficar
+  acumulada o dia inteiro.
+
 ### 🐛 Correções
 
 - **`focusguard block <domínio> --duration <tempo>` falhava com "Duration
@@ -20,6 +46,26 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   com a instalação saudável (o daemon elevado é quem grava). Agora degrada para
   WARN quando o erro é de permissão e o shell não é elevado (TDD nos dois
   sentidos).
+- **Rollback do watchdog inalcançável no ramo "crash após boot saudável"** — o
+  `crashWindow` era igual ao `checkInterval` (30s): a queda só é detectada no
+  check seguinte ao último ping, então a condição `now-lastHealthy <
+  crashWindow` nunca satisfazia no loop real. Agora `crashWindow = 2 ×
+  checkInterval` (60s), cobrindo o primeiro check após a queda com folga. A
+  janela de retenção do backup espelha `recovery.BackupMaxAge` (fonte única da
+  verdade) e um teste trava a relação "1h nunca trunca uma decisão de
+  rollback".
+
+### 🧪 Testes
+
+- **Integração do daemon via IPC real** — `interceptor-set on` pelo socket
+  gera e persiste a CA e o handshake TLS valida o leaf **contra a CA apenas**
+  (prova que é assinado por ela, não auto-assinado), com a página de bloqueio
+  servida por HTTPS; `interceptor-set off` derruba o listener preservando a
+  CA. A wiring do handler foi extraída para um helper compartilhado com o
+  composition root (sem divergência futura).
+- **tlsca** — persistência/idempotência da CA, SAN correta por domínio, chain
+  valida contra a CA, limpeza do `.cer` temporário órfão preservando os
+  artefatos reais.
 
 ## [0.17.1] - 2026-08-10
 
