@@ -19,6 +19,8 @@ import (
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
 	"golang.org/x/mod/semver"
+
+	"focusguard/internal/domain/recovery"
 )
 
 // UpdateResult contains information about a found update.
@@ -409,9 +411,12 @@ func (u *Updater) CleanupBackup(backupPath string) error {
 //
 // The newest .bak per binary is deliberately kept: the watchdog's smart
 // recovery (internal/recovery) still needs it if the freshly updated daemon
-// crash-loops before confirming health. Best-effort: failures are ignored
-// (they are cosmetic — a locked .old/.trash on Windows is simply retried next
-// boot).
+// crash-loops before confirming health. O backup mais novo também é expirado
+// quando passa da janela de retenção (recovery.BackupMaxAge — o limite que o
+// próprio watchdog usa em FindRecentBackup): além dela ele nunca seria
+// consumido, então fica só como a "versão antiga" que o usuário vê acumulada
+// na pasta após os updates. Best-effort: failures are ignored (they are
+// cosmetic — a locked .old/.trash on Windows is simply retried next boot).
 func (u *Updater) CleanupStale(installDir string) {
 	if installDir == "" {
 		return
@@ -455,6 +460,22 @@ func (u *Updater) CleanupStale(installDir string) {
 			}
 		} else {
 			newest[prefix] = path
+		}
+	}
+
+	// Age-out: o .bak mais novo por binário também é expirado quando passa da
+	// janela de retenção do smart recovery (recovery.BackupMaxAge). O watchdog
+	// (FindRecentBackup) já ignora backups mais velhos que isso — mantê-los só
+	// preserva a cópia da versão antiga na pasta de instalação para sempre,
+	// um update após o outro.
+	now := time.Now()
+	for _, path := range newest {
+		info, err := os.Stat(path)
+		if err != nil {
+			continue
+		}
+		if now.Sub(info.ModTime()) > recovery.BackupMaxAge {
+			_ = os.Remove(path)
 		}
 	}
 }

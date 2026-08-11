@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"focusguard/internal/domain/recovery"
 )
 
 func TestDaemonTracker_MarkHealthyRecordsTime(t *testing.T) {
@@ -200,6 +202,51 @@ func TestCheckDaemon_ActsAfterUpdateStalls(t *testing.T) {
 
 	if !killed {
 		t.Error("watchdog deve voltar a matar o daemon quando o update trava além da graça")
+	}
+}
+
+// TestBackupMaxAge_OutlivesRollbackDecisionWindow trava a relação entre a
+// retenção dos .bak e as janelas de decisão do watchdog: a decisão de
+// rollback acontece no máximo 2×crashWindow após a troca (ramo "crash após
+// boot saudável": lastHealthy e a queda ambos dentro de crashWindow) ou
+// startupGrace + checkInterval + pingTimeout + minDowntime (ramo "nunca
+// saudável"). A retenção precisa ser MAIOR que esse pior caso — senão o
+// smart recovery fica sem backup no exato momento em que precisaria dele.
+func TestBackupMaxAge_OutlivesRollbackDecisionWindow(t *testing.T) {
+	worstCase := 2 * crashWindow
+	if alt := startupGrace + checkInterval + pingTimeout + minDowntime; alt > worstCase {
+		worstCase = alt
+	}
+	if recovery.BackupMaxAge <= worstCase {
+		t.Errorf(
+			"BackupMaxAge (%v) deve ser maior que o pior caso de decisão do rollback (%v = max(2×crashWindow, startupGrace+checkInterval+pingTimeout+minDowntime))",
+			recovery.BackupMaxAge, worstCase,
+		)
+	}
+}
+
+// TestCrashWindow_CoversFirstCheckAfterHealthyPing garante que o ramo "crash
+// após boot saudável" do smart recovery é alcançável no loop real: a queda
+// do daemon só é detectada no check seguinte ao último ping (ele já está fora
+// há um checkInterval), então `now-lastHealthy < crashWindow` exige
+// crashWindow > checkInterval. Com crashWindow = 2×checkInterval o primeiro
+// check após a queda cai dentro da janela e o rollback dispara.
+func TestCrashWindow_CoversFirstCheckAfterHealthyPing(t *testing.T) {
+	if crashWindow <= checkInterval {
+		t.Fatalf("crashWindow (%v) deve ser maior que checkInterval (%v) para o ramo de crash pós-saúde ser alcançável", crashWindow, checkInterval)
+	}
+
+	// Simulação fiel do loop: o daemon novo confirmou saúde um checkInterval
+	// atrás (lastHealthy) e a queda só é detectada agora, no check seguinte.
+	now := time.Now()
+	backupTime := now.Add(-45 * time.Second) // update aplicado 45s atrás
+	lastHealthy := now.Add(-checkInterval)   // último health: um ciclo antes
+
+	if !recovery.ShouldRollBack(backupTime, lastHealthy, now, minDowntime, crashWindow) {
+		t.Errorf(
+			"crash detectado um checkInterval após o último health deveria disparar o rollback (crashWindow=%v, checkInterval=%v)",
+			crashWindow, checkInterval,
+		)
 	}
 }
 

@@ -15,8 +15,11 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	selfupdate "github.com/creativeprojects/go-selfupdate"
+
+	"focusguard/internal/domain/recovery"
 )
 
 func TestNewUpdater(t *testing.T) {
@@ -968,6 +971,46 @@ func TestCleanupStale_KeepsRealBinaries(t *testing.T) {
 
 	if _, err := os.Stat(binary); err != nil {
 		t.Error("binário real não pode ser removido pela varredura")
+	}
+}
+
+// TestCleanupStale_ExpiresBackupsPastRetentionWindow verifies the age-out of
+// Bug 1: o .bak mais novo por binário também é removido quando passa da janela
+// de retenção do smart recovery (recovery.BackupMaxAge) — o watchdog
+// (FindRecentBackup) nunca consome backups mais velhos que isso, então um
+// .bak expirado é só a "versão antiga" acumulada na pasta de instalação.
+func TestCleanupStale_ExpiresBackupsPastRetentionWindow(t *testing.T) {
+	// Só o backup antigo: mesmo sendo o único (o mais novo por binário), a
+	// varredura o expira quando ele passa da janela.
+	dir := t.TempDir()
+	oldBak := filepath.Join(dir, "focusguard-daemon.exe.bak.20260801000000")
+	if err := os.WriteFile(oldBak, []byte("old"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	oldTime := time.Now().Add(-(recovery.BackupMaxAge + time.Hour))
+	if err := os.Chtimes(oldBak, oldTime, oldTime); err != nil {
+		t.Fatal(err)
+	}
+
+	u := NewUpdater("o", "r")
+	u.CleanupStale(dir)
+
+	if _, err := os.Stat(oldBak); !os.IsNotExist(err) {
+		t.Error("backup além da janela de retenção deveria ser removido mesmo sendo o mais novo")
+	}
+
+	// Controle positivo: um backup fresco (dentro da janela) permanece — o
+	// smart recovery ainda pode precisar dele.
+	freshDir := t.TempDir()
+	freshBak := filepath.Join(freshDir, "focusguard-daemon.exe.bak.20260811100000")
+	if err := os.WriteFile(freshBak, []byte("fresh"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	u.CleanupStale(freshDir)
+
+	if _, err := os.Stat(freshBak); err != nil {
+		t.Errorf("backup dentro da janela deveria permanecer: %v", err)
 	}
 }
 

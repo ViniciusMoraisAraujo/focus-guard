@@ -14,6 +14,27 @@ import (
 	"time"
 )
 
+// BackupMaxAge é a janela de retenção dos .bak deixados pelo update: o
+// watchdog (FindRecentBackup) só consome backups com menos de BackupMaxAge —
+// um backup mais velho nunca é usado pelo smart recovery, é só peso morto na
+// pasta de instalação. É a fonte única da verdade compartilhada com o
+// internal/infrastructure/update (CleanupStale expira os .bak que passam da
+// janela) e com o cmd/focusguard-watchdog (backupMaxAge).
+//
+// 1h é folga generosa para o caso real: a decisão de rollback do watchdog
+// acontece minutos após a troca (o daemon novo precisa crashar dentro de
+// crashWindow de um boot saudável e ficar fora por minDowntime — as janelas
+// reais vivem no cmd/focusguard-watchdog). A janela curta garante que a
+// cópia da versão antiga saia da pasta de instalação no primeiro boot após o
+// update em vez de ficar guardada o dia inteiro.
+//
+// Caveat (aceito): no fallback move-on-reboot (troca agendada para o próximo
+// boot), se a máquina reiniciar mais de 1h depois do agendamento o .bak já
+// foi expirado — uma nova versão que crash-loope após esse reboot fica sem
+// smart recovery. Com a janela anterior (24h) esse cenário ficava coberto;
+// a troca curta prioriza não acumular cópias antigas na pasta.
+const BackupMaxAge = 1 * time.Hour
+
 // FindRecentBackup returns the newest backup file for binaryPath whose mtime
 // is within maxAge. Returns "" when there is no eligible backup.
 func FindRecentBackup(binaryPath string, maxAge time.Duration) (string, error) {

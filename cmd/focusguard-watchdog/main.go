@@ -26,9 +26,27 @@ const (
 	// graça para o restart pós-update (o daemon sai sozinho e o SCM o reergue
 	// em segundos): só decidimos o rollback depois que ele fica fora por mais
 	// que dois ciclos de checagem, para nunca reverter uma atualização boa.
-	minDowntime  = 2 * checkInterval // 60s — restart pós-update legítimo
-	crashWindow  = 30 * time.Second
-	backupMaxAge = 24 * time.Hour
+	minDowntime = 2 * checkInterval // 60s — restart pós-update legítimo
+	// crashWindow é a janela do ramo "crash após boot saudável" do smart
+	// recovery (ShouldRollBack): o daemon novo precisa cair dentro dela após o
+	// último health E o health precisa ter acontecido dentro dela do backup.
+	// Precisa ser MAIOR que checkInterval: a queda só é detectada no check
+	// seguinte ao último ping (o daemon já está fora há um ciclo), então com
+	// crashWindow == checkInterval a condição `now-lastHealthy < crashWindow`
+	// nunca é satisfeita no loop real. 2×checkInterval cobre o primeiro check
+	// após a queda com folga.
+	crashWindow = 2 * checkInterval
+	// backupMaxAge espelha recovery.BackupMaxAge (fonte única da verdade): o
+	// update (CleanupStale) expira os .bak que passam da janela, então o
+	// watchdog nunca vai perder um backup que ainda poderia consumir.
+	//
+	// NOTA: a retenção é um teto de ELEGIBILIDADE, independente de
+	// crashWindow/minDowntime (condições de DECISÃO). A decisão de rollback
+	// sempre acontece dentro de ~2min da troca (≤ max(2×crashWindow,
+	// startupGrace+checkInterval+pingTimeout+minDowntime)), então 1h nunca
+	// trunca um rollback em andamento — o teste
+	// TestBackupMaxAge_OutlivesRollbackDecisionWindow trava essa relação.
+	backupMaxAge = recovery.BackupMaxAge
 
 	// updateInProgressFile é a flag que o daemon escreve ANTES de aplicar um
 	// update (Bug 2) e que a NOVA versão remove quando conclui um boot
