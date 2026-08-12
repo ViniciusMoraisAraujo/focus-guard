@@ -251,6 +251,20 @@ implementation details belong in code comments, not here.Packages are grouped in
     `fakeFileInfo` helper) so they don't depend on real system binaries or
     elevation. Follow this pattern in new tests — never call real
     `sc.exe`/`iptables`/`systemctl` inside a unit test.
+15. **Session log (handoff between sessions/days)** — at the end of every
+    working session, write or update `docs/session-log/YYYY-MM-DD.md` (the
+    file for the current date; update it if it already exists — don't create
+    a duplicate). Keep it **brief and factual** — it's the handoff that
+    guides the next agent: what was done (features/fixes/refactors, key
+    files, commit hashes), important decisions and the why, what's still in
+    flight (uncommitted work, open items), and the validation status. Follow
+    the template and rules in `docs/session-log/README.md`. A session
+    without its summary is not finished. **Enforced automatically:**
+    `make session-check` fails if today's entry is missing or off-template
+    (run it before committing), and CI validates the structure of every
+    existing entry (`scripts/check-session-log.sh` in `.github/workflows/`
+    `test.yml` — the CI check does NOT require today's file, since a push
+    can happen on a different day than the work).
 
 ---
 
@@ -264,6 +278,7 @@ implementation details belong in code comments, not here.Packages are grouped in
 - [ ] `go test ./... -count=1 -timeout=60s` passes
 - [ ] `git status` shows no build artifacts (`bin/`, `.exe`, etc.)
 - [ ] New tests cover the change (section 4, rule 1)
+- [ ] Session summary written/updated in `docs/session-log/` (section 4, rule 15) — `make session-check` must pass
 - [ ] Commit message follows Conventional Commits (section 7)
 
 ```bash
@@ -296,8 +311,9 @@ go test ./... -count=1 -timeout=60s   # make test
 │   ├── bug-hunt-plan.md        # completed bug-hunt (Etapas 0–8, 4 real bugs fixed)
 │   ├── reorg-plan.md           # internal/ layering + packaging reorg
 │   ├── release.md              # release checklist and process
+│   ├── session-log/            # daily handoff summaries (README has the template)
 │   └── perf-2026-08-05.md / dns-sinkhole-spec.md
-├── Makefile                    # build, icon, winres, ui, contract(-check), msi, test, vet, fmt, tidy, clean, install, uninstall
+├── Makefile                    # build, icon, winres, ui, contract(-check), msi, test, vet, fmt, tidy, clean, install, uninstall, session-check
 ├── internal/transport/httpapi/  # HTTP: IPC proxy + static assets + localhost security
 ├── focusguard-ui/              # React + Vite + TS frontend (12 screens)
 │   └── src/screens/              # Dashboard, Block, Panic, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security, Login, Rede
@@ -330,6 +346,7 @@ go test ./... -count=1 -timeout=60s   # make test
     ├── focusguard.service      # systemd unit
     ├── focusguard-tray.desktop # tray shortcut template (Linux)
     ├── build-msi.sh            # .msi build via go-msi + WiX
+    ├── check-session-log.sh    # validates docs/session-log (CI structure + make session-check --today)
     ├── msi/                    # wix.json / wix-server.json / product.wxs
     └── verifyicon/             # verifies the embedded icon matches focusguard.ico
 ```

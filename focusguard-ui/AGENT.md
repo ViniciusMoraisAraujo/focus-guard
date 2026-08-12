@@ -44,6 +44,9 @@ das ações IPC para o daemon). O `dist` compilado é copiado para
 8. Testes (vitest): `npm test` — cobre o `weekly-grid` (janelas overnight,
    lanes, marcador "agora"), o `context/` (fallback SSE→polling) e o
    `client.ts`; rode junto com o `tsc` ao mexer na UI.
+9. **Resumo de sessão** — ao final da sessão, atualize o
+   `../docs/session-log/YYYY-MM-DD.md` (handoff diário para o próximo agente
+   — regra do AGENT.md raiz §4.15).
 
 ## Bugs e correções potenciais
 

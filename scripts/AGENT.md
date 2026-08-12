@@ -21,6 +21,7 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 | `msi/` | `wix.json` (desktop) + `wix-server.json` (Server, headless) + `product.wxs` (template WiX) do go-msi |
 | `../packaging/server.role` | Marcador vazio da edição Server — o MSI Server instala ao lado do daemon. Em instalação LIMPA (sem `state.json`) o DNS sinkhole nasce habilitado no 1º boot; em conversão de instalação existente, habilite na tela Rede ou com `focusguard dns start` (ver `isServerEdition` no daemon) |
 | `verifyicon/` | Verifica se o ícone embutido no .exe == `focusguard.ico` |
+| `check-session-log.sh` | Valida o `docs/session-log/` (handoff diário): estrutura de todos os resumos no CI + `--today` para o `make session-check` (falha se o resumo de hoje não existir) |
 
 ## Regras específicas
 
@@ -47,6 +48,9 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
    `a890d92`): o go-msi resolve os caminhos do `wix.json` como absolutos e os
    torna relativos ao `--out`; se o repo e o `--out` ficarem em drives
    diferentes (repo em `D:`, temp do SO em `C:`), a geração aborta.
+8. **Resumo de sessão** — ao final da sessão, atualize o
+   `../docs/session-log/YYYY-MM-DD.md` (handoff diário para o próximo agente
+   — regra do AGENT.md raiz §4.15).
 
 ## Bugs e correções potenciais
 
@@ -100,7 +104,7 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
 
 ## Testes
 
-- `bash -n scripts/build-msi.sh scripts/install-linux.sh` — sintaxe.
+- `bash -n scripts/build-msi.sh scripts/install-linux.sh scripts/check-session-log.sh` — sintaxe.
 - PowerShell: `powershell -NoProfile -ExecutionPolicy Bypass -File
   install-daemon.ps1 status` (o install/uninstall exigem admin).
 - `go run ./scripts/verifyicon/main.go` após `make icon && make winres` (o

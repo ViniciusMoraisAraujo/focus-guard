@@ -39,6 +39,9 @@ renderiza a resposta. A lógica real vive em `internal/`.
    `logging.go` com `logFileName`, `maxLogSizeBeforeRotate`,
    `setupLoggingAt`/`setupLogging` e `var osExecutable = os.Executable`
    (stubbable nos testes).
+7. **Resumo de sessão** — ao final da sessão, atualize o
+   `../docs/session-log/YYYY-MM-DD.md` (template na pasta) — handoff diário
+   para o próximo agente (regra do AGENT.md raiz §4.15).
 
 ## Bugs e correções potenciais
 

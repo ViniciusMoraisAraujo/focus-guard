@@ -100,6 +100,7 @@ go build -o bin/focusguard-web ./cmd/focusguard-web
 | `make msi-server VERSION=x.y.z` | instalador Server/headless `.msi` |
 | `make install` / `make uninstall` | build + instala/remove como serviço |
 | `make test` | `go test ./... -count=1 -timeout=60s` |
+| `make session-check` | falha se o resumo da sessão de hoje (`docs/session-log/`) não existir — handoff diário (AGENT.md §4.15) |
 | `make vet` / `make fmt` / `make tidy` / `make clean` | vet / fmt / tidy / limpeza |
 | `make help` | lista os alvos |
 
@@ -211,3 +212,4 @@ Detalhes do processo em [`docs/release.md`](release.md).
 | [`dns-sinkhole-spec.md`](dns-sinkhole-spec.md) | Especificação do DNS sinkhole ("Rei da Rede") |
 | [`perf-2026-08-05.md`](perf-2026-08-05.md) | Perfil de performance e limitações de ambiente |
 | [`release.md`](release.md) | Processo de release |
+| [`session-log/`](session-log/) | Resumos diários de sessão (handoff entre agentes — template na pasta; validação via `make session-check` + job `session-log` do CI) |

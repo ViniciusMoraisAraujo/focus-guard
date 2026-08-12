@@ -10,6 +10,20 @@ permissions:
   contents: read
 
 jobs:
+  # Validação do docs/session-log/ (handoff diário entre sessões de agentes —
+  # regra do AGENT.md raiz §4.15): o CI confere a ESTRUTURA de todos os
+  # resumos existentes (nome YYYY-MM-DD.md, título e seções do template). Não
+  # exige o arquivo de HOJE — o push pode acontecer em dia diferente do
+  # trabalho; a checagem do dia é local (make session-check).
+  session-log:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Session-log structure check
+        run: bash scripts/check-session-log.sh
+
   # Etapa 3 do bug-hunt (docs/bug-hunt-plan.md): o -race não roda no Windows
   # local (CGO_ENABLED=0) — a verificação de data races vive aqui, no CI Linux,
   # nos pacotes concorrentes (lifecycle do daemon, event hub, roteador IPC,

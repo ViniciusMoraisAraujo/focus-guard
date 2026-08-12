@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet clean install uninstall msi help fmt tidy
+.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet session-check clean install uninstall msi help fmt tidy
 
 GO       := go
 BIN_DIR  := bin
@@ -76,6 +76,15 @@ contract:
 contract-check:
 	go run ./scripts/gen-contract/main.go --check
 
+# session-check falha se o resumo da sessão de HOJE não existir em
+# docs/session-log/ (regra do AGENT.md raiz §4.15 e item do Definition of
+# Done §5): é o handoff que guia o agente do dia seguinte. Rode no fim da
+# sessão, antes de commitar. O CI valida a ESTRUTURA de todos os resumos
+# existentes (scripts/check-session-log.sh no .github/workflows/test.yml) —
+# este alvo é a checagem do dia, local.
+session-check:
+	bash scripts/check-session-log.sh --today
+
 # msi gera o instalador da edição desktop do Windows
 # (focusguard-<versão>-amd64.msi) via go-msi + WiX Toolset. Requer um ambiente
 # Windows (o go-msi chama o WiX via cmd.exe) com go-msi e WiX 3.10+ instalados
@@ -145,6 +154,7 @@ help:
 	@echo "  make uninstall   Remove da inicializacao"
 	@echo "  make test        Executa todos os testes"
 	@echo "  make vet         Verifica com go vet"
+	@echo "  make session-check  Falha se o resumo da sessão de hoje não existir"
 	@echo "  make clean       Remove artefatos de build"
 	@echo "  make fmt         Formata codigo fonte"
 	@echo "  make tidy        go mod tidy"

@@ -7,6 +7,16 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+### 🧪 Testes
+
+- **Validação automática do session-log** — a convenção de handoff diário
+  (`docs/session-log/`, AGENT.md §4.15) agora é cobrada por máquina:
+  `make session-check` falha se o resumo de **hoje** não existir ou estiver
+  fora do template, e o CI ganhou o job `session-log` que valida a estrutura
+  de todos os resumos existentes em todo push/PR (nome `YYYY-MM-DD.md`, data
+  válida, título e seções obrigatórias — via
+  `scripts/check-session-log.sh`).
+
 ## [0.18.1] - 2026-08-11
 
 ### 📝 Documentação

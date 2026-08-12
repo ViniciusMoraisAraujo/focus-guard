@@ -70,6 +70,9 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 6. **Defensivo** — sanitize domínios (`sanitizeDomain`), tetos (pomodoro
    `--work` ≤ 7 dias, goal ≤ 1440min), rollback atômico no update, sweep de
    regras órfãs no `Sync`.
+7. **Resumo de sessão** — ao final da sessão, atualize o
+   `../docs/session-log/YYYY-MM-DD.md` (handoff diário para o próximo agente
+   — regra do AGENT.md raiz §4.15).
 
 ## Bugs e correções potenciais
 
