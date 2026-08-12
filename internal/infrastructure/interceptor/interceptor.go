@@ -37,6 +37,7 @@ import (
 	"sync"
 	"time"
 
+	"focusguard/internal/infrastructure/lru"
 	"focusguard/internal/infrastructure/tlsca"
 )
 
@@ -48,6 +49,13 @@ const DefaultBindAddr = "0.0.0.0:80"
 // (port 443). Best-effort like the HTTP one — a busy 443 degrades only the
 // page for HTTPS sites, never the block.
 const DefaultTLSBindAddr = "0.0.0.0:443"
+
+// certCacheMax é o teto do certCache (SNI → certificado) em hosts. Certs são
+// regeneráveis a qualquer momento — o teto só impede que SNIs arbitrários de
+// um listener Server (0.0.0.0:443, scaneável por qualquer host da rede)
+// encham a memória (pendência INFO do docs/verification-plan.md). Var (não
+// const) para os testes baixarem o teto sem gerar centenas de certs.
+var certCacheMax = 512
 
 // Checker decides whether a requested host is blocked (satisfied by
 // *scheduler.Scheduler.IsBlocked). The page is served only for blocked hosts.
@@ -111,19 +119,19 @@ type Server struct {
 	// auto-assinado por SNI (o usuário continua pelo aviso).
 	ca *tlsca.CA
 
-	// certCache is the SNI → certificate map for the TLS listener (guarded by
-	// mu). Regenerated on demand — a certificate always carries the SAN of the
-	// exact hostname the browser is connecting to, so the warning page can be
-	// continued without hostname-mismatch errors. Os leafs assinados pela CA
-	// também passam por aqui (o CA mantém o próprio cache, mas o cache do
-	// Server isola o ciclo de vida do listener).
-	certCache map[string]*tls.Certificate
+	// certCache is the SNI → certificate LRU for the TLS listener (guarded by
+	// mu, capped by certCacheMax). Regenerated on demand — a certificate
+	// always carries the SAN of the exact hostname the browser is connecting
+	// to, so the warning page can be continued without hostname-mismatch
+	// errors. Os leafs assinados pela CA também passam por aqui (o CA mantém o
+	// próprio cache, mas o cache do Server isola o ciclo de vida do listener).
+	certCache *lru.Cache[*tls.Certificate]
 }
 
 // New builds an interceptor server consulting checker (nil checker = page
 // never matches, the listener still answers 404).
 func New(checker Checker) *Server {
-	return &Server{checker: checker, certCache: make(map[string]*tls.Certificate)}
+	return &Server{checker: checker, certCache: lru.New[*tls.Certificate](certCacheMax)}
 }
 
 // SetCA define a CA local que assina os certificados da página HTTPS (pode ser
@@ -218,7 +226,7 @@ func (s *Server) certificateFor(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if cert, ok := s.certCache[host]; ok {
+	if cert, ok := s.certCache.Get(host); ok {
 		return cert, nil
 	}
 
@@ -232,7 +240,7 @@ func (s *Server) certificateFor(hello *tls.ClientHelloInfo) (*tls.Certificate, e
 	if err != nil {
 		return nil, err
 	}
-	s.certCache[host] = cert
+	s.certCache.Set(host, cert)
 	return cert, nil
 }
 

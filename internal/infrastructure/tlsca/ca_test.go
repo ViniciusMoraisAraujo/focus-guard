@@ -134,6 +134,40 @@ func TestLeafFor_IsCached(t *testing.T) {
 	}
 }
 
+// TestLeafFor_CacheCap_EvictsLeastRecentlyUsed: o cache de leafs é um LRU com
+// teto (leafCacheMax) — um flood de SNIs no Server mode não pode crescer a
+// memória sem limite (pendência INFO do docs/verification-plan.md). O teto é
+// baixado para o teste; o host menos recente é evictado e o mais recente
+// permanece, e um host evictado regenera no próximo acesso.
+func TestLeafFor_CacheCap_EvictsLeastRecentlyUsed(t *testing.T) {
+	oldMax := leafCacheMax
+	leafCacheMax = 3
+	defer func() { leafCacheMax = oldMax }()
+
+	ca := newTestCA(t)
+	// Insere 4 hosts: o primeiro (h0) deve ser evictado ao chegar o 4º.
+	hosts := []string{"h0.com", "h1.com", "h2.com", "h3.com"}
+	for _, h := range hosts {
+		if _, err := ca.LeafFor(h); err != nil {
+			t.Fatalf("LeafFor(%s): %v", h, err)
+		}
+	}
+	if ca.leafs.Len() != leafCacheMax {
+		t.Fatalf("cache com %d leafs, teto %d", ca.leafs.Len(), leafCacheMax)
+	}
+	if _, ok := ca.leafs.Get("h0.com"); ok {
+		t.Error("h0.com deveria ter sido evictada (menos recente)")
+	}
+	if _, ok := ca.leafs.Get("h3.com"); !ok {
+		t.Error("h3.com deveria permanecer (mais recente)")
+	}
+	// Host evictado regenera sem erro no próximo acesso (o cache nunca quebra
+	// um handshake — leafs são regeneráveis).
+	if _, err := ca.LeafFor("h0.com"); err != nil {
+		t.Errorf("LeafFor regenerado após evicção: %v", err)
+	}
+}
+
 // TestLeafFor_ChainValidatesAgainstCA prova o contrato do navegador: com a CA
 // no trust store, um cliente que confia nela valida o leaf sem warning — a
 // validação completa (x509.Verify com a CA como raiz) precisa passar.

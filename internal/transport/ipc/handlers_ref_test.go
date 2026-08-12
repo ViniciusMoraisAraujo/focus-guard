@@ -640,8 +640,9 @@ func (d *refDeps) handleAchievements(_ context.Context, _ *Request) (*Response, 
 	if err != nil {
 		return nil, err
 	}
-	st := analytics.Summarize(sessions, 7, time.Now())
-	return &Response{Success: true, Achievements: achievements.Calculate(st, sessions)}, nil
+	now := time.Now()
+	st := analytics.Summarize(sessions, 7, now)
+	return &Response{Success: true, Achievements: achievements.Calculate(st, sessions, now)}, nil
 }
 
 // ---------------------------------------------------------------------------

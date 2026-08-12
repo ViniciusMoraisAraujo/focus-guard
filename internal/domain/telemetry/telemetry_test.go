@@ -77,13 +77,38 @@ func TestRotationCapsFileSize(t *testing.T) {
 	}
 
 	// O .old preserva a história (a query grande) e o arquivo atual só tem a
-	// segunda query.
+	// segunda query. Queries concatena os dois (.old antes — cronológico), então
+	// o histórico rotacionado NÃO some da UI (pendência INFO do
+	// verification-plan: antes ficava invisível até a purga do boot).
 	qs, err := r.Queries()
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(qs) != 1 || qs[0].Domain != "small.com" {
-		t.Errorf("Queries pós-rotação = %+v, want [small.com]", qs)
+	if len(qs) != 2 || qs[0].Domain != big || qs[1].Domain != "small.com" {
+		t.Errorf("Queries pós-rotação = %d entradas (%s, %s), want [big, small.com] (histórico do .old + atual)",
+			len(qs), qs[0].Domain, qs[1].Domain)
+	}
+}
+
+// TestQueries_ReadsRotatedOldAlone cobre o estado intermediário: o .old
+// existente sem o arquivo atual (rotação manual / teste), o histórico do .old
+// continua legível.
+func TestQueries_ReadsRotatedOldAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "telemetry.jsonl")
+	old := path + ".old"
+	now := time.Now().UTC()
+	data := `{"domain":"rotated.com","client_ip":"10.0.0.9","timestamp":"` + now.Format(time.RFC3339) + `"}` + "\n"
+	if err := os.WriteFile(old, []byte(data), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	r := NewRecorder(path)
+	qs, err := r.Queries()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(qs) != 1 || qs[0].Domain != "rotated.com" {
+		t.Errorf("Queries = %+v, want [rotated.com] (lido do .old)", qs)
 	}
 }
 

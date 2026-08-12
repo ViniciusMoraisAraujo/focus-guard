@@ -209,6 +209,27 @@ func TestGenerate_ExpandsHome(t *testing.T) {
 	}
 }
 
+// TestExpandHome_BareTilde: "~" SOZINHO (sem barra) também resolve para o
+// home — antes devolvia "~" literal e o MkdirAll criava uma pasta "~" no
+// cwd do daemon (pendência INFO do docs/verification-plan.md).
+func TestExpandHome_BareTilde(t *testing.T) {
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		got := expandHome("~")
+		if got != home {
+			t.Errorf("expandHome(\"~\") = %q, want home %q", got, home)
+		}
+	}
+}
+
+func TestExpandHome_NoTildeIsNoop(t *testing.T) {
+	if got := expandHome(""); got != "" {
+		t.Errorf("expandHome(\"\") = %q, want \"\"", got)
+	}
+	if got := expandHome("/tmp/relatorios"); got != "/tmp/relatorios" {
+		t.Errorf("expandHome(sem til) = %q, want inalterado", got)
+	}
+}
+
 func TestHandlers_ConfigGetSetGenerate(t *testing.T) {
 	s := NewStore(t.TempDir() + "/reports.json")
 	dir := t.TempDir()

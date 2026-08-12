@@ -29,6 +29,8 @@ import (
 	"path/filepath"
 	"sync"
 	"time"
+
+	"focusguard/internal/infrastructure/lru"
 )
 
 const (
@@ -46,23 +48,35 @@ const (
 	caValidity = 10 * 365 * 24 * time.Hour
 )
 
+// leafCacheMax é o teto do cache de leafs por hostname (LRU). Leafs são
+// regeneráveis a qualquer momento (signLeaf é barato) — o teto só impede que
+// SNIs arbitrários de um listener Server (0.0.0.0:443) encham a memória
+// (pendência INFO do docs/verification-plan.md). Var (não const) para os
+// testes baixarem o teto sem gerar centenas de leafs.
+var leafCacheMax = 1024
+
 // CA é a autoridade certificadora local: chave + certificado persistidos e um
 // cache de leafs assinados por hostname (mesmo cache por-SNI do interceptor,
-// agora assinado pela CA). Zero-value não é utilizável; construa com
-// LoadOrCreate.
+// agora assinado pela CA). O cache é um LRU com teto (leafCacheMax) — leafs
+// são regeneráveis, o teto só protege a memória contra SNIs arbitrários.
+// Zero-value não é utilizável; construa com LoadOrCreate.
 type CA struct {
 	dir string
 	key *ecdsa.PrivateKey
 	crt *x509.Certificate
 
 	mu    sync.Mutex
-	leafs map[string]*tls.Certificate
+	leafs *lru.Cache[*tls.Certificate]
 }
 
 // LoadOrCreate carrega a CA persistida em dir ou a gera na primeira execução.
-// Idempotente e seguro para chamar em todo boot do daemon: uma CA existente é
-// reutilizada (nunca regenerada — regenerar invalidaria os certificados já
-// instalados no trust store). A chave é gravada com 0600.
+// Idempotente e seguro para chamar em todo boot do daemon: uma CA existente e
+// SADIA é reutilizada (nunca regenerada — regenerar invalidaria os
+// certificados já instalados no trust store). Uma CA persistida mas
+// inutilizável (cert sem key — escrita da key falhou no 1º boot; PEM
+// corrompido; ou par descasado key↔cert) é tratada como lixo e REGENERADA:
+// uma âncora quebrada não pode travar o boot para sempre nem impedir a
+// página HTTPS de voltar a funcionar. A chave é gravada com 0600.
 func LoadOrCreate(dir string) (*CA, error) {
 	if dir == "" {
 		return nil, fmt.Errorf("tlsca: diretório da CA vazio")
@@ -179,7 +193,7 @@ func loadCA(dir string, certPEM, keyPEM []byte) (*CA, error) {
 	if !ok || !pub.Equal(key.Public()) {
 		return nil, fmt.Errorf("tlsca: chave não corresponde ao certificado da CA")
 	}
-	return &CA{dir: dir, key: key, crt: crt, leafs: make(map[string]*tls.Certificate)}, nil
+	return &CA{dir: dir, key: key, crt: crt, leafs: lru.New[*tls.Certificate](leafCacheMax)}, nil
 }
 
 // Exists reporta se uma CA já está persistida em dir — sem efeitos colaterais
@@ -229,19 +243,21 @@ func (c *CA) SerialHex() string {
 }
 
 // LeafFor devolve (gerando e cacheando) um certificado de servidor assinado
-// pela CA, com SAN cobrindo host (nome DNS ou IP). Cacheado por hostname —
-// cada domínio bloqueado tem um cert estável, reutilizado entre conexões.
+// pela CA, com SAN cobrindo host (nome DNS ou IP). Cacheado por hostname em
+// um LRU com teto — cada domínio bloqueado tem um cert estável, reutilizado
+// entre conexões, e um flood de SNIs não cresce a memória (o LRU evicta os
+// menos recentes; o próximo handshake regenera).
 func (c *CA) LeafFor(host string) (*tls.Certificate, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if cert, ok := c.leafs[host]; ok {
+	if cert, ok := c.leafs.Get(host); ok {
 		return cert, nil
 	}
 	cert, err := c.signLeaf(host, time.Now())
 	if err != nil {
 		return nil, err
 	}
-	c.leafs[host] = cert
+	c.leafs.Set(host, cert)
 	return cert, nil
 }
 

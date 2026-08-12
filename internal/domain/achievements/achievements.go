@@ -39,15 +39,30 @@ func percent(num, den int) int {
 
 // Calculate derives the badges from the stats report (pure — same input,
 // same output; the UI shows them all with reduced opacity for locked ones).
-func Calculate(st *analytics.Stats, sessions []analytics.Session) []Achievement {
+// now é a referência temporal das janelas ("últimos 30 dias" do Mês de
+// Foco) — passada pelo chamador para o cálculo ficar determinístico.
+func Calculate(st *analytics.Stats, sessions []analytics.Session, now time.Time) []Achievement {
 	if st == nil {
 		return []Achievement{}
 	}
 
 	focusHours := int(st.TotalFocus / time.Hour)
-	focusMin := int(st.TotalFocus / time.Minute)
 	streak := st.Streak
 	totalSessions := st.TotalSessions
+
+	// Foco dos últimos 30 dias (janela "um mês" do Mês de Foco): soma o
+	// Focus das sessões que TERMINARAM dentro dos últimos 30 dias (fronteira
+	// INCLUSIVA: terminar exatamente no marco ainda conta — !Before) — não o
+	// total histórico (antes o badge desbloqueava cedo com 40h espalhadas
+	// por meses/anos).
+	monthCutoff := now.AddDate(0, 0, -30)
+	monthFocus := time.Duration(0)
+	for _, s := range sessions {
+		if !s.End.Before(monthCutoff) {
+			monthFocus += s.Focus
+		}
+	}
+	monthMin := int(monthFocus / time.Minute)
 
 	// Sessões após a meia-noite (madrugada): contagem para o "Guardião da
 	// Madrugada".
@@ -167,10 +182,10 @@ func Calculate(st *analytics.Stats, sessions []analytics.Session) []Achievement 
 		{
 			ID:          "focused-month",
 			Name:        "Mês de Foco",
-			Description: "Acumule 40 horas de foco em um mês (aproximado por 30 dias de sessões).",
+			Description: "Acumule 40 horas de foco em um mês (últimos 30 dias).",
 			Icon:        "📆",
-			Unlocked:    focusMin >= 2400,
-			Progress:    percent(focusMin, 2400),
+			Unlocked:    monthMin >= 2400,
+			Progress:    percent(monthMin, 2400),
 		},
 	}
 }

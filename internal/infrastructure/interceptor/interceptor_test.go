@@ -282,6 +282,40 @@ func TestBusyPortFailsStartWithoutPanic(t *testing.T) {
 	_ = s2.Stop() // idempotente
 }
 
+// TestCertCache_Cap_EvictsLeastRecentlyUsed: o certCache (SNI → certificado)
+// é um LRU com teto (certCacheMax) — SNIs arbitrários de um listener Server
+// (0.0.0.0:443) não podem crescer a memória sem limite (pendência INFO do
+// docs/verification-plan.md). O teto é baixado para o teste; o host menos
+// recente é evictado e o mais recente permanece, e um host evictado
+// regenera no próximo acesso.
+func TestCertCache_Cap_EvictsLeastRecentlyUsed(t *testing.T) {
+	oldMax := certCacheMax
+	certCacheMax = 3
+	defer func() { certCacheMax = oldMax }()
+
+	s := New(&fakeChecker{})
+	hosts := []string{"h0.com", "h1.com", "h2.com", "h3.com"}
+	for _, h := range hosts {
+		if _, err := s.certificateFor(&tls.ClientHelloInfo{ServerName: h}); err != nil {
+			t.Fatalf("certificateFor(%s): %v", h, err)
+		}
+	}
+	if s.certCache.Len() != certCacheMax {
+		t.Fatalf("cache com %d certs, teto %d", s.certCache.Len(), certCacheMax)
+	}
+	if _, ok := s.certCache.Get("h0.com"); ok {
+		t.Error("h0.com deveria ter sido evictado (menos recente)")
+	}
+	if _, ok := s.certCache.Get("h3.com"); !ok {
+		t.Error("h3.com deveria permanecer (mais recente)")
+	}
+	// Host evictado regenera sem erro no próximo acesso (o cache nunca quebra
+	// um handshake — certs são regeneráveis).
+	if _, err := s.certificateFor(&tls.ClientHelloInfo{ServerName: "h0.com"}); err != nil {
+		t.Errorf("certificateFor regenerado após evicção: %v", err)
+	}
+}
+
 // startTLSSUTWithCA monta um listener TLS cujos leafs são assinados pela CA
 // local (tlsca) — o cenário do fix: com a CA no trust store do SO, o
 // navegador valida o certificado SEM o aviso de "conexão não segura".

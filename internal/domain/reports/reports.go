@@ -201,10 +201,18 @@ func Generate(p Provider, cfg Config, now time.Time) (htmlPath, jsonPath string,
 	return htmlPath, jsonPath, nil
 }
 
-// expandHome resolve um "~/" inicial para o diretório home do usuário
-// (os.UserHomeDir; sem home, devolve o caminho sem expandir).
+// expandHome resolve um "~" (sozinho ou como prefixo "~/") para o diretório
+// home do usuário (os.UserHomeDir; sem home, devolve o caminho sem
+// expandir). "~" sozinho também resolve (antes virava uma pasta literal
+// "~" no cwd — pendência INFO do docs/verification-plan.md).
 func expandHome(path string) string {
-	if path == "" || path == "~" {
+	if path == "" {
+		return path
+	}
+	if path == "~" {
+		if home, err := os.UserHomeDir(); err == nil {
+			return home
+		}
 		return path
 	}
 	if path[:2] == "~/" || path[:2] == "~\\" {

@@ -56,6 +56,41 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   "pulavam" a cada reload e quebravam a leitura). Agora o restante é truncado
   para o minuto inteiro e formatado como o painel web: `1 h 30 min` / `45 min`
   / `2 h` (abaixo de 1 min, `menos de 1 min`).
+- **Badge "Mês de Foco" agora mede o mês real** — a conquista usava o foco
+  **total** acumulado (desbloqueava com 40h espalhadas por meses/anos); agora
+  soma apenas as sessões dos **últimos 30 dias** (janela de um mês), coerente
+  com a descrição (TDD com 3 testes).
+- **Relatório configurado com `~` não cria mais pasta literal** — o
+  `expandHome` deixava o `~` sozinho sem expandir e o `MkdirAll` criava uma
+  pasta "~" no diretório do daemon; agora resolve para o home do usuário
+  (TDD).
+- **`block -d-90m` (valor colado sem espaço/`=`) não vira mais o domínio** —
+  o split de flags passou a extrair `-d`/`-duration` com o valor colado
+  (`-d30m`, `-duration30m`, `-d-90m`), que antes caíam no argumento posicional
+  e geravam o erro confuso "duração deve ser informada"; o valor negativo
+  agora falha com a mensagem clara de duração inválida (TDD).
+- **Caches de certificados com teto (memória limitada no Server mode)** — os
+  caches SNI→cert do interceptor e os leafs da CA local eram mapas sem
+  limite: um flood de SNIs num listener `0.0.0.0:443` cresceria a memória sem
+  teto. Ambos viraram um LRU compartilhado novo (`internal/infrastructure/lru`,
+  stdlib) com evicção do menos recente — certs são regeneráveis, evicção nunca
+  quebra um handshake (TDD em lru, tlsca e interceptor).
+- **Telemetria: o histórico rotacionado volta a aparecer** — a `Queries` do
+  sinkhole só lia o arquivo atual: após a rotação (cap 1 MiB), o `<name>.old`
+  ficava invisível para a tela Rede até a purga diária do boot. Agora lê
+  também o `.old` (concatenado ANTES do atual, cronológico), com leitura
+  tolerante a linha monstruosa (splitter próprio `splitJSONLLine` pula linha
+  > 4 MiB em vez de abortar a leitura inteira com "token too long") e
+  best-effort no `.old` (arquivo auxiliar com purga diária — um erro de
+  leitura dele não esconde o arquivo atual) — TDD no teste de rotação +
+  teste do `.old` sozinho.
+- **`ca-install` checa a elevação antes de gerar a CA** — um `ca-install` em
+  shell não elevado gerava a CA (artefatos no disco) para só depois falhar no
+  write do trust store com a mensagem de erro;  agora a elevação é a
+  precondição checada PRIMEIRO (mesma ordem no `ca-uninstall`, que sem CA
+  persistida também não gera mais a âncora — "nada a remover"), e um helper
+  com diretório injetável garante por teste que shell não elevado nunca cria
+  os artefatos (TDD).
 
 ## [0.18.1] - 2026-08-11
 

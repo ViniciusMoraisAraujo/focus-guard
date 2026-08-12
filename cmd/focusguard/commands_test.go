@@ -51,6 +51,30 @@ func TestSplitBlockFlags_DurationAnywhere(t *testing.T) {
 			wantDur: "45m",
 		},
 		{
+			name:    "shorthand -d com valor colado (sem espaço nem igual)",
+			args:    []string{"youtube.com", "-d30m"},
+			wantOut: []string{"youtube.com"},
+			wantDur: "30m",
+		},
+		{
+			name:    "-d-90m colado não vira domínio (INFO do verification-plan)",
+			args:    []string{"-d-90m", "youtube.com"},
+			wantOut: []string{"youtube.com"},
+			wantDur: "-90m", // extrai; o daemon rejeita d <= 0 com mensagem clara
+		},
+		{
+			name:    "-duration colado sem igual",
+			args:    []string{"youtube.com", "-duration30m"},
+			wantOut: []string{"youtube.com"},
+			wantDur: "30m",
+		},
+		{
+			name:    "traco duplo --d colado",
+			args:    []string{"youtube.com", "--d45m"},
+			wantOut: []string{"youtube.com"},
+			wantDur: "45m",
+		},
+		{
 			name:    "tudo junto posicional + flags no fim",
 			args:    []string{"twitter.com", "--duration", "30m", "--extend"},
 			wantOut: []string{"twitter.com"},

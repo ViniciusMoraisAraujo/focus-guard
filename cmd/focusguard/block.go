@@ -14,8 +14,12 @@ import (
 // at the first positional argument, so a user writing "focusguard block
 // twitter.com --duration 30m --extend" would never have the flags parsed
 // (they would become Arg(1)+ and be mistaken for the duration); extracting
-// them before Parse makes the flags position-independent. Both "--duration
-// 30m" and "--duration=30m" forms are accepted.
+// them before Parse makes the flags position-independent. Accepted forms:
+// "--duration 30m" (space), "--duration=30m" (equal) and the ATTACHED
+// value "-duration30m" / "-d30m" (no space nor equal — covers the
+// `-d-90m` typo, which used to fall through to the positional domain and
+// produce a confusing "duration must be informed" error; it now extracts
+// "-90m" and fails downstream with the clear invalid-duration message).
 func splitBlockFlags(args []string) (out []string, extend, replace bool, duration string) {
 	out = make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
@@ -32,8 +36,15 @@ func splitBlockFlags(args []string) (out []string, extend, replace bool, duratio
 			}
 		case strings.HasPrefix(a, "--duration=") || strings.HasPrefix(a, "-duration="):
 			duration = strings.TrimPrefix(strings.TrimPrefix(a, "--duration="), "-duration=")
+		case strings.HasPrefix(a, "--duration") || strings.HasPrefix(a, "-duration"):
+			// Valor colado sem "=" (--duration30m / -duration30m). Vem ANTES
+			// do prefixo "-d": "-duration" também começa com "-d".
+			duration = strings.TrimPrefix(strings.TrimPrefix(a, "--duration"), "-duration")
 		case strings.HasPrefix(a, "--d=") || strings.HasPrefix(a, "-d="):
 			duration = strings.TrimPrefix(strings.TrimPrefix(a, "--d="), "-d=")
+		case strings.HasPrefix(a, "--d") || strings.HasPrefix(a, "-d"):
+			// Valor colado sem "=" (--d30m / -d-90m).
+			duration = strings.TrimPrefix(strings.TrimPrefix(a, "--d"), "-d")
 		default:
 			out = append(out, a)
 		}

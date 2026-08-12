@@ -45,6 +45,7 @@ func (h *Handler) Handle(_ context.Context, _ *NoInput) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	st := analytics.Summarize(sessions, 7, time.Now())
-	return &Result{Achievements: Calculate(st, sessions)}, nil
+	now := time.Now()
+	st := analytics.Summarize(sessions, 7, now)
+	return &Result{Achievements: Calculate(st, sessions, now)}, nil
 }
