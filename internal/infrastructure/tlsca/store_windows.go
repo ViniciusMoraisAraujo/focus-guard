@@ -35,12 +35,26 @@ func (c *CA) removeFromStore(run StoreRunner) error {
 	return nil
 }
 
-// IsInStore detecta a CA no Root store: o certutil -store Root lista os
-// certificados e o CN da CA aparece na linha "Subject:" de cada entrada.
+// IsInStore detecta a CA no Root store pelo SERIAL (não pelo CN): uma CA
+// regenerada tem o MESMO CN ("FocusGuard Local CA"), então o cert antigo no
+// store faria a reinstalação ser pulada e o navegador rejeitaria os leafs
+// novos (chain assinada pela CA nova) — o serial é o identificador estável
+// entre gerações. O serial é aleatório (128 bits): a chance de o hex aparecer
+// por acaso em outro cert do output é nula. O certutil exibe o serial em
+// pares hex separados por espaço (e pode prefixar 00 quando o bit alto está
+// setado), então a normalização remove tudo que não é hex antes de comparar
+// em minúsculas — cobre também o serial exibido sem espaços/prefixo.
 func (c *CA) IsInStore(run StoreRunner) (bool, error) {
 	out, err := run("certutil", "-store", "Root")
 	if err != nil {
 		return false, fmt.Errorf("tlsca: certutil -store falhou: %v", err)
 	}
-	return strings.Contains(string(out), c.SubjectCN()), nil
+	serialHex := strings.ToLower(c.crt.SerialNumber.Text(16))
+	var b strings.Builder
+	for _, r := range out {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			b.WriteByte(r)
+		}
+	}
+	return strings.Contains(strings.ToLower(b.String()), serialHex), nil
 }

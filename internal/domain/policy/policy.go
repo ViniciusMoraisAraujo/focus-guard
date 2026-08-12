@@ -2,6 +2,22 @@ package policy
 
 import "time"
 
+// BlockSource identifies who created a block. The scheduler uses it to
+// release the clock guard's preventive lockdown (Fase 2) without touching a
+// user-initiated all-internet block (panic/deep-focus). Additive: old
+// persisted blocks load with the zero value, which is never the guard's
+// source — so a legacy block is never released by the guard.
+type BlockSource string
+
+const (
+	// SourceUser marks blocks created by the user (block-all / panic mode).
+	SourceUser BlockSource = "user"
+	// SourceClockGuard marks the preventive all-internet lockdown applied by
+	// the Clock Tamper Protection at suspicion (released when NTP validates
+	// the clock again).
+	SourceClockGuard BlockSource = "clock-guard"
+)
+
 type Block struct {
 	Domain      string    `json:"domain"`
 	StartedAt   time.Time `json:"started_at"`
@@ -13,6 +29,12 @@ type Block struct {
 	// these, so the names (not just their IPs) are carried here. Additive
 	// field — old blocks simply have an empty list.
 	Allowlist []string `json:"allowlist,omitempty"`
+	// Source tags the block's owner (user panic vs. the clock guard's
+	// preventive lockdown). ReleaseClockLockdown only removes a sentinel
+	// tagged SourceClockGuard, so an NTP validation never releases a
+	// user-initiated all-internet block. Additive field: old state files
+	// load with the zero value, treated as user-owned.
+	Source BlockSource `json:"source,omitempty"`
 }
 
 func (b *Block) IsActive() bool {

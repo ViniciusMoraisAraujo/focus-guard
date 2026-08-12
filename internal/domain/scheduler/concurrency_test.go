@@ -151,6 +151,11 @@ func TestScheduler_ConcurrentBlockExpiresWithReads(t *testing.T) {
 	stop.Store(true)
 	wg.Wait()
 
+	// Drena os timers de expiração ainda pendentes (o último Block é de 50ms):
+	// sem isso, no Windows o callback grava no state.json durante a remoção do
+	// TempDir e o cleanup falha com "pasta não está vazia" (flake sob carga).
+	time.Sleep(150 * time.Millisecond)
+
 	enf.mu.Lock()
 	unblockedCount := len(enf.unblockedDomains)
 	enf.mu.Unlock()

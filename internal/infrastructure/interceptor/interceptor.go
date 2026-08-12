@@ -59,11 +59,13 @@ type Checker interface {
 }
 
 // Page is the data injected into the template: the blocked domain, the
-// remaining time and a motivational phrase.
+// remaining time (pre-formatted in MINUTES — never the raw Duration, whose
+// String() would show "1h30m0s" with the seconds ticking on every reload)
+// and a motivational phrase.
 type Page struct {
-	Domain    string
-	Remaining time.Duration
-	Quote     string
+	Domain         string
+	RemainingLabel string
+	Quote          string
 }
 
 // motivationalQuotes é a lista de frases motivacionais exibidas na página de
@@ -323,9 +325,9 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	page := Page{
-		Domain:    host,
-		Remaining: s.checker.BlockRemaining(host),
-		Quote:     quoteFor(host),
+		Domain:         host,
+		RemainingLabel: formatRemaining(s.checker.BlockRemaining(host)),
+		Quote:          quoteFor(host),
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
@@ -341,6 +343,28 @@ func hostOnly(hostport string) string {
 		return strings.ToLower(h)
 	}
 	return strings.ToLower(hostport)
+}
+
+// formatRemaining renderiza o tempo restante em MINUTOS (sem os segundos que
+// o String() do time.Duration incluiria). Trunca para o minuto inteiro — o
+// que com certeza ainda resta, já que a página diz "até X". Formato
+// consistente com o formatMinutes da interface web: "1 h 30 min" / "45 min"
+// / "2 h"; abaixo de 1 minuto, "menos de 1 min".
+func formatRemaining(d time.Duration) string {
+	if d < time.Minute {
+		return "menos de 1 min"
+	}
+	d = d.Truncate(time.Minute)
+	h := d / time.Hour
+	m := (d % time.Hour) / time.Minute
+	switch {
+	case h > 0 && m > 0:
+		return fmt.Sprintf("%d h %d min", h, m)
+	case h > 0:
+		return fmt.Sprintf("%d h", h)
+	default:
+		return fmt.Sprintf("%d min", m)
+	}
 }
 
 // quoteFor picks the motivational phrase deterministically from the domain —
@@ -418,7 +442,7 @@ var pageTemplate = template.Must(template.New("blocked").Parse(`<!DOCTYPE html>
     <span class="domain">{{.Domain}}</span>
     <p class="reason">
       Este site está <strong>bloqueado pelo FocusGuard</strong> até
-      <strong>{{.Remaining}}</strong> de descanso da distração.
+      <strong>{{.RemainingLabel}}</strong> de descanso da distração.
     </p>
     <p class="quote">“{{.Quote}}”</p>
     <a class="back" href="javascript:history.back()">← Voltar para o que importa</a>

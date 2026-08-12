@@ -15,9 +15,11 @@
 //     expiry and advancing to expire blocks early.
 //  2. NTP validation: a public NTP query confirms the real time. The local
 //     OS clock can be forged; the NTP server's answer cannot.
-//  3. Lockdown: a confirmed jump triggers a preventive all-internet block
-//     until NTP validates again, and pending expirations are re-anchored to
-//     the corrected time.
+//  3. Lockdown: a jump beyond tolerance (SUSPICION) triggers a preventive
+//     all-internet block when NTP cannot clear the suspicion — unavailable,
+//     failed, or CONFIRMING the tamper (features-plan: an advanced clock +
+//     restart would expire blocks early). NTP validating the local clock
+//     releases a pending lockdown and re-anchors the reference.
 package clockguard
 
 import (
@@ -51,12 +53,16 @@ type State interface {
 	SetLastKnownTime(t time.Time) error
 }
 
-// Lockdown interface: when a jump is CONFIRMED by NTP, the guard applies the
-// preventive block and records the tamper event. The daemon wires it to the
-// scheduler (BlockAllInternet — the same all-internet sentinel the panic
-// mode uses, so it has its own expiry and reuses the full expiry machinery).
+// Lockdown interface: when the wall clock jumps beyond tolerance (suspicion),
+// the guard applies the preventive block (BlockAllInternet — the same
+// all-internet sentinel the panic mode uses, with its own expiry) and, when
+// NTP validates the local clock again (or the gap normalizes), releases it
+// (UnblockAllInternet). The daemon wires it to the scheduler, which only
+// removes ITS OWN lockdown — a user-initiated panic block is never touched
+// by the release.
 type Lockdown interface {
 	BlockAllInternet(allowlist []string, duration time.Duration) error
+	UnblockAllInternet() error
 }
 
 // Logger records a confirmed tamper (the daemon wires it to the tamper
@@ -80,8 +86,8 @@ type Guard struct {
 }
 
 // Deps wires a guard. ntp may be nil (offline daemon): a nil NTP client makes
-// Check treat any suspicion as UNRESOLVED (keeps the previous verdict) instead
-// of confirming or clearing it.
+// Check treat any suspicion as UNRESOLVABLE — the preventive lockdown is
+// applied and kept (features-plan) instead of being validated/cleared.
 type Deps struct {
 	State            State
 	NTP              NTPClient
@@ -137,20 +143,35 @@ func (g *Guard) Check() Outcome {
 	}
 	if gap <= Tolerance {
 		// Relógio coerente com a última leitura confiada: grava a nova leitura
-		// (a referência desliza com o tempo legítimo) e segue.
+		// (a referência desliza com o tempo legítimo) e segue. Se um bloqueio
+		// preventivo de uma suspeita anterior (que o NTP não chegou a validar)
+		// ainda estiver ativo, libera — o relógio voltou à referência confiada
+		// e o bloqueio não precisa mais existir. A liberação é segura: o
+		// scheduler só remove o sentinela do próprio guard (um bloqueio
+		// all-internet intencional do usuário nunca é tocado).
+		g.releaseLockdown()
 		_ = g.state.SetLastKnownTime(now)
 		return Outcome{Detail: fmt.Sprintf("relógio consistente (gap %s)", gap.Round(time.Second))}
 	}
 
-	// Gap além da tolerância: suspeita. NTP decide.
+	// Gap além da tolerância: suspeita. Com NTP indisponível a suspeita não
+	// pode ser resolvida — aplica o bloqueio preventivo de imediato (Fase 2 do
+	// features-plan: o cenário "relógio adiantado + sem rede + restart"
+	// expiraria os bloqueios cedo sem proteção). Com NTP disponível, o
+	// veredito dele decide: valida → sem bloqueio; confirma → bloqueia.
+	// (Aplicar antes de consultar o NTP reescreveria o firewall a cada ciclo
+	// em sistemas saudáveis — CheckInterval 10 min > Tolerance 5 min — então
+	// o bloqueio imediato fica reservado aos casos em que o NTP não decide.)
 	out := Outcome{Suspicion: true, Detail: fmt.Sprintf("salto de relógio detectado: |now − lastKnown| = %s (> tolerância %s)", gap.Round(time.Second), Tolerance)}
 	if g.ntp == nil {
-		out.Detail += " — NTP indisponível: suspeita mantida (sem confirmar nem liberar)"
+		g.applyLockdown()
+		out.Detail += " — NTP indisponível: bloqueio preventivo aplicado"
 		return out
 	}
 	ntpTime, err := g.ntp.Time()
 	if err != nil {
-		out.Detail += fmt.Sprintf(" — NTP falhou (%v): suspeita mantida", err)
+		g.applyLockdown()
+		out.Detail += fmt.Sprintf(" — NTP falhou (%v): bloqueio preventivo aplicado", err)
 		return out
 	}
 
@@ -161,30 +182,56 @@ func (g *Guard) Check() Outcome {
 	if realGap > Tolerance {
 		out.Confirmed = true
 		out.Detail += fmt.Sprintf(" — NTP confirma burla: relógio local %s fora do real", realGap.Round(time.Second))
-		g.applyLockdown(now, ntpTime)
+		g.applyLockdown()
+		g.confirmLockdown(ntpTime)
 		return out
 	}
 
 	// NTP validou o relógio local: era ajuste legítimo (NTP/DST do SO), não
-	// burla. Re-ancora a referência no horário real.
-	out.Detail += fmt.Sprintf(" — NTP validou o relógio local (diferença real %s): ajuste legítimo", realGap.Round(time.Second))
+	// burla. Libera um bloqueio preventivo pendente (aplicado numa janela em
+	// que o NTP estava fora) e re-ancora a referência no horário real.
+	out.Detail += fmt.Sprintf(" — NTP validou o relógio local (diferença real %s): ajuste legítimo, sem bloqueio", realGap.Round(time.Second))
+	g.releaseLockdown()
 	_ = g.state.SetLastKnownTime(ntpTime)
 	return out
 }
 
-// applyLockdown re-ancora as expirações pendentes no horário REAL (o NTP
-// acabou de provar qual é) e aplica o bloqueio preventivo. A re-anchoração é
-// feita pelo daemon via o hook Ancorador — o guard só aplica o lockdown e
-// registra.
-func (g *Guard) applyLockdown(_ time.Time, ntpTime time.Time) {
-	if g.lock != nil {
-		if err := g.lock.BlockAllInternet(nil, g.lockdownDuration); err != nil {
-			log.Printf("[ClockGuard] Falha ao aplicar bloqueio preventivo: %v", err)
-		}
+// applyLockdown aplica o bloqueio preventivo all-internet (sentinela) nos
+// casos em que o NTP não limpa a suspeita: indisponível, falhou ou CONFIRMOU
+// a burla. É re-aplicado a cada ciclo enquanto a burla for confirmada (o
+// sentinela é substituído com expiração nova, então nunca expira antes de o
+// NTP validar). A liberação fica a cargo do scheduler (só remove o sentinela
+// do próprio guard).
+func (g *Guard) applyLockdown() {
+	if g.lock == nil {
+		return
 	}
+	if err := g.lock.BlockAllInternet(nil, g.lockdownDuration); err != nil {
+		log.Printf("[ClockGuard] Falha ao aplicar bloqueio preventivo: %v", err)
+	}
+}
+
+// releaseLockdown libera um bloqueio preventivo pendente quando o relógio
+// volta a ser confiável (NTP validou o local ou o gap normalizou). No-op
+// quando não há lockdown do guard ativo (o scheduler ignora sentinelas de
+// outras origens).
+func (g *Guard) releaseLockdown() {
+	if g.lock == nil {
+		return
+	}
+	if err := g.lock.UnblockAllInternet(); err != nil {
+		log.Printf("[ClockGuard] Falha ao liberar bloqueio preventivo: %v", err)
+	}
+}
+
+// confirmLockdown registra a burla confirmada no tamper-log e re-ancora a
+// referência no horário REAL (o bloqueio preventivo é aplicado pelo chamador
+// no caminho de confirmação — aqui o guard só registra e corrige a
+// referência).
+func (g *Guard) confirmLockdown(ntpTime time.Time) {
 	if g.logger != nil {
 		g.logger.Log("clock", "lockdown",
-			fmt.Sprintf("relógio adulterado; bloqueio preventivo até %s; hora real via NTP: %s",
+			fmt.Sprintf("relógio adulterado confirmado por NTP; bloqueio preventivo até %s; hora real via NTP: %s",
 				ntpTime.Add(g.lockdownDuration).Format("2006-01-02 15:04:05"), ntpTime.Format("2006-01-02 15:04:05")))
 	}
 	// Re-ancora a referência no horário real: o próximo Check compara com o

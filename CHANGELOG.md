@@ -16,6 +16,46 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   de todos os resumos existentes em todo push/PR (nome `YYYY-MM-DD.md`, data
   válida, título e seções obrigatórias — via
   `scripts/check-session-log.sh`).
+- **E2E do Clock Guard através da fronteira de restart**
+  (`internal/domain/clockguard/restart_e2e_test.go`): valida o cenário
+  completo com componentes reais de produção (store persistido + scheduler +
+  guard + tamper-recorder) e relógio injetável — boot saudável → restart com
+  relógio adiantado e NTP offline (lockdown preventivo na suspeita,
+  sentinela persistido com `source=clock-guard`, sem tamper-log para
+  suspeita não confirmada) → NTP volta e confirma a burla (evento
+  `clock/lockdown` no tamper-log, bloqueio mantido) → relógio corrigido
+  (liberação automática, `UnblockAll` chamado, sentinela sai do RAM e do
+  state.json).
+
+### ✨ Novas funcionalidades
+
+- **Clock Guard: bloqueio preventivo na suspeita quando o NTP não decide**
+  (alinhado ao features-plan) — o bloqueio all-internet é aplicado assim que
+  o wall clock salta além da tolerância quando o NTP **não consegue limpar a
+  suspeita**: indisponível (ex.: relógio adiantado + sem rede + restart),
+  falhou ou **confirmando a burla**. Com NTP disponível, o veredito dele
+  decide: **valida** o relógio local → sem bloqueio (e um pendente é
+  liberado, com a referência re-ancorada); **confirma** → bloqueia e registra
+  no tamper-log. Um relógio que volta ao normal também libera um bloqueio
+  pendente. A liberação é segura: o scheduler só remove o bloqueio do
+  próprio guard — um modo pânico/deep-focus **intencional do usuário nunca
+  é tocado** (origem `source` no block: `user` vs `clock-guard`).
+- **UI: bloqueio preventivo do relógio visível** — a tela Segurança ganhou
+  um banner destrutivo quando o lockdown do clock guard está **ativo agora**
+  (sentinela `*all-internet*` com `source: "clock-guard"` no status, em
+  tempo real via SSE — o tamper-log só registra burlas confirmadas por NTP,
+  então o lockdown de suspeita sem evento só aparecia no estado). O Painel
+  deixou de rotular esse bloqueio como "Modo pânico ativo": agora distingue
+  **"Bloqueio preventivo do relógio"** (clock guard) de "Modo pânico"
+  (intencional do usuário).
+
+### 🐛 Correções
+
+- **Página de bloqueio: tempo restante só em minutos** — o interceptor
+  renderizava o `time.Duration` cru (`1h30m0s`), exibindo os segundos (que
+  "pulavam" a cada reload e quebravam a leitura). Agora o restante é truncado
+  para o minuto inteiro e formatado como o painel web: `1 h 30 min` / `45 min`
+  / `2 h` (abaixo de 1 min, `menos de 1 min`).
 
 ## [0.18.1] - 2026-08-11
 

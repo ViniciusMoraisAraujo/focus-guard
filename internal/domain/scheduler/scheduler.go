@@ -391,7 +391,7 @@ func statesEqual(a, b *store.State) bool {
 		if !ok {
 			return false
 		}
-		if ab.Domain != bb.Domain || !ab.StartedAt.Equal(bb.StartedAt) || !ab.ExpiresAt.Equal(bb.ExpiresAt) {
+		if ab.Domain != bb.Domain || !ab.StartedAt.Equal(bb.StartedAt) || !ab.ExpiresAt.Equal(bb.ExpiresAt) || ab.Source != bb.Source {
 			return false
 		}
 		if !slices.Equal(ab.ResolvedIPs, bb.ResolvedIPs) || !slices.Equal(ab.Allowlist, bb.Allowlist) {
@@ -879,8 +879,19 @@ func resolveEntries(domains []string) []refreshEntry {
 // duration. The block is tracked under the enforcer.AllInternetDomain sentinel
 // key (never a real hostname, so no hosts-file entry and no per-domain IP
 // rules): it persists to the state mirror like any block and expires through
-// the same timer machinery, invoking enforcer.UnblockAll on expiry.
+// the same timer machinery, invoking enforcer.UnblockAll on expiry. The block
+// is tagged SourceUser, so the clock guard's release (ReleaseClockLockdown)
+// never removes it.
 func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Duration) (*policy.Block, error) {
+	return s.blockAllInternet(allowlistDomains, duration, policy.SourceUser)
+}
+
+// blockAllInternet is the shared implementation of the all-internet sentinel
+// (user panic/deep-focus AND the clock guard's preventive lockdown), which
+// differ only in the block's Source tag — the tag is what lets
+// ReleaseClockLockdown remove the guard's lockdown without touching a
+// user-initiated block.
+func (s *Scheduler) blockAllInternet(allowlistDomains []string, duration time.Duration, source policy.BlockSource) (*policy.Block, error) {
 	// Resolve allowlist domains to IPs (best-effort per domain; failures are
 	// dropped so one bad domain never kills the whole panic block). Reuses the
 	// DNS cache like the single/batch block paths.
@@ -901,6 +912,7 @@ func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Du
 		ExpiresAt:   now.Add(duration),
 		ResolvedIPs: dedupeIPs(allowlistIPs),
 		Allowlist:   dedupeDomains(allowlistDomains),
+		Source:      source,
 	}
 
 	s.mu.Lock()
@@ -938,9 +950,78 @@ func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Du
 	return &block, nil
 }
 
+// ApplyClockLockdown applies the clock guard's preventive all-internet
+// lockdown (Fase 2 — Clock Tamper Protection): the same sentinel machinery as
+// BlockAllInternet, but the block is tagged with the clock-guard source so a
+// later NTP validation can release it (ReleaseClockLockdown) WITHOUT touching
+// a user-initiated panic/deep-focus block. When a user all-internet block is
+// already active, it is left untouched — everything is already blocked, and
+// replacing it would silently steal the user's block (the release after would
+// remove it).
+func (s *Scheduler) ApplyClockLockdown(duration time.Duration) (*policy.Block, error) {
+	s.mu.RLock()
+	existing, ok := s.blocks[enforcer.AllInternetDomain]
+	s.mu.RUnlock()
+	if ok && existing.IsActive() && existing.Source != policy.SourceClockGuard {
+		return &existing, nil
+	}
+	return s.blockAllInternet(nil, duration, policy.SourceClockGuard)
+}
+
+// ReleaseClockLockdown removes the clock guard's preventive all-internet
+// lockdown (Fase 2), invoked when NTP validates the local clock again (or the
+// gap normalizes). It only removes the sentinel when it is the guard's OWN
+// (SourceClockGuard): a user-initiated panic/deep-focus block — including one
+// applied AFTER the guard's lockdown replaced it — is never touched. The OS
+// rules are removed BEFORE the block leaves RAM/state (same order as
+// onExpire); on enforcer failure the lockdown stays and the guard retries on
+// its next Check.
+func (s *Scheduler) ReleaseClockLockdown() error {
+	s.mu.Lock()
+	block, ok := s.blocks[enforcer.AllInternetDomain]
+	if !ok || block.Source != policy.SourceClockGuard {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
+	if err := s.enforcer.UnblockAll(); err != nil {
+		return fmt.Errorf("scheduler: erro ao liberar bloqueio preventivo: %w", err)
+	}
+
+	s.mu.Lock()
+	// Re-checa sob o lock: outro caminho (ex.: pânico do usuário) pode ter
+	// substituído o sentinela no meio — nesse caso não é mais nosso para
+	// remover.
+	block, ok = s.blocks[enforcer.AllInternetDomain]
+	if !ok || block.Source != policy.SourceClockGuard {
+		s.mu.Unlock()
+		return nil
+	}
+	delete(s.blocks, enforcer.AllInternetDomain)
+	s.invalidateSnapshot()
+	if t, ok := s.timers[enforcer.AllInternetDomain]; ok {
+		t.Stop()
+		delete(s.timers, enforcer.AllInternetDomain)
+	}
+	remaining := len(s.blocks)
+	_ = s.store.Save(s.ramState())
+	s.mu.Unlock()
+
+	if remaining == 0 {
+		// Varredura final (mesmo padrão do onExpire): remove regras de domínio
+		// órfãs e desliga o DoH quando nada mais está bloqueado.
+		_ = s.enforcer.Sync(nil)
+		_ = s.enforcer.UnblockDoH()
+	}
+	s.notifyChange()
+	return nil
+}
+
 // isAllInternetBlock reports whether a scheduler block entry is the sentinel
-// all-internet block (panic/deep-focus), which the enforcer handles through
-// BlockAll/UnblockAll instead of per-domain hosts/firewall rules.
+// all-internet block (panic/deep-focus/clock-guard lockdown), which the
+// enforcer handles through BlockAll/UnblockAll instead of per-domain
+// hosts/firewall rules.
 func isAllInternetBlock(b policy.Block) bool {
 	return b.Domain == enforcer.AllInternetDomain
 }

@@ -132,10 +132,21 @@ func (s *Store) save() error {
 	return os.Rename(tmp, s.path)
 }
 
+// MissedToday reports whether today's scheduled slot has already passed at
+// now — the daemon booted (or restarted) after the scheduled minute on the
+// same day. The weekly worker uses it to generate the report on boot instead
+// of letting NextRun skip the week; "passed" includes the exact minute (a
+// boot at exactly HH:MM would otherwise fall into the NextRun +7d branch).
+func (c Config) MissedToday(now time.Time) bool {
+	return now.Weekday() == time.Weekday(c.DayOfWeek) &&
+		now.Hour()*60+now.Minute() >= c.Hour*60+c.Minute
+}
+
 // NextRun calcula o próximo instante de geração a partir de now, segundo a
 // config: o próximo dia da semana (time.Weekday) às HH:MM. Quando now já
 // passou do horário hoje, vai para a semana seguinte (a geração do dia em
-// curso, se atrasada, é coberta pelo worker no boot).
+// curso, se atrasada, é coberta pelo catch-up do worker no boot — ver
+// MissedToday; atrasos maiores, pelo on-demand report now).
 func (c Config) NextRun(now time.Time) time.Time {
 	daysAhead := (int(c.DayOfWeek) - int(now.Weekday()) + 7) % 7
 	next := time.Date(now.Year(), now.Month(), now.Day(), c.Hour, c.Minute, 0, 0, now.Location()).AddDate(0, 0, daysAhead)

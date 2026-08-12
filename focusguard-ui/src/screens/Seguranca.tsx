@@ -1,13 +1,33 @@
-import { useEffect, useState } from "react";
-import { RefreshCw, ShieldAlert } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { RefreshCw, ShieldAlert, TriangleAlert } from "lucide-react";
 import { api } from "@/api/client";
-import type { TamperEvent } from "@/api/types";
+import type { Block, TamperEvent } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { EmptyCard, Screen, ScreenHeader } from "@/components/screen";
 import { useData } from "@/context";
+
+const ALL_INTERNET = "*all-internet*";
+
+/**
+ * clockLockdownAtivo devolve o bloqueio preventivo do Clock Guard (Fase 2)
+ * ATIVO neste momento: o sentinela all-internet com origem "clock-guard" no
+ * status, ainda não expirado. O tamper-log só registra burlas CONFIRMADAS
+ * por NTP — o lockdown de suspeita (NTP offline/falhou, aplicado sem evento)
+ * só aparece por aqui. O status vive no data-context e é atualizado em tempo
+ * real pelo SSE blocks-changed (o scheduler dispara no apply/release).
+ */
+function clockLockdownAtivo(blocks: Block[] | undefined): Block | null {
+  const b = (blocks ?? []).find(
+    (blk) => blk.domain === ALL_INTERNET && blk.source === "clock-guard",
+  );
+  if (!b) return null;
+  const exp = new Date(b.expires_at).getTime();
+  if (Number.isNaN(exp) || exp <= Date.now()) return null;
+  return b;
+}
 
 function fmtDate(at: string): string {
   const d = new Date(at);
@@ -22,8 +42,9 @@ function fmtDate(at: string): string {
 }
 
 export function Seguranca() {
-  const { daemonUp } = useData();
+  const { daemonUp, status } = useData();
   const [events, setEvents] = useState<TamperEvent[] | null>(null);
+  const lockdown = useMemo(() => clockLockdownAtivo(status?.blocks), [status?.blocks]);
 
   const load = () => {
     api
@@ -47,6 +68,29 @@ export function Seguranca() {
           </Button>
         }
       />
+
+      {daemonUp === true && lockdown && (
+        <Card
+          role="alert"
+          aria-label="Bloqueio preventivo do relógio ativo"
+          className="border-destructive/40 bg-destructive/5 ring-destructive/30"
+        >
+          <CardContent className="flex items-start gap-3 px-5 py-4">
+            <TriangleAlert className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden />
+            <div className="min-w-0 flex-1">
+              <h3 className="font-heading text-sm font-semibold text-destructive">
+                Bloqueio preventivo do relógio ativo
+              </h3>
+              <p className="mt-1 text-sm text-muted-foreground">
+                O relógio do sistema foi alterado além da tolerância e o horário ainda não foi
+                validado online (NTP indisponível) — ou a burla foi confirmada. Toda a internet
+                está bloqueada até a sincronização validar o horário real, ou até{" "}
+                <strong>{fmtDate(lockdown.expires_at)}</strong>.
+              </p>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {daemonUp === false ? (
         <EmptyCard>

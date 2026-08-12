@@ -235,13 +235,20 @@ func (a dnsCtrlAdapter) Status() ipc.DNSStatus {
 }
 
 // clockLockdownAdapter adapta o *scheduler.Scheduler ao clockguard.Lockdown
-// (o BlockAllInternet do scheduler devolve *policy.Block; o guard só quer o
-// erro). O composition root conhece os dois lados.
+// (Fase 2): o bloqueio preventivo do guard é aplicado via ApplyClockLockdown
+// (sentinela com origem clock-guard) e liberado via ReleaseClockLockdown — a
+// liberação só remove o sentinela do próprio guard, nunca um bloqueio
+// all-internet intencional do usuário (modo pânico). O composition root
+// conhece os dois lados.
 type clockLockdownAdapter struct{ s *scheduler.Scheduler }
 
-func (a clockLockdownAdapter) BlockAllInternet(allowlist []string, duration time.Duration) error {
-	_, err := a.s.BlockAllInternet(allowlist, duration)
+func (a clockLockdownAdapter) BlockAllInternet(_ []string, duration time.Duration) error {
+	_, err := a.s.ApplyClockLockdown(duration)
 	return err
+}
+
+func (a clockLockdownAdapter) UnblockAllInternet() error {
+	return a.s.ReleaseClockLockdown()
 }
 
 // clockLoggerAdapter adapta o *tamper.Recorder (Log(Event)) ao
@@ -349,12 +356,12 @@ func startScheduleWorker(mgr *schedule.Manager, resolver schedule.Resolver, b sc
 // startWeeklyReportWorker gera o relatório semanal automático (Fase 5.1) no
 // horário configurado: o worker acorda quando o próximo agendamento vence,
 // gera HTML + JSON na pasta de export e re-agenda. No boot, um horário que já
-// passou hoje é gerado imediatamente (a primeira execução usa NextRun, que
-// cobre o dia atual se ainda não venceu — caso contrário pula para a semana
-// que vem; o relatório atrasado fica coberto pela geração manual/on-demand).
-// A config é relida a cada ciclo, então reports-config-set vale sem reinício.
-// Falha de escrita é best-effort (log) — nunca derruba o daemon. Retorna um
-// stop func para o lifecycle.
+// passou HOJE é gerado imediatamente (catch-up do mesmo dia via
+// reports.Config.MissedToday — sem ele, o NextRun pularia para a semana
+// seguinte e a semana ficaria sem relatório quando o daemon ficou fora no
+// minuto agendado). A config é relida a cada ciclo, então
+// reports-config-set vale sem reinício. Falha de escrita é best-effort (log)
+// — nunca derruba o daemon. Retorna um stop func para o lifecycle.
 func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func() time.Time) func() {
 	stop := make(chan struct{})
 	go func() {
@@ -369,12 +376,21 @@ func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func(
 			}
 			log.Printf("[FocusGuard Daemon] Relatório semanal gerado: %s", htmlPath)
 		}
+		// Atraso do MESMO dia: o daemon (re)iniciou depois do horário agendado
+		// de hoje — gera imediatamente. Roda só aqui, ANTES do loop: o disparo
+		// normal do timer (no horário) não pode re-gerar a mesma semana logo em
+		// seguida, e o NextRun já aponta para a próxima semana depois disto.
+		if cfg := store.Get(); cfg.Enabled && cfg.MissedToday(now()) {
+			generate(cfg)
+		}
 		for {
 			cfg := store.Get()
 			if cfg.Enabled {
-				// Se o horário de hoje ainda não venceu, gera quando vencer;
-				// se já venceu, aguarda a próxima semana (o on-demand cobre o
-				// atraso). Um ciclo de espera nunca é menor que alguns minutos.
+				// Se o horário de hoje ainda não venceu, gera quando vencer; se já
+				// venceu (não é mais o mesmo dia), aguarda a próxima semana — o
+				// atraso do mesmo dia foi coberto pelo catch-up do boot; atrasos
+				// maiores, pelo on-demand (report now). Um ciclo de espera nunca
+				// é menor que alguns minutos.
 				next := cfg.NextRun(now())
 				wait := time.Until(next)
 				if wait < time.Minute {
@@ -407,11 +423,14 @@ func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func(
 
 // startClockGuardWorker roda a validação do relógio (Clock Tamper Protection
 // — Fase 2): um Check imediato no boot + um Check periódico a cada
-// clockguard.CheckInterval. O guard consulta NTP quando o gap do wall clock
-// ultrapassa a tolerância; um salto CONFIRMADO aplica o bloqueio preventivo
-// (sentinela all-internet) e registra no tamper-log. O NTP é best-effort e
-// com timeout curto — um daemon offline nunca trava o boot. Retorna um stop
-// func para o lifecycle.
+// clockguard.CheckInterval. Quando o gap do wall clock ultrapassa a
+// tolerância (SUSPEITA) e o NTP não consegue limpar a suspeita — offline,
+// falhou ou CONFIRMANDO a burla — o bloqueio preventivo all-internet é
+// aplicado (relógio adiantado + restart não expira os bloqueios sem
+// proteção; a burla confirmada é registrada no tamper-log). NTP validando o
+// relógio local libera um bloqueio pendente e re-ancora a referência. O NTP
+// é best-effort e com timeout curto — um daemon offline nunca trava o boot.
+// Retorna um stop func para o lifecycle.
 func startClockGuardWorker(st clockguard.State, lock clockguard.Lockdown, logger clockguard.Logger, interval time.Duration) func() {
 	guard := clockguard.New(clockguard.Deps{
 		State:    st,
@@ -1005,9 +1024,10 @@ func runDaemon() bool {
 	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
 
 	// Clock Tamper Protection (Fase 2): validação do wall clock no boot e a
-	// cada 10 min. Um salto CONFIRMADO por NTP aplica o bloqueio preventivo
-	// (sentinela all-internet, via scheduler) e registra no tamper-log. O
-	// tamperRec satifaz o clockguard.Logger (Log(source, action, detail)).
+	// cada 10 min. Um salto além da tolerância (suspeita) aplica o bloqueio
+	// preventivo (sentinela all-internet, via scheduler) já de imediato; o NTP
+	// valida → libera, confirma → registra no tamper-log. O tamperRec satifaz
+	// o clockguard.Logger (Log(source, action, detail)).
 	stopClock := startClockGuardWorker(sched, clockLockdownAdapter{s: sched}, clockLoggerAdapter{rec: tamperRec}, clockguard.CheckInterval)
 	if stopClock != nil {
 		components = append(components, daemon.StopOnly(stopClock))

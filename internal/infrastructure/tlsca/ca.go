@@ -74,19 +74,39 @@ func LoadOrCreate(dir string) (*CA, error) {
 	certPath := filepath.Join(dir, caCertFile)
 	keyPath := filepath.Join(dir, caKeyFile)
 
-	if certPEM, err := os.ReadFile(certPath); err == nil {
-		keyPEM, kerr := os.ReadFile(keyPath)
-		if kerr != nil {
-			return nil, fmt.Errorf("tlsca: chave da CA ausente (%s), cert órfão: %w", keyPath, kerr)
+	certPEM, err := os.ReadFile(certPath)
+	if err == nil {
+		if keyPEM, kerr := os.ReadFile(keyPath); kerr == nil {
+			ca, lerr := loadCA(dir, certPEM, keyPEM)
+			if lerr == nil {
+				return ca, nil
+			}
+			// CA persistida, mas ilegível ou descasada: descarta os artefatos
+			// e regenera (ver loadCA — o par key↔cert é verificado).
+			removeCAArtifacts(certPath, keyPath)
+			return generateCA(dir, certPath, keyPath)
 		}
-		return loadCA(dir, certPEM, keyPEM)
+		// Cert órfão (sem key): sobra de uma geração que falhou no meio. A CA
+		// nunca chegou a ser instalada no trust store — descarta o cert e
+		// regenera.
+		_ = os.Remove(certPath)
+		return generateCA(dir, certPath, keyPath)
 	}
 
-	ca, err := generateCA(dir, certPath, keyPath)
-	if err != nil {
-		return nil, err
+	// Primeira execução (ou geração nunca concluída).
+	ca, gerr := generateCA(dir, certPath, keyPath)
+	if gerr != nil {
+		return nil, gerr
 	}
 	return ca, nil
+}
+
+// removeCAArtifacts apaga os artefatos da CA antes de uma regeneração
+// (best-effort: um Remove que falhe não impede o generateCA, que sobrescreve
+// os arquivos de qualquer forma).
+func removeCAArtifacts(certPath, keyPath string) {
+	_ = os.Remove(certPath)
+	_ = os.Remove(keyPath)
 }
 
 // generateCA gera uma CA ECDSA P-256 nova, grava os artefatos e devolve o CA
@@ -152,6 +172,13 @@ func loadCA(dir string, certPEM, keyPEM []byte) (*CA, error) {
 	if err != nil {
 		return nil, fmt.Errorf("tlsca: certificado da CA inválido: %w", err)
 	}
+	// A chave precisa corresponder ao certificado: um par descasado assinaria
+	// leafs que nenhum cliente valida contra a CA (chain quebrada). O
+	// LoadOrCreate trata esse caso como CA corrompida e regenera.
+	pub, ok := crt.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !pub.Equal(key.Public()) {
+		return nil, fmt.Errorf("tlsca: chave não corresponde ao certificado da CA")
+	}
 	return &CA{dir: dir, key: key, crt: crt, leafs: make(map[string]*tls.Certificate)}, nil
 }
 
@@ -192,6 +219,13 @@ func (c *CA) CertPEM() []byte {
 // detecção/remoção no trust store.
 func (c *CA) SubjectCN() string {
 	return c.crt.Subject.CommonName
+}
+
+// SerialHex devolve o serial da CA em hex (sem prefixos) — a identidade
+// ESTÁVEL entre gerações usada na detecção do trust store no Windows
+// (store_windows.go): o CN é constante entre CAs regeneradas, o serial não.
+func (c *CA) SerialHex() string {
+	return c.crt.SerialNumber.Text(16)
 }
 
 // LeafFor devolve (gerando e cacheando) um certificado de servidor assinado

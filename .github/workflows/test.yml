@@ -27,7 +27,9 @@ jobs:
   # Etapa 3 do bug-hunt (docs/bug-hunt-plan.md): o -race não roda no Windows
   # local (CGO_ENABLED=0) — a verificação de data races vive aqui, no CI Linux,
   # nos pacotes concorrentes (lifecycle do daemon, event hub, roteador IPC,
-  # pomodoro, schedule, scheduler, processguard e store).
+  # pomodoro, schedule, scheduler, processguard e store) + os pacotes novos
+  # das Fases 1–5 (clockguard, tlsca, interceptor, telemetry, devices,
+  # reports, achievements — pendência do docs/verification-plan.md).
   race:
     runs-on: ubuntu-latest
     steps:
@@ -60,7 +62,7 @@ jobs:
       # newlines e a continuação de linha do shell funciona de verdade.
       - name: Race detector — pacotes concorrentes
         run: |
-          go test -race -count=1 -timeout=180s \
+          go test -race -count=1 -timeout=300s \
             ./internal/system/daemon/ \
             ./internal/transport/eventhub/ \
             ./internal/transport/ipc/ \
@@ -68,7 +70,14 @@ jobs:
             ./internal/domain/schedule/ \
             ./internal/domain/scheduler/ \
             ./internal/infrastructure/processguard/ \
-            ./internal/infrastructure/store/
+            ./internal/infrastructure/store/ \
+            ./internal/domain/achievements/ \
+            ./internal/domain/clockguard/ \
+            ./internal/domain/devices/ \
+            ./internal/domain/reports/ \
+            ./internal/domain/telemetry/ \
+            ./internal/infrastructure/interceptor/ \
+            ./internal/infrastructure/tlsca/
 
       # Etapa 7 do bug-hunt (docs/bug-hunt-plan.md): o teste de chown do
       # socket (root:focusguard 0660, TestListen_ChownsSocketToFocusGuardGroup)

@@ -86,6 +86,49 @@ func TestNextRun_NextWeekWhenPassed(t *testing.T) {
 	}
 }
 
+// TestMissedToday_* cobrem o catch-up do boot (fix v0.18.1): o worker gera o
+// relatório no boot quando o horário agendado de HOJE já passou — sem isso o
+// NextRun pularia para a semana seguinte e a semana ficaria sem relatório.
+func TestMissedToday_FalseBeforeTime(t *testing.T) {
+	cfg := Config{DayOfWeek: int(time.Wednesday), Hour: 20, Minute: 0}
+	now := time.Date(2026, 8, 12, 19, 59, 0, 0, time.Local) // quarta 19:59
+	if cfg.MissedToday(now) {
+		t.Error("antes do horário agendado não é atraso")
+	}
+}
+
+func TestMissedToday_TrueAfterTimeSameDay(t *testing.T) {
+	cfg := Config{DayOfWeek: int(time.Wednesday), Hour: 20, Minute: 0}
+	now := time.Date(2026, 8, 12, 20, 1, 0, 0, time.Local) // quarta 20:01
+	if !cfg.MissedToday(now) {
+		t.Error("depois do horário agendado no mesmo dia deveria ser atraso")
+	}
+}
+
+func TestMissedToday_TrueAtExactTime(t *testing.T) {
+	cfg := Config{DayOfWeek: int(time.Wednesday), Hour: 20, Minute: 0}
+	now := time.Date(2026, 8, 12, 20, 0, 0, 0, time.Local) // exatamente 20:00
+	if !cfg.MissedToday(now) {
+		t.Error("boot no minuto exato deveria ser atraso (senão o NextRun pula a semana)")
+	}
+}
+
+func TestMissedToday_FalseOtherDay(t *testing.T) {
+	cfg := Config{DayOfWeek: int(time.Wednesday), Hour: 20, Minute: 0}
+	now := time.Date(2026, 8, 13, 21, 0, 0, 0, time.Local) // quinta 21:00
+	if cfg.MissedToday(now) {
+		t.Error("outro dia não é atraso do mesmo dia")
+	}
+}
+
+func TestMissedToday_FalseEarlierWeekday(t *testing.T) {
+	cfg := DefaultConfig()                                // domingo 23:59
+	now := time.Date(2026, 8, 10, 0, 1, 0, 0, time.Local) // segunda 00:01
+	if cfg.MissedToday(now) {
+		t.Error("dia seguinte não é atraso do mesmo dia")
+	}
+}
+
 func TestNextRun_SundayDefault(t *testing.T) {
 	cfg := DefaultConfig() // domingo 23:59
 	now := time.Date(2026, 8, 12, 10, 0, 0, 0, time.Local)

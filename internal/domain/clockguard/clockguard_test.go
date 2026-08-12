@@ -39,10 +39,11 @@ func (f *fakeNTP) Time() (time.Time, error) {
 	return f.t, nil
 }
 
-// fakeLockdown conta as chamadas de BlockAllInternet.
+// fakeLockdown conta as chamadas de BlockAllInternet/UnblockAllInternet.
 type fakeLockdown struct {
-	mu    sync.Mutex
-	calls int
+	mu       sync.Mutex
+	calls    int
+	unblocks int
 }
 
 func (f *fakeLockdown) BlockAllInternet(_ []string, _ time.Duration) error {
@@ -52,10 +53,23 @@ func (f *fakeLockdown) BlockAllInternet(_ []string, _ time.Duration) error {
 	return nil
 }
 
+func (f *fakeLockdown) UnblockAllInternet() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.unblocks++
+	return nil
+}
+
 func (f *fakeLockdown) count() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	return f.calls
+}
+
+func (f *fakeLockdown) unblockCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.unblocks
 }
 
 // fakeLogger acumula eventos de tamper.
@@ -178,8 +192,17 @@ func TestClockJumpValidatedByNTPIsLegit(t *testing.T) {
 	if !out.Suspicion || out.Confirmed {
 		t.Fatalf("ajuste legítimo deveria gerar suspeita SEM confirmação: %+v", out)
 	}
+	// Com NTP disponível e validando o relógio local, a suspeita é limpa SEM
+	// bloqueio: o lockdown só é aplicado quando o NTP não decide (offline/
+	// falha) ou confirma a burla — aplicar antes reescreveria o firewall a
+	// cada ciclo (CheckInterval 10 min > Tolerance 5 min).
 	if lock.count() != 0 {
-		t.Error("lockdown não deveria ser aplicado para ajuste legítimo")
+		t.Errorf("NTP válido não deveria aplicar lockdown, chamado %d vezes", lock.count())
+	}
+	// Mesmo sem ter aplicado, o guard tenta liberar um bloqueio pendente
+	// (janela em que o NTP estava fora) — no-op no scheduler.
+	if lock.unblockCount() != 1 {
+		t.Errorf("NTP validou o relógio — deveria tentar liberar um lockdown pendente, unblocks=%d", lock.unblockCount())
 	}
 	if len(lg.events()) != 0 {
 		t.Errorf("ajuste legítimo não deveria registrar tamper: %v", lg.events())
@@ -203,8 +226,13 @@ func TestNTPFailureKeepsSuspicionUnresolved(t *testing.T) {
 	if out.Confirmed {
 		t.Fatal("NTP falhou — não pode confirmar")
 	}
-	if lock.count() != 0 {
-		t.Error("sem confirmação, sem lockdown")
+	// O bloqueio preventivo já foi aplicado na suspeita (antes do NTP); a
+	// falha do NTP o MANTÉM (sem confirmar nem liberar).
+	if lock.count() != 1 {
+		t.Errorf("lockdown preventivo deveria ser aplicado na suspeita, chamado %d vezes", lock.count())
+	}
+	if lock.unblockCount() != 0 {
+		t.Error("NTP falhou — bloqueio preventivo mantido, sem liberação")
 	}
 	// A referência NÃO é re-anchorada no relógio adulterado.
 	if st.LastKnownTime().Unix() != real.Unix() {
@@ -212,16 +240,82 @@ func TestNTPFailureKeepsSuspicionUnresolved(t *testing.T) {
 	}
 }
 
-func TestNilNTPKeepsSuspicionUnresolved(t *testing.T) {
+func TestNilNTP_SuspicionAppliesLockdown(t *testing.T) {
 	real := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
 	local := real.Add(-2 * time.Hour)
-	g, _, lock, _ := guardWith(local, real, NTPClient(nil)) // daemon offline
+	g, st, lock, _ := guardWith(local, real, NTPClient(nil)) // daemon offline
 
 	out := g.Check()
 	if !out.Suspicion || out.Confirmed {
 		t.Fatalf("sem NTP a suspeita fica mantida sem confirmação: %+v", out)
 	}
-	if lock.count() != 0 {
-		t.Error("sem confirmação, sem lockdown")
+	// O bloqueio preventivo é aplicado JÁ NA SUSPEITA mesmo com NTP offline
+	// (features-plan: proteger o cenário "relógio adiantado + sem rede").
+	if lock.count() != 1 {
+		t.Errorf("lockdown preventivo deveria ser aplicado na suspeita, chamado %d vezes", lock.count())
+	}
+	if lock.unblockCount() != 0 {
+		t.Error("sem NTP não há liberação")
+	}
+	// A referência NÃO é re-anchorada (o NTP nunca validou o relógio).
+	if st.LastKnownTime().Unix() != real.Unix() {
+		t.Errorf("referência foi re-anchorada sem NTP: got %v", st.LastKnownTime())
+	}
+}
+
+// TestClockAdvancedWithNTPOffline_LockdownsAtSuspicion cobre o cenário que
+// motivou o lockdown na suspeita (Fase 2 do features-plan): relógio
+// ADIANTADO (para expirar os bloqueios cedo num restart) + NTP offline. Mesmo
+// sem conseguir confirmar, a proteção precisa estar no ar desde a suspeita —
+// senão o restart com o relógio adiantado expira os bloqueios sem defesa.
+func TestClockAdvancedWithNTPOffline_LockdownsAtSuspicion(t *testing.T) {
+	real := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	local := real.Add(24 * time.Hour) // adiantou 1 dia
+	last := real
+	g, st, lock, _ := guardWith(local, last, NTPClient(nil)) // sem rede
+
+	out := g.Check()
+	if !out.Suspicion {
+		t.Fatalf("gap de 24h deveria gerar suspeita: %+v", out)
+	}
+	if out.Confirmed {
+		t.Fatal("sem NTP não há confirmação")
+	}
+	if lock.count() != 1 {
+		t.Errorf("lockdown preventivo deveria ser aplicado na suspeita (NTP offline), chamado %d vezes", lock.count())
+	}
+	if lock.unblockCount() != 0 {
+		t.Error("NTP offline não pode liberar o bloqueio")
+	}
+	// Referência preservada: o próximo Check ainda detecta o relógio errado.
+	if st.LastKnownTime().Unix() != real.Unix() {
+		t.Errorf("referência não deveria ser re-anchorada: got %v, want %v", st.LastKnownTime(), real)
+	}
+}
+
+// TestConsistentClockAfterSuspicion_ReleasesLockdown: uma suspeita anterior
+// (com NTP offline) aplicou o lockdown; o usuário corrige o relógio de volta
+// para o horário confiado → o Check seguinte (gap normal) libera o bloqueio
+// preventivo, sem esperar a expiração da duração.
+func TestConsistentClockAfterSuspicion_ReleasesLockdown(t *testing.T) {
+	real := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	local := real.Add(24 * time.Hour)
+	g, _, lock, _ := guardWith(local, real, NTPClient(nil))
+
+	if out := g.Check(); !out.Suspicion {
+		t.Fatalf("1º Check deveria gerar suspeita: %+v", out)
+	}
+	if lock.count() != 1 {
+		t.Fatalf("lockdown deveria ter sido aplicado na suspeita, chamado %d vezes", lock.count())
+	}
+
+	// Usuário corrige o relógio para perto da referência confiada.
+	g2, _, lock2, _ := guardWith(real.Add(2*time.Minute), real, NTPClient(nil))
+	out := g2.Check()
+	if out.Suspicion || out.Confirmed {
+		t.Fatalf("relógio corrigido não pode gerar suspeita: %+v", out)
+	}
+	if lock2.unblockCount() != 1 {
+		t.Errorf("relógio consistente deveria liberar o lockdown pendente, unblocks=%d", lock2.unblockCount())
 	}
 }

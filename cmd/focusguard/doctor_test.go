@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -313,13 +314,22 @@ func TestDoctor_JSONOutput(t *testing.T) {
 	}
 }
 
-// TestDoctor_CAInstalledPasses: CA gerada e presente no trust store (runner
-// fake devolvendo o CN) → pass.
+// TestDoctor_CAInstalledPasses: CA gerada e presente no trust store → pass.
+// No Windows a identidade no store é o SERIAL (uma CA regenerada tem o mesmo
+// CN, então a detecção por CN deixaria a reinstalação ser pulada) — o fake
+// devolve um output de certutil -store com o serial da CA. No Linux o
+// IsInStore lê a cópia instalada em /etc/ssl/certs (arquivo real do sistema,
+// fora do alcance do teste) — o cenário "instalada" não é simulável via
+// runner, então o teste é Windows-only.
 func TestDoctor_CAInstalledPasses(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("IsInStore no Linux lê a cópia real em /etc/ssl/certs — não simulável via runner")
+	}
 	env := healthyEnv(t)
 	ca := seedCA(t, env)
+	hex := strings.ToUpper(ca.SerialHex())
 	env.exec = func(_ string, _ ...string) ([]byte, error) {
-		return []byte("Subject: CN=" + ca.SubjectCN()), nil
+		return []byte("Root:\r\nSerial Number: " + hex + "\r\nSubject: CN=" + ca.SubjectCN()), nil
 	}
 
 	results := runDoctor(env)

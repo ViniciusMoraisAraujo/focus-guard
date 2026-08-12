@@ -1,6 +1,9 @@
 package tlsca
 
 import (
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
 	"os"
@@ -224,6 +227,95 @@ func TestLeafFor_NotExpired(t *testing.T) {
 	leaf, _ := x509.ParseCertificate(cert.Certificate[0])
 	if now := time.Now(); leaf.NotBefore.After(now) || leaf.NotAfter.Before(now.AddDate(0, 11, 0)) {
 		t.Errorf("validade do leaf fora do esperado: %v → %v", leaf.NotBefore, leaf.NotAfter)
+	}
+}
+
+// TestLoadOrCreate_OrphanCertWithoutKey_Regenerates: um cert sem a key (a
+// escrita da key falhou no 1º boot — a CA nunca chegou a ser instalada no
+// trust store) não pode travar o boot para sempre com um erro duro: o cert
+// órfão é descartado e a CA é regenerada (TDD do fix de robustez do
+// v0.18.1).
+func TestLoadOrCreate_OrphanCertWithoutKey_Regenerates(t *testing.T) {
+	dir := t.TempDir()
+	orig, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(filepath.Join(dir, caKeyFile)); err != nil {
+		t.Fatal(err)
+	}
+
+	ca, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreate com cert órfão deveria regenerar, não errar: %v", err)
+	}
+	for _, f := range []string{caCertFile, caKeyFile} {
+		if _, err := os.Stat(filepath.Join(dir, f)); err != nil {
+			t.Errorf("artefato %s ausente após a regeneração: %v", f, err)
+		}
+	}
+	if string(ca.CertPEM()) == string(orig.CertPEM()) {
+		t.Error("LoadOrCreate reutilizou o cert órfão em vez de regenerar")
+	}
+	if _, err := ca.LeafFor("youtube.com"); err != nil {
+		t.Errorf("CA regenerada não assina leafs: %v", err)
+	}
+}
+
+// TestLoadOrCreate_CorruptKeyPair_Regenerates: key presente mas ilegível
+// (PEM inválido — arquivo corrompido) também se auto-cura.
+func TestLoadOrCreate_CorruptKeyPair_Regenerates(t *testing.T) {
+	dir := t.TempDir()
+	orig, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, caKeyFile), []byte("lixo que não é PEM"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ca, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreate com key corrompida deveria regenerar: %v", err)
+	}
+	if string(ca.CertPEM()) == string(orig.CertPEM()) {
+		t.Error("LoadOrCreate reutilizou o par corrompido em vez de regenerar")
+	}
+}
+
+// TestLoadOrCreate_MismatchedKey_Regenerates: key válida mas de OUTRA chave
+// (par descasado — leafs assinados que nenhum cliente valida contra a CA,
+// chain quebrada) também se auto-cura.
+func TestLoadOrCreate_MismatchedKey_Regenerates(t *testing.T) {
+	dir := t.TempDir()
+	orig, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	other, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	der, err := x509.MarshalECPrivateKey(other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	keyPEM := pem.EncodeToMemory(&pem.Block{Type: "EC PRIVATE KEY", Bytes: der})
+	if err := os.WriteFile(filepath.Join(dir, caKeyFile), keyPEM, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	ca, err := LoadOrCreate(dir)
+	if err != nil {
+		t.Fatalf("LoadOrCreate com key descasada deveria regenerar: %v", err)
+	}
+	if string(ca.CertPEM()) == string(orig.CertPEM()) {
+		t.Error("LoadOrCreate reutilizou o par descasado em vez de regenerar")
+	}
+	// A regeneração precisa produzir um par coerente (key ↔ cert): um leaf
+	// assinado valida contra a CA do próprio par.
+	if !ca.key.Public().(*ecdsa.PublicKey).Equal(ca.crt.PublicKey.(*ecdsa.PublicKey)) {
+		t.Error("par regenerado continua descasado (key não corresponde ao cert)")
 	}
 }
 

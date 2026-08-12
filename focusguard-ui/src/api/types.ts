@@ -12,6 +12,7 @@ export interface Block {
   expires_at: string; // RFC3339
   resolved_ips: string[];
   allowlist?: string[]; // Allowlist names the domains still reachable under the all-internet
+  source?: "user" | "clock-guard"; // Source tags the block's owner (user panic vs. the clock guard's
 }
 
 // Preset is a named group of domains blocked together by category.

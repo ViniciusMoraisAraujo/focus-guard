@@ -60,8 +60,13 @@ func TestBlockedDomainGetsPage(t *testing.T) {
 	if !strings.Contains(text, "youtube.com") {
 		t.Errorf("página não menciona o domínio: %s", text)
 	}
-	if !strings.Contains(text, "2h0m0s") && !strings.Contains(text, "2h") {
-		t.Errorf("página não mostra o tempo restante: %s", text)
+	// Tempo restante em minutos ("2 h") — nunca o Duration cru com segundos
+	// ("2h0m0s"): os segundos pulavam a cada reload e quebravam a leitura.
+	if !strings.Contains(text, "2 h") {
+		t.Errorf("página não mostra o tempo restante em minutos: %s", text)
+	}
+	if strings.Contains(text, "2h0m0s") {
+		t.Errorf("página ainda mostra o formato cru com segundos: %s", text)
 	}
 	// Frase motivacional presente: a frase determinística do domínio + as
 	// aspas tipográficas do template.
@@ -161,6 +166,36 @@ func startTLSSUT(t *testing.T, c Checker) (string, *http.Client) {
 		TLSClientConfig: &tls.Config{RootCAs: pool, ServerName: "youtube.com"},
 	}}
 	return "https://" + s.Addr(), client
+}
+
+// TestFormatRemaining_MinutesOnly: a página de bloqueio mostra o tempo
+// restante em MINUTOS (sem os segundos que o String() do time.Duration
+// incluiria — "1h30m0s" com os segundos "pulando" a cada reload). Trunca
+// para o minuto inteiro (o que com certeza resta) no formato do painel web
+// (formatMinutes): "1 h 30 min" / "45 min" / "2 h".
+func TestFormatRemaining_MinutesOnly(t *testing.T) {
+	cases := []struct {
+		d    time.Duration
+		want string
+	}{
+		{0, "menos de 1 min"},
+		{30 * time.Second, "menos de 1 min"},
+		{45 * time.Minute, "45 min"},
+		{time.Hour, "1 h"},
+		{2 * time.Hour, "2 h"},
+		{90*time.Minute + 45*time.Second, "1 h 30 min"}, // segundos truncados
+		{7*time.Hour + 30*time.Minute, "7 h 30 min"},
+		{24 * time.Hour, "24 h"},
+	}
+	for _, c := range cases {
+		if got := formatRemaining(c.d); got != c.want {
+			t.Errorf("formatRemaining(%v) = %q, want %q", c.d, got, c.want)
+		}
+	}
+	// Nunca devolve o formato cru do Duration (com segundos).
+	if got := formatRemaining(2*time.Hour + 30*time.Minute + 7*time.Second); strings.Contains(got, "s") {
+		t.Errorf("formatRemaining não deveria incluir segundos: %q", got)
+	}
 }
 
 // TestBlockedDomainGetsPageOverHTTPS: sites HTTPS-only (YouTube/Instagram —

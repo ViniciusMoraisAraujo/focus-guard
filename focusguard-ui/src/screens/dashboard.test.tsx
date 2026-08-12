@@ -12,16 +12,24 @@ import { Dashboard } from "./Dashboard";
 const now = new Date("2026-08-10T12:00:00Z");
 
 // O Dashboard (e o DnsCard interno) lê o estado pelo useData; o teste injeta
-// um daemon acessível sem bloqueios para isolar o alerta.
-vi.mock("@/context", () => ({
-  useData: () => ({
+// um daemon acessível sem bloqueios para isolar o alerta. O mock é um
+// vi.fn() para o teste do sentinela do clock guard poder sobrescrever o
+// status por teste; o beforeEach restaura o default.
+function defaultData() {
+  return {
     daemonUp: true,
     status: { success: true, blocks: [] } as ApiResponse,
     presets: [],
     stats: null,
     refresh: vi.fn(),
-  }),
+  };
+}
+
+vi.mock("@/context", () => ({
+  useData: vi.fn(),
 }));
+
+import { useData } from "@/context";
 
 // api.tamperLog é a única chamada do alerta — o restante do client é inerte
 // no teste (nenhuma outra ação roda com status vazio).
@@ -32,6 +40,7 @@ vi.mock("@/api/client", () => ({
 import { api } from "@/api/client";
 
 const tamperLogMock = vi.mocked(api.tamperLog);
+const useDataMock = vi.mocked(useData);
 
 function evento(partial: Partial<TamperEvent>): TamperEvent {
   return {
@@ -50,6 +59,8 @@ beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
   tamperLogMock.mockReset();
+  useDataMock.mockReset();
+  useDataMock.mockReturnValue(defaultData());
 });
 
 afterEach(() => {
@@ -117,5 +128,35 @@ describe("Dashboard — alerta de Clock Guard (Fase 2)", () => {
     });
 
     expect(container?.querySelector('[role="alert"]')).toBeNull();
+  });
+});
+
+describe("Dashboard — sentinela all-internet do Clock Guard", () => {
+  it("rotula o lockdown do clock guard sem chamá-lo de modo pânico", async () => {
+    useDataMock.mockReturnValue({
+      ...defaultData(),
+      status: {
+        success: true,
+        blocks: [
+          {
+            domain: "*all-internet*",
+            source: "clock-guard",
+            started_at: new Date(now.getTime() - 60 * 1000).toISOString(),
+            expires_at: new Date(now.getTime() + 59 * 60 * 1000).toISOString(),
+            resolved_ips: [],
+          },
+        ],
+      } as ApiResponse,
+    });
+    okTamper([]);
+
+    let container: HTMLElement | undefined;
+    await act(async () => {
+      const r = render(<Dashboard onNavigate={() => {}} />);
+      container = r.container;
+    });
+
+    expect(container?.textContent).toContain("Bloqueio preventivo do relógio");
+    expect(container?.textContent).not.toContain("Modo pânico ativo");
   });
 });

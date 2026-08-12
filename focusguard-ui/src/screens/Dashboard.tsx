@@ -66,10 +66,17 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
     return [...list].sort((a, b) => a.expires_at.localeCompare(b.expires_at));
   }, [status?.blocks]);
 
-  const panic = useMemo(
-    () => (status?.blocks ?? []).some((b) => b.domain === ALL_INTERNET),
+  // O sentinela all-internet tem duas origens: pânico/deep-focus do USUÁRIO
+  // (source "user"/ausente) ou o bloqueio preventivo do Clock Guard (Fase 2,
+  // source "clock-guard" — aplicado na suspeita quando o NTP não decide). O
+  // card de status distingue os dois; os dois continuam com o visual de
+  // bloqueio total.
+  const sentinel = useMemo(
+    () => (status?.blocks ?? []).find((b) => b.domain === ALL_INTERNET),
     [status?.blocks],
   );
+  const isClockLockdown = sentinel?.source === "clock-guard";
+  const panic = sentinel !== undefined && !isClockLockdown;
 
   const pomo = status?.pomodoro?.active ? status.pomodoro : null;
   const nearest = blocks[0]?.expires_at ?? null;
@@ -121,23 +128,27 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
   const todayFocusMs = todayFocusNs / 1e6;
   const progress = goalMin > 0 ? Math.min(1, todayFocusMs / (goalMin * 60_000)) : 0;
 
-  const statusKind = panic ? "panic" : blocks.length > 0 || pomo ? "focus" : "idle";
+  const statusKind = panic || isClockLockdown ? "panic" : blocks.length > 0 || pomo ? "focus" : "idle";
   const statusTitle = panic
     ? "Modo pânico ativo"
-    : pomo
-      ? `Pomodoro ativo — ${pomo.phase === "rest" ? "descanso" : "foco"} (ciclo ${pomo.cycle}/${pomo.cycles})`
-      : blocks.length > 0
-        ? `Foco ativo — ${blocks.length} bloqueio${blocks.length > 1 ? "s" : ""}`
-        : "Sem bloqueios ativos";
+    : isClockLockdown
+      ? "Bloqueio preventivo do relógio"
+      : pomo
+        ? `Pomodoro ativo — ${pomo.phase === "rest" ? "descanso" : "foco"} (ciclo ${pomo.cycle}/${pomo.cycles})`
+        : blocks.length > 0
+          ? `Foco ativo — ${blocks.length} bloqueio${blocks.length > 1 ? "s" : ""}`
+          : "Sem bloqueios ativos";
   const statusSub = panic
     ? "Toda a internet está bloqueada até o fim do período."
-    : pomo
-      ? `Sessão sobre o preset ${pomo.preset ?? "—"}`
-      : blocks.length > 0
-        ? "A distração está fora do alcance. Bons estudos! 🎯"
-        : "Ótimo momento para iniciar um foco.";
+    : isClockLockdown
+      ? "Relógio adulterado — internet bloqueada até o horário real ser validado online."
+      : pomo
+        ? `Sessão sobre o preset ${pomo.preset ?? "—"}`
+        : blocks.length > 0
+          ? "A distração está fora do alcance. Bons estudos! 🎯"
+          : "Ótimo momento para iniciar um foco.";
 
-  const HeroIcon = panic ? Siren : pomo ? Timer : blocks.length > 0 ? ShieldCheck : Leaf;
+  const HeroIcon = panic || isClockLockdown ? Siren : pomo ? Timer : blocks.length > 0 ? ShieldCheck : Leaf;
 
   return (
     <Screen>
