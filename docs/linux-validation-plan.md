@@ -1,11 +1,11 @@
 # Plano — Validação completa no Linux
 
-> **Status:** 🟢 **EM EXECUÇÃO (2026-08-13)** — Etapa 0/1 implementada E
-> **suíte completa verde no Linux localmente (WSL/Ubuntu)**: `go test ./...`
-> 100% com os 12 achados da primeira execução corrigidos (tabela abaixo). Os
-> jobs de CI (suíte completa, `-race ./...`, cross-compile Windows) aguardam a
-> primeira execução no GitHub Actions — espera-se que fique verde de primeira.
-> Etapas 2–10 (máquina real) pendentes. Escopo: validar **toda a stack FocusGuard no
+> **Status:** 🟢 **EM EXECUÇÃO (2026-08-13)** — **Etapa 0 CONCLUÍDA no CI**: o
+> push para a main rodou os 4 jobs e todos passaram de primeira (`test` run
+> 31710267829): `linux-full-suite` (suíte completa + daemon + gofmt +
+> contract-check), `race` (`-race ./...` na suíte completa), `session-log` e
+> `windows-compile-check` (cross-compile Windows). A suíte também está 100%
+> verde localmente (WSL/Ubuntu). Etapas 1–10 (máquina real) pendentes. Escopo: validar **toda a stack FocusGuard no
 > Linux**, plataforma que nunca foi testada de ponta a ponta em máquina real
 > (o Linux existe no papel — AGENT.md, goreleaser, install-linux.sh — e
 > parcialmente no CI, mas nunca rodou a suíte completa nem o E2E de SO real).
@@ -431,7 +431,7 @@ atualizadas.
 
 ## ✅ Checklist final (Definition of Done do plano)
 
-- [x] **Etapa 0 (parcial)** — Suíte completa verde no Linux localmente (WSL/Ubuntu, `go test ./...` ✅) com os 12 achados da tabela corrigidos; falta a execução real no CI (`linux-full-suite` + `-race ./...` + `windows-compile-check`).
+- [x] **Etapa 0** — Suíte completa + `-race` completo + cross-compile Windows verdes no CI (run 31710267829, 4 jobs ✅ na primeira execução; achados 1–13 da tabela corrigidos).
 - [ ] **Etapa 1** — Pacote do daemon verde no CI Linux; AGENT.md atualizado.
 - [ ] **Etapa 2** — `install-linux.sh` install/uninstall/status limpos em máquina real; achado de filelog resolvido.
 - [ ] **Etapa 3** — Enforcer real: hosts + iptables/ip6tables + pânico + allowlist + DoH + rollback verificados.
