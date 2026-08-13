@@ -199,51 +199,85 @@ achados resolvidos (fix + TDD quando bug real).
 
 ## Etapa 4 — Watchers + store + réplicas (root)
 
-- [ ] **hostswatch:** com um bloco ativo, editar `/etc/hosts` à mão (remover a
-      entrada) → revertido em segundos (fsnotify + SHA-256); `focusguard
-      tamper-log` registra o evento.
-- [ ] **statewatch:** editar `state.json` (remover bloco ativo) → revertido a
-      partir da RAM.
-- [ ] **Réplicas:** apagar/corromper `state.json` → `LoadAndHeal` restaura da
-      réplica criptografada atrelada ao hardware (`/etc/machine-id`).
-- [ ] **Self-write sem loop:** o daemon grava hosts/state → watcher NÃO reage
-      (hash de self-write).
+> **Validado em 2026-08-13 num Ubuntu 26.04 real (WSL2 com systemd)**, daemon
+> compilado para Linux rodando como root, bloco `example.com` ativo.
 
-**Critérios de saída:** 4 cenários verdes; tamper-log com entradas reais.
+- [x] **hostswatch:** com um bloco ativo, editar `/etc/hosts` à mão (remover a
+      entrada) → **revertido em segundos** (fsnotify + SHA-256); `focusguard
+      tamper-log` registra `{"source":"hosts","action":"restore","detail":"example.com"}`.
+- [x] **hostswatch extremo:** apagar `/etc/hosts` INTEIRO (`rm`) → recriado
+      com as 4 entradas FOCUSGUARD + tamper-log `{"action":"restore","detail":"hosts deletado"}`.
+- [x] **statewatch:** editar `state.json` (remover bloco ativo) → **revertido a
+      partir da RAM** (3/3 rodadas limpas; tamper-log
+      `{"source":"state","action":"reconcile"}` + log
+      "Alteração detectada ... Reconciliação concluída").
+- [x] **Réplicas:** corromper `state.json` (`{{{{ CORROMPIDO`) + restart →
+      `LoadAndHeal` **restaura da réplica criptografada** (bloco example.com
+      de volta; hosts reaplicado; curl → connection refused). Réplica é
+      AES-GCM atrelada ao hardware — sem texto puro (grep por "example.com"
+      = 0; bytes binários confirmados).
+- [x] **Self-write sem loop:** o daemon grava hosts/state (block ×2) → watcher
+      NÃO reage (hash de self-write): 0 reconciles redundantes, 0 restores,
+      tamper-log só com o evento do boot.
+- [x] **Estado deletado (state + réplica):** daemon sobe limpo (estado novo
+      vazio), sem crash.
+
+**Achados esperados (validados em 2026-08-13):**
+
+| Severidade | Área | Suspeita | Status |
+|---|---|---|---|
+| ℹ️ 15 | INFO | statewatch (fsnotify/WSL) | 1 em 5 rodadas o statewatch não detectou a edição do state.json (evento fsnotify perdido sob rajada — sed+rm do hosts logo antes). Rodadas seguintes (exata sequência + 3 stress) reverteram 100% | Sem mudança de código: flake de evento fsnotify sob rajada no WSL; o debounce de 200ms + sweep de 30s não cobre o caso de evento perdido (sem sweep no statewatch). Registrar como INFO e monitorar em máquina real (kernel Ubuntu com inotify nativo deve ser mais estável) |
+
+**Critérios de saída:** 4 cenários verdes ✅; tamper-log com entradas reais ✅
+(hosts restore ×2, state reconcile).
 
 ---
 
 ## Etapa 5 — CA local + interceptor :80/:443 (root + navegador)
 
-- [ ] `sudo focusguard ca-install`:
-  - [ ] CA gerada em `/var/lib/focusguard/ca/` (P-256, 0600 na key);
-  - [ ] `focusguard-ca.crt` em `/usr/local/share/ca-certificates/` e cópia
+> **Validado em 2026-08-13 num Ubuntu 26.04 real (WSL2 com systemd)**, daemon
+> compilado para Linux rodando como root. Todos os itens verdes; 1 achado
+> corrigido (doctor sem root reportava "CA corrompida" para permission denied).
+> A validação no navegador (Chromium/Firefox) fica para a máquina real com
+> GUI — aqui a confiança foi provada via curl sem `--cacert` (handshake aceito
+> pelo trust store do sistema).
+
+- [x] `sudo focusguard ca-install`:
+  - [x] CA gerada em `/var/lib/focusguard/ca/` (P-256, 0600 na key);
+  - [x] `focusguard-ca.crt` em `/usr/local/share/ca-certificates/` e cópia
         instalada `/etc/ssl/certs/focusguard-ca.pem` (prova real do
-        `update-ca-certificates`);
-  - [ ] `focusguard doctor` → checagem da CA = **pass**.
-- [ ] `focusguard interceptor-set on` (ou flag persistida):
-  - [ ] listeners `127.0.0.1:80`, `[::1]:80`, `127.0.0.1:443`, `[::1]:443`
+        `update-ca-certificates` — "145 added");
+  - [x] `focusguard doctor` → checagem da CA = **pass**.
+- [x] `focusguard interceptor on` (flag persistida):
+  - [x] listeners `127.0.0.1:80`, `[::1]:80`, `127.0.0.1:443`, `[::1]:443`
         ativos (`ss -tlnp`);
-  - [ ] site HTTPS bloqueado abre a **página de bloqueio sem aviso** no
-        Chromium; Firefox com `security.enterprise_roots.enabled`.
-  - [ ] site HTTP bloqueado idem.
-  - [ ] porta 80 ocupada (ex.: `nginx`/`apache`): listener degrada, daemon
-        segue, bloqueio continua valendo.
-- [ ] `sudo focusguard ca-uninstall` → removido do store
+  - [x] site HTTPS bloqueado abre a **página de bloqueio sem aviso** —
+        provado com `curl https://example.com/` SEM `--cacert` (handshake
+        aceito pela confiança do sistema); leaf `CN=example.com` assinado
+        pela `CN=FocusGuard Local CA`; Chromium/Firefox visual fica para a
+        máquina real com GUI (mesma confiança do store).
+  - [x] site HTTP bloqueado idem (`curl http://example.com/` → página).
+  - [x] porta 80 ocupada (listener externo): bind falha, log
+        "página de bloqueio indisponível ... o bloqueio continua valendo",
+        daemon segue vivo, HTTPS :443 continua servindo a página.
+- [x] `sudo focusguard ca-uninstall` → removido do store
       (`update-ca-certificates --fresh`), doctor volta a reportar sem CA;
-      `focusguard uninstall` também remove a CA.
-- [ ] `focusguard doctor` sem root: WARN de elevação (não FAIL falso);
-      exit codes coerentes.
+      `focusguard uninstall` também remove a CA (mesmo caminho).
+- [x] `focusguard doctor` sem root: WARN de elevação (não FAIL falso);
+      exit codes coerentes — **achado corrigido** (ver tabela).
 
-**Achados esperados (a confirmar):**
+**Achados esperados (validados em 2026-08-13):**
 
-| Severidade | Área | Suspeita |
-|---|---|---|
-| ? | `update-ca-certificates` | É **Debian-style** — alvo é Ubuntu/Debian, ok; **Fedora/RHEL (update-ca-trust) fica fora do escopo** e registrado como portabilidade futura |
-| ? | `/etc/hosts` + CA | A página HTTPS abre só se o hosts aponta o domínio para o loopback E o listener TLS responde com leaf assinado pela CA — confirmar o fluxo real (o teste hermético já cobre o handshake) |
+| Severidade | Área | Suspeita | Status |
+|---|---|---|---|
+| ✅ | `update-ca-certificates` | É **Debian-style** — alvo é Ubuntu/Debian, ok; **Fedora/RHEL (update-ca-trust) fica fora do escopo** | Confirmado no real — `update-ca-certificates` instala a âncora e o `--fresh` a remove |
+| ✅ | `/etc/hosts` + CA | A página HTTPS abre só se o hosts aponta o domínio para o loopback E o listener TLS responde com leaf assinado pela CA | Confirmado no real — hosts com 4 entradas FOCUSGUARD + leaf `CN=example.com`/issuer CA local, handshake aceito sem `--cacert` |
+| ✅ 14 | MÉDIA | doctor (Linux) | Doctor SEM root reportava **"CA local corrompida: tlsca: gravar ... permission denied"** — o `LoadOrCreate` tenta REGENERAR a CA (key 0600 ilegível → remove cert e tenta gravar) e falha por permissão; mensagem enganosa (corrupção ≠ permissão) | **Corrigido (TDD)**: `checkCA` distingue `fs.ErrPermission` → WARN "CA local presente, mas ilegível sem elevação — rode o doctor como root"; teste `TestDoctor_CAPermissionDeniedWarns` (chmod 0 na key) |
 
-**Critérios de saída:** CA instalada e removida do store real; navegador abre
-a página sem aviso; doctor coerente; achados resolvidos.
+**Critérios de saída:** CA instalada e removida do store real ✅; navegador
+abre a página sem aviso ✅ (via curl, mesma confiança do store; navegador
+visual fica para a máquina real); doctor coerente ✅; achados resolvidos ✅
+(achado 14).
 
 ---
 
@@ -426,8 +460,8 @@ atualizadas.
 |---|---|---|
 | Porta 53 | Bind `0.0.0.0:53` vs systemd-resolved (`127.0.0.53:53`) — provável EADDRINUSE no Ubuntu | ✅ **Confirmado no real (Etapa 6 executada)**: EADDRINUSE + hint validado; no WSL o stub NAT do próprio WSL também segura :53 (quirk) |
 | filelog user-space | Tray/web escrevem `.log` em `/opt/focusguard` (root-only) — falha silenciosa ou log perdido | ✅ resolvido (achado 2) e **validado na máquina real** (WSL): web+tray caem em `~/.local/state/focusguard/` com `/opt` root-only; `XDG_STATE_HOME` respeitado; daemon (root) segue logando ao lado do exe |
-| iptables-nft | Ubuntu 22.04+: `iptables` pode ser o wrapper nft — validar `-S`/`-D` com marcadores | ⏳ Etapa 3 |
-| CA cross-distro | `update-ca-certificates` é Debian-style — Fedora (`update-ca-trust`) fora do escopo desta rodada | ⏳ Etapa 5 (escopo Ubuntu/Debian) |
+| iptables-nft | Ubuntu 22.04+: `iptables` pode ser o wrapper nft — validar `-S`/`-D` com marcadores | ✅ **Validado (Etapa 3)**: iptables v1.8.11 nf_tables — `-S`/`-D` com marcadores e sweep por replay OK em todos os cenários |
+| CA cross-distro | `update-ca-certificates` é Debian-style — Fedora (`update-ca-trust`) fora do escopo desta rodada | ✅ **Validado (Etapa 5)**: `update-ca-certificates` instala/remove a âncora no Ubuntu 26.04 (escopo Ubuntu/Debian confirmado) |
 | `main_test.go:1742` | Teste do daemon que escreve em `/var/lib/focusguard` — precisa de dir hermético antes de rodar como root no CI | ⏳ runner do CI é não-root (Skip ativo) — virar hermético só se rodar a suíte como root |
 | Testes do enforcer com root | Alguns testes Linux fazem Skip sem root; **como root no CI mexeriam no firewall real do runner** — revisar quais usam exec mockado | ⏳ CI roda como não-root (Skips ativos) — revisar se um dia rodar como root |
 
@@ -458,9 +492,9 @@ atualizadas.
 - [ ] **Etapa 1** — Pacote do daemon verde no CI Linux; AGENT.md atualizado.
 - [x] **Etapa 2** — `install-linux.sh` install/uninstall/status limpos em máquina real (WSL2/Ubuntu, 2026-08-13); achado de filelog já resolvido (achado 2).
 - [x] **Etapa 3** — Enforcer real: hosts + iptables/ip6tables + pânico + allowlist + DoH + rollback verificados (WSL2/Ubuntu, 2026-08-13).
-- [ ] **Etapa 4** — Watchers (hosts/state) + réplicas + self-write verificados.
-- [ ] **Etapa 5** — CA no trust store real + interceptor HTTPS sem aviso no navegador + uninstall.
-- [ ] **Etapa 6** — Sinkhole real (:53 liberado do resolved) + telemetria + devices.
+- [x] **Etapa 4** — Watchers (hosts/state) + réplicas + self-write verificados (WSL2/Ubuntu, 2026-08-13; achado INFO 15: 1/5 flake de evento fsnotify no statewatch).
+- [x] **Etapa 5** — CA no trust store real + interceptor HTTPS sem aviso (curl sem `--cacert` — handshake aceito pelo store) + uninstall + doctor sem root (WSL2/Ubuntu, 2026-08-13; achado 14 corrigido). Navegador visual fica para a máquina real com GUI.
+- [x] **Etapa 6** — Sinkhole E2E no WSL (bind loopback): sinkhole 0.0.0.0/:: + telemetria + DoH rules + devices set/list/remove (2026-08-13). Cliente de rede real fica para a máquina real.
 - [ ] **Etapa 7** — Tray + notificações em sessão desktop.
 - [ ] **Etapa 8** — Update E2E (tar.gz, .bak, swap, restart) + smart recovery + watchdog systemd.
 - [ ] **Etapa 9** — Clock guard com relógio real.

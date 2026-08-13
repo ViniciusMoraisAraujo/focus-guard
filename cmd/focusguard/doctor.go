@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"flag"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -127,6 +129,17 @@ func checkCA(env doctorEnv) doctorResult {
 	}
 	ca, err := tlsca.LoadOrCreate(caDir)
 	if err != nil {
+		// Permission denied significa "CA presente, mas ilegível sem elevação"
+		// (a key é 0600 root) — não é corrupção. O doctor não-elevado deve
+		// orientar a rodar elevado, não mandar apagar a CA (o LoadOrCreate
+		// tenta regenerar e falha por permissão, gerando mensagem enganosa).
+		if errors.Is(err, fs.ErrPermission) {
+			return doctorResult{
+				Name: "CA local", Status: statusWarn,
+				Message: "CA local presente, mas ilegível sem elevação — rode o doctor como root/administrador para inspecionar",
+				Fix:     "Rode 'sudo focusguard doctor' (ou como administrador) para validar a CA.",
+			}
+		}
 		return doctorResult{
 			Name: "CA local", Status: statusWarn,
 			Message: "CA local corrompida: " + err.Error(),

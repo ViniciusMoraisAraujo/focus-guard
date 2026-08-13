@@ -378,6 +378,35 @@ func TestDoctor_CANotGeneratedPasses(t *testing.T) {
 	}
 }
 
+// TestDoctor_CAPermissionDeniedWarns (Linux/Unix): CA presente mas ilegível
+// sem elevação (key 0600 root) → WARN orientando a rodar elevado, NUNCA
+// "corrompida" (o LoadOrCreate tenta regenerar e falha por permissão —
+// mensagem enganosa reportava corrupção). O chmod 0 simula a key ilegível.
+func TestDoctor_CAPermissionDeniedWarns(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod 0 não simula permissão no Windows")
+	}
+	env := healthyEnv(t)
+	ca := seedCA(t, env)
+	keyPath := filepath.Join(filepath.Dir(env.statePath), "ca", "focusguard-ca.key")
+	if err := os.Chmod(keyPath, 0); err != nil {
+		t.Fatalf("chmod 0 na key: %v", err)
+	}
+	_ = ca
+
+	results := runDoctor(env)
+	c := findResult(results, "CA local")
+	if c == nil || c.Status != statusWarn {
+		t.Fatalf("CA ilegível deveria virar warn — got %+v", c)
+	}
+	if strings.Contains(c.Message, "corrompida") {
+		t.Errorf("mensagem CA = %q, não deveria reportar corrupção para permission denied", c.Message)
+	}
+	if !strings.Contains(c.Message, "ilegível") {
+		t.Errorf("mensagem CA = %q, want mencionando ilegível/elevação", c.Message)
+	}
+}
+
 // seedCA gera uma CA real no diretório ca ao lado do state.json do env.
 func seedCA(t *testing.T, env doctorEnv) *tlsca.CA {
 	t.Helper()
