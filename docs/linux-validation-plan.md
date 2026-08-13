@@ -1,11 +1,10 @@
 # Plano — Validação completa no Linux
 
-> **Status:** 🟢 **EM EXECUÇÃO (2026-08-13)** — **Etapa 0 CONCLUÍDA no CI**: o
-> push para a main rodou os 4 jobs e todos passaram de primeira (`test` run
-> 31710267829): `linux-full-suite` (suíte completa + daemon + gofmt +
-> contract-check), `race` (`-race ./...` na suíte completa), `session-log` e
-> `windows-compile-check` (cross-compile Windows). A suíte também está 100%
-> verde localmente (WSL/Ubuntu). Etapas 1–10 (máquina real) pendentes. Escopo: validar **toda a stack FocusGuard no
+> **Status:** 🟢 **EM EXECUÇÃO (2026-08-13)** — **Etapa 0 CONCLUÍDA no CI** (run
+> 31710267829, 4 jobs verdes) e **Etapa 2 CONCLUÍDA no real** (WSL2/Ubuntu
+> com systemd): install/uninstall completos do `install-linux.sh` validados
+> ponta a ponta (binários, unit, grupo, socket, autostart, atalho, ícone,
+> estado preservado, watchdog). Etapas 1 e 3–10 pendentes. Escopo: validar **toda a stack FocusGuard no
 > Linux**, plataforma que nunca foi testada de ponta a ponta em máquina real
 > (o Linux existe no papel — AGENT.md, goreleaser, install-linux.sh — e
 > parcialmente no CI, mas nunca rodou a suíte completa nem o E2E de SO real).
@@ -105,34 +104,39 @@ Pré: extrair o tar.gz da última release (ou `goreleaser release --snapshot`),
 com todos os binários + `install-linux.sh` + `focusguard.service` +
 `focusguard-tray.desktop` + `focusguard.png`.
 
-- [ ] `sudo ./install-linux.sh install`:
-  - [ ] `/opt/focusguard/` root:root 0755 com os 5 binários;
-  - [ ] symlink `/usr/local/bin/focusguard → /opt/focusguard/focusguard`;
-  - [ ] unit `focusguard.service` instalada, `enable` + `restart` ok,
+> **EXECUTADA em 2026-08-13 (WSL2/Ubuntu, systemd ativo)** — staging do
+> release montado com os 5 binários compilados + scripts + ícone; install e
+> uninstall rodados como root (com `SUDO_USER=<usuário>`, espelhando o `sudo`
+> real). Todos os itens abaixo conferiram:
+
+- [x] `sudo ./install-linux.sh install`:
+  - [x] `/opt/focusguard/` root:root 0755 com os 5 binários;
+  - [x] symlink `/usr/local/bin/focusguard → /opt/focusguard/focusguard`;
+  - [x] unit `focusguard.service` instalada, `enable` + `restart` ok,
         `systemctl is-active focusguard` = active;
-  - [ ] grupo `focusguard` criado + usuário adicionado (mensagem de logout);
-  - [ ] autostart do tray em `~/.config/autostart/focusguard-tray.desktop`
+  - [x] grupo `focusguard` criado + usuário adicionado (mensagem de logout);
+  - [x] autostart do tray em `~/.config/autostart/focusguard-tray.desktop`
         com `Exec=/opt/focusguard/focusguard-tray`;
-  - [ ] atalho no Desktop (`focusguard.desktop`, Terminal=false) + ícone no
+  - [x] atalho no Desktop (`focusguard.desktop`, Terminal=false) + ícone no
         hicolor;
-  - [ ] `focusguard status` sem sudo (após re-login) — socket
+  - [x] `focusguard status` sem sudo (após re-login) — socket
         `root:focusguard 0660` em `/run/focusguard.sock`.
-- [ ] `journalctl -u focusguard -f` durante um boot: sem erros, `NOTIFY_SOCKET`
-      ativo (WatchdogSec=30).
-- [ ] `sudo ./install-linux.sh status` → systemctl status.
-- [ ] `sudo ./install-linux.sh uninstall`:
-  - [ ] serviço parado/desabilitado, unit removida;
-  - [ ] `/opt/focusguard` e symlinks removidos;
-  - [ ] autostart + atalho + ícone removidos;
-  - [ ] estado preservado em `/var/lib/focusguard/` (mensagem do script).
+- [x] `journalctl -u focusguard -f` durante um boot: sem erros, `NOTIFY_SOCKET`
+      ativo (WatchdogSec=30) — NRestarts=0 por minutos (watchdog alimentado).
+- [x] `sudo ./install-linux.sh status` → systemctl status.
+- [x] `sudo ./install-linux.sh uninstall`:
+  - [x] serviço parado/desabilitado, unit removida;
+  - [x] `/opt/focusguard` e symlinks removidos;
+  - [x] autostart + atalho + ícone removidos;
+  - [x] estado preservado em `/var/lib/focusguard/` (mensagem do script).
 
 **Achados esperados (a confirmar):**
 
 | Severidade | Área | Suspeita |
 |---|---|---|
-| ? | filelog | Binários **user-space** (tray, web) gravam `<nome>.log` **na pasta do executável** (`filelog.PathFor`) — `/opt/focusguard` é root:root 0755: o log do tray/web como usuário comum **falha ao abrir** (verificar se degrada best-effort e se o log vai para o stderr/journal; decidir se movemos o log user-space para `~/.local/state/focusguard/` ou similar) |
-| ? | `install-linux.sh` `tray_user_home` | `logname` pode falhar em sessões sem utmp; fallback já existe (getent/awk) |
-| ? | systemd unit | `WatchdogSec=30` + `NotifyAccess=main`: conferir que o daemon de fato envia `WATCHDOG=1` e que o systemd não derruba por timeout |
+| ✅ | filelog | Binários **user-space** (tray, web) gravam `<nome>.log` **na pasta do executável** (`filelog.PathFor`) — `/opt/focusguard` é root:root 0755: o log do tray/web como usuário comum **falha ao abrir** | **Resolvido (achado 2) e validado no real**: fallback para `~/.local/state/focusguard/` (XDG state dir) — o web e o tray logam lá com `/opt` root-only; o daemon (root) segue logando ao lado do exe |
+| ✅ | systemd unit | `WatchdogSec=30` + `NotifyAccess=main`: conferir que o daemon de fato envia `WATCHDOG=1` e que o systemd não derruba por timeout | **Validado no real**: processo recebe `NOTIFY_SOCKET=/run/systemd/notify` + `WATCHDOG_USEC=30000000`; serviço estável com **NRestarts=0** por minutos (sem timeout) — o daemon alimenta o watchdog (`getWatchdogSec()` + `watchdog.New`) |
+| ℹ️ | `install-linux.sh` `tray_user` | O install/uninstall de artefatos do usuário (autostart, atalho, ícone) depende de `$SUDO_USER` (ou `logname`) para achar o home — sem `sudo` (ex.: `wsl -u root`), o script mira `root` e os artefatos do usuário não são removidos | **Confirmado no real (não é bug no fluxo sudo)**: com `sudo` o `$SUDO_USER` é setado e tudo funciona; registrar como nota operacional (rodar sempre via `sudo`, nunca direto como root) |
 
 **Critérios de saída:** install/uninstall limpos, serviço estável, CLI sem
 sudo funcionando, achados de filelog resolvidos (fix + TDD se preciso).
@@ -433,7 +437,7 @@ atualizadas.
 
 - [x] **Etapa 0** — Suíte completa + `-race` completo + cross-compile Windows verdes no CI (run 31710267829, 4 jobs ✅ na primeira execução; achados 1–13 da tabela corrigidos).
 - [ ] **Etapa 1** — Pacote do daemon verde no CI Linux; AGENT.md atualizado.
-- [ ] **Etapa 2** — `install-linux.sh` install/uninstall/status limpos em máquina real; achado de filelog resolvido.
+- [x] **Etapa 2** — `install-linux.sh` install/uninstall/status limpos em máquina real (WSL2/Ubuntu, 2026-08-13); achado de filelog já resolvido (achado 2).
 - [ ] **Etapa 3** — Enforcer real: hosts + iptables/ip6tables + pânico + allowlist + DoH + rollback verificados.
 - [ ] **Etapa 4** — Watchers (hosts/state) + réplicas + self-write verificados.
 - [ ] **Etapa 5** — CA no trust store real + interceptor HTTPS sem aviso no navegador + uninstall.
