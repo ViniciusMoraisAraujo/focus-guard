@@ -413,13 +413,14 @@ func normalizeDomain(name string) string {
 	return strings.ToLower(strings.TrimSuffix(name, "."))
 }
 
-// bindHint appends the most common Windows cause of a port-53 bind failure:
-// Internet Connection Sharing (SharedAccess) and the DNS Client (dnscache)
-// hold port 53 exclusively and must be stopped for the daemon to bind.
+// bindHint appends the most common platform cause of a port-53 bind failure
+// so the error surfaced in dns-status/doctor/UI is actionable: Internet
+// Connection Sharing (SharedAccess) on Windows, systemd-resolved on Linux
+// (bindhint_{windows,linux,other}.go).
 func bindHint(addr string) string {
 	_, port, err := net.SplitHostPort(addr)
-	if err == nil && port == "53" {
-		return " (porta 53 ocupada? desative o ICS: sc config SharedAccess start= disabled & net stop SharedAccess)"
+	if err != nil || port != "53" {
+		return ""
 	}
-	return ""
+	return platformBindHint()
 }

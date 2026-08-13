@@ -437,12 +437,15 @@ func TestBuildRestoreScript(t *testing.T) {
 				"COMMIT\n",
 		},
 		{
+			// Regressão da Etapa 6 real (Ubuntu 26.04, ip6tables nft): o tipo
+			// protocol-agnostic do v6 é icmp6-port-unreachable (ICMPv6) — o nome
+			// ICMPv4 é rejeitado pelo backend nft ("unknown reject type").
 			"v6",
 			[]string{"2001:db8::1"},
 			"/128",
 			"*filter\n" +
 				"-A OUTPUT -d 2001:db8::1/128 -p tcp -j REJECT --reject-with tcp-reset\n" +
-				"-A OUTPUT -d 2001:db8::1/128 -j REJECT --reject-with icmp-port-unreachable\n" +
+				"-A OUTPUT -d 2001:db8::1/128 -j REJECT --reject-with icmp6-port-unreachable\n" +
 				"COMMIT\n",
 		},
 		{

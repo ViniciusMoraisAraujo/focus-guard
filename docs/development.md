@@ -212,4 +212,5 @@ Detalhes do processo em [`docs/release.md`](release.md).
 | [`dns-sinkhole-spec.md`](dns-sinkhole-spec.md) | Especificação do DNS sinkhole ("Rei da Rede") |
 | [`perf-2026-08-05.md`](perf-2026-08-05.md) | Perfil de performance e limitações de ambiente |
 | [`release.md`](release.md) | Processo de release |
+| [`linux-validation-plan.md`](linux-validation-plan.md) | Validação completa no Linux (planejada — nunca testado em máquina real) |
 | [`session-log/`](session-log/) | Resumos diários de sessão (handoff entre agentes — template na pasta; validação via `make session-check` + job `session-log` do CI) |

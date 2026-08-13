@@ -538,6 +538,44 @@ func TestRemoveFirewallRule_RemovesAllDuplicateRules(t *testing.T) {
 	}
 }
 
+// TestRemoveFirewallRule_V6UsesICMPv6RejectType: o sweep de um IP IPv6 deve
+// sondar o tipo icmp6-port-unreachable (não o v4) — o nome ICMPv4 é rejeitado
+// pelo ip6tables com backend nft e faria o unblock de um domínio com IPs v6
+// falhar.
+func TestRemoveFirewallRule_V6UsesICMPv6RejectType(t *testing.T) {
+	origExec := execCommandContext
+	defer func() { execCommandContext = origExec }()
+
+	runner := &fakeCmdRunner{successes: 0} // todos os probes no-match
+	execCommandContext = func(_ context.Context, name string, args ...string) cmdRunner {
+		runner.calls = append(runner.calls, append([]string{name}, args...))
+		return runner
+	}
+
+	enf := &linuxEnforcer{}
+	if err := enf.removeFirewallRule("2001:db8::1"); err != nil {
+		t.Fatalf("removeFirewallRule: %v", err)
+	}
+
+	if len(runner.calls) != 3 {
+		t.Fatalf("expected 3 probes (REJECT tcp + REJECT icmp6 + DROP), got %d: %v", len(runner.calls), runner.calls)
+	}
+	for _, call := range runner.calls {
+		if call[0] != "ip6tables" {
+			t.Errorf("v6 remove deve usar ip6tables, got %v", call)
+		}
+	}
+	if !slices.Contains(runner.calls[1], "icmp6-port-unreachable") {
+		t.Errorf("probe 1 deve usar icmp6-port-unreachable, got %v", runner.calls[1])
+	}
+	if slices.Contains(runner.calls[1], "icmp-port-unreachable") {
+		t.Errorf("probe 1 não deve usar o tipo ICMPv4, got %v", runner.calls[1])
+	}
+	if !slices.Contains(runner.calls[2], "DROP") {
+		t.Errorf("probe 2 deve ser o sweep DROP legado, got %v", runner.calls[2])
+	}
+}
+
 // seqResult is one canned outcome for the scripted seqRunner.
 type seqResult struct {
 	out []byte
@@ -1139,6 +1177,15 @@ func TestAddFirewallRulesBatch_MixedFamilies(t *testing.T) {
 	if !strings.Contains(b.stdins[1], "-d 2001:db8::1/128") {
 		t.Errorf("v6 script should use /128 mask:\n%s", b.stdins[1])
 	}
+	// Regressão da Etapa 6 real: o script v6 deve rejeitar com o tipo ICMPv6
+	// (icmp6-port-unreachable) — o nome ICMPv4 é rejeitado pelo backend nft do
+	// ip6tables e quebrava o bloqueio de domínios com IPs IPv6.
+	if !strings.Contains(b.stdins[1], "icmp6-port-unreachable") {
+		t.Errorf("v6 script deve usar icmp6-port-unreachable:\n%s", b.stdins[1])
+	}
+	if strings.Contains(b.stdins[1], "icmp-port-unreachable") {
+		t.Errorf("v6 script não deve conter o tipo ICMPv4 icmp-port-unreachable:\n%s", b.stdins[1])
+	}
 	// Socket kills para ambas as famílias (v4 e v6).
 	for _, ip := range []string{"1.1.1.1", "2001:db8::1"} {
 		found := false
@@ -1151,6 +1198,39 @@ func TestAddFirewallRulesBatch_MixedFamilies(t *testing.T) {
 		if !found {
 			t.Errorf("expected ss -K dst %s socket-kill invocation", ip)
 		}
+	}
+}
+
+// TestBuildRestoreScript_V6UsesICMPv6RejectType: o tipo --reject-with da
+// regra protocol-agnostic depende da família — icmp-port-unreachable (ICMPv4)
+// no v4, icmp6-port-unreachable (ICMPv6) no v6. O backend nft do ip6tables
+// rejeita o nome ICMPv4 ("unknown reject type") — achado da Etapa 6 real no
+// Ubuntu 26.04 (block youtube.com falhava por causa dos IPs IPv6).
+func TestBuildRestoreScript_V6UsesICMPv6RejectType(t *testing.T) {
+	script := buildRestoreScript([]string{"2001:db8::1"}, "/128")
+	if !strings.Contains(script, "-j REJECT --reject-with icmp6-port-unreachable") {
+		t.Errorf("v6 script deve usar icmp6-port-unreachable (o nome ICMPv4 é rejeitado pelo nft):\n%s", script)
+	}
+	if strings.Contains(script, "icmp-port-unreachable") {
+		t.Errorf("v6 script não deve conter o tipo ICMPv4 icmp-port-unreachable:\n%s", script)
+	}
+	if !strings.Contains(script, "-p tcp -j REJECT --reject-with tcp-reset") {
+		t.Errorf("v6 script deve manter a regra TCP tcp-reset:\n%s", script)
+	}
+}
+
+// TestBuildBlockAllScript_V6UsesICMPv6RejectType: o catch-all do modo pânico
+// também usa o tipo ICMPv6 no v6 — mesmo bug de família do buildRestoreScript.
+func TestBuildBlockAllScript_V6UsesICMPv6RejectType(t *testing.T) {
+	script := buildBlockAllScript(nil, "/128")
+	if !strings.Contains(script, "-j REJECT --reject-with icmp6-port-unreachable") {
+		t.Errorf("v6 catch-all deve usar icmp6-port-unreachable:\n%s", script)
+	}
+	if strings.Contains(script, "icmp-port-unreachable") {
+		t.Errorf("v6 catch-all não deve conter o tipo ICMPv4 icmp-port-unreachable:\n%s", script)
+	}
+	if !strings.Contains(script, "-p tcp -j REJECT --reject-with tcp-reset") {
+		t.Errorf("v6 catch-all deve manter a regra TCP tcp-reset:\n%s", script)
 	}
 }
 
@@ -1289,21 +1369,35 @@ func TestSyncLocked_SweepsOrphans(t *testing.T) {
 		t.Fatalf("syncLocked: %v", err)
 	}
 
+	// O sweep do órfão gera 4 invocações -D (1 remoção com sucesso na spec
+	// tcp-reset + 3 probes no-match: tcp esgotada, icmp, DROP legado) — o
+	// comentário do setup já descrevia os 4; a asserção original exigia 1 e
+	// nunca rodou (a suíte Linux nunca foi executada). O que importa: apenas
+	// UMA remoção tem sucesso e ela atinge 3.3.3.3 — nunca o DoH/ativo.
 	var deletes [][]string
-	for _, call := range runner.calls {
+	successful := 0
+	for i, call := range runner.calls {
 		if len(call) > 0 && call[0] == "iptables" && slices.Contains(call, "-D") {
 			deletes = append(deletes, call)
+			if runner.results[i].err == nil {
+				successful++
+			}
 		}
 	}
-	if len(deletes) != 1 {
-		t.Fatalf("expected exactly 1 orphan -D removal, got %d: %v", len(deletes), runner.calls)
+	if len(deletes) != 4 {
+		t.Fatalf("expected 4 -D invocations (1 remoção + 3 probes no-match), got %d: %v", len(deletes), runner.calls)
+	}
+	if successful != 1 {
+		t.Fatalf("expected exactly 1 successful orphan -D removal, got %d: %v", successful, runner.calls)
 	}
 	if !slices.Contains(deletes[0], "3.3.3.3") {
 		t.Errorf("orphan removal should target 3.3.3.3, got %v", deletes[0])
 	}
 	for _, bad := range []string{"8.8.8.8", "1.1.1.1"} {
-		if slices.Contains(deletes[0], bad) {
-			t.Errorf("DoH/active rule %s must not be swept, got %v", bad, deletes[0])
+		for _, d := range deletes {
+			if slices.Contains(d, bad) {
+				t.Errorf("DoH/active rule %s must not be swept, got %v", bad, d)
+			}
 		}
 	}
 }

@@ -423,9 +423,17 @@ func (e *linuxEnforcer) removeFirewallRule(ip string) error {
 		return err
 	}
 
+	// Protocol-agnostic REJECT (cobre UDP/QUIC): o tipo depende da família —
+	// icmp-port-unreachable (ICMPv4) no IPv4, icmp6-port-unreachable (ICMPv6)
+	// no IPv6 (o nome v4 é rejeitado pelo backend nft do ip6tables).
+	rejectType := "icmp-port-unreachable"
+	if parsed := net.ParseIP(ip); parsed != nil && parsed.To4() == nil {
+		rejectType = "icmp6-port-unreachable"
+	}
+
 	specs := [][]string{
 		{"-p", "tcp", "-j", "REJECT", "--reject-with", "tcp-reset"},
-		{"-j", "REJECT", "--reject-with", "icmp-port-unreachable"},
+		{"-j", "REJECT", "--reject-with", rejectType},
 		{"-j", "DROP"},
 	}
 	for _, spec := range specs {

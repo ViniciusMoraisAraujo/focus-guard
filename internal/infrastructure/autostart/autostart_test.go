@@ -1107,8 +1107,11 @@ func TestInstallDir_Windows(t *testing.T) {
 	defer func() { goos = origGoos }()
 
 	t.Setenv("ProgramFiles", `C:\Program Files`)
-	if got := InstallDir(); got != `C:\Program Files\FocusGuard` {
-		t.Errorf("expected C:\\Program Files\\FocusGuard, got %q", got)
+	// A expectativa usa filepath.Join (como a implementação) para rodar em
+	// qualquer plataforma — no Linux o separador é `/`, no Windows `\`.
+	want := filepath.Join(`C:\Program Files`, "FocusGuard")
+	if got := InstallDir(); got != want {
+		t.Errorf("expected %q, got %q", want, got)
 	}
 }
 
@@ -1118,8 +1121,9 @@ func TestInstallDir_FallbackWhenProgramFilesMissing(t *testing.T) {
 	defer func() { goos = origGoos }()
 
 	t.Setenv("ProgramFiles", "")
-	if got := InstallDir(); got != `C:\Program Files\FocusGuard` {
-		t.Errorf("expected fallback C:\\Program Files\\FocusGuard, got %q", got)
+	want := filepath.Join(`C:\Program Files`, "FocusGuard")
+	if got := InstallDir(); got != want {
+		t.Errorf("expected fallback %q, got %q", want, got)
 	}
 }
 
@@ -1218,9 +1222,13 @@ func TestCreateDesktopShortcut_CallsPowerShell(t *testing.T) {
 	defer func() { goos = origGoos }()
 
 	// Simula o daemon instalado ao lado do CLI, para o ícone ser extraído dele.
+	// Caminhos construídos com filepath.Join: a função roda com goos="windows"
+	// mas o separador é o do SO atual, então a comparação precisa casar.
+	exeDir := filepath.Join(`C:\`, "Program Files", "FocusGuard")
+	daemonPath := filepath.Join(exeDir, "focusguard-daemon.exe")
 	origStat := osStat
 	osStat = func(name string) (os.FileInfo, error) {
-		if name == `C:\Program Files\FocusGuard\focusguard-daemon.exe` {
+		if name == daemonPath {
 			return fakeFileInfo{}, nil
 		}
 		return nil, os.ErrNotExist
@@ -1230,7 +1238,7 @@ func TestCreateDesktopShortcut_CallsPowerShell(t *testing.T) {
 	public := t.TempDir()
 	t.Setenv("PUBLIC", public)
 
-	target := `C:\Program Files\FocusGuard\focusguard.exe`
+	target := filepath.Join(exeDir, "focusguard.exe")
 	if err := CreateDesktopShortcut(target); err != nil {
 		t.Fatalf("CreateDesktopShortcut returned error: %v", err)
 	}
@@ -1246,8 +1254,8 @@ func TestCreateDesktopShortcut_CallsPowerShell(t *testing.T) {
 	extractScript := strings.Join(captured[0].args, " ")
 	for _, want := range []string{
 		"ExtractAssociatedIcon",
-		`C:\Program Files\FocusGuard\focusguard-daemon.exe`,
-		`C:\Program Files\FocusGuard\focusguard.ico`,
+		daemonPath,
+		filepath.Join(exeDir, "focusguard.ico"),
 	} {
 		if !strings.Contains(extractScript, want) {
 			t.Errorf("expected %q in extract script, got: %s", want, extractScript)
@@ -1261,7 +1269,7 @@ func TestCreateDesktopShortcut_CallsPowerShell(t *testing.T) {
 		"FocusGuard.lnk",
 		target,
 		filepath.Join(public, "Desktop"),
-		`IconLocation = 'C:\Program Files\FocusGuard\focusguard.ico'`,
+		"IconLocation = '" + filepath.Join(exeDir, "focusguard.ico") + "'",
 		".Save()",
 	} {
 		if !strings.Contains(script, want) {

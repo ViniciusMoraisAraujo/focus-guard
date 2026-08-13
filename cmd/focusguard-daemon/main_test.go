@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1810,21 +1811,38 @@ func TestIsAddrInUse_OtherErrors(t *testing.T) {
 	}
 }
 
+// testProbeEndpoint aponta o transporte IPC do teste para um endpoint próprio
+// (TCP no Windows, unix socket no Linux) e devolve um listener já aberto.
+// Sem isso os testes de singleton tocariam o endpoint IPC real da máquina.
+func testProbeEndpoint(t *testing.T) net.Listener {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		ln, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatalf("listen: %v", err)
+		}
+		orig := ipc.TestDialAddr
+		ipc.TestDialAddr = ln.Addr().String()
+		t.Cleanup(func() { ipc.TestDialAddr = orig })
+		return ln
+	}
+	ln, err := net.Listen("unix", filepath.Join(t.TempDir(), "focusguard-probe.sock"))
+	if err != nil {
+		t.Fatalf("listen unix: %v", err)
+	}
+	orig := ipc.TestSocketPath
+	ipc.TestSocketPath = ln.Addr().String()
+	t.Cleanup(func() { ipc.TestSocketPath = orig })
+	return ln
+}
+
 // TestProbeDaemonAlive_NoDaemon verifies o ping de singleton responde false
 // quando não há ninguém escutando na porta IPC (dial falha).
 func TestProbeDaemonAlive_NoDaemon(t *testing.T) {
-	// Porta livre: reserva um listener, pega o endereço e fecha, para termos um
-	// endereço com quase certeza sem serviço escutando.
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	addr := ln.Addr().String()
+	// Endpoint próprio (TCP no Windows, unix socket no Linux) com o listener
+	// FECHADO — o dial falha e o probe responde false.
+	ln := testProbeEndpoint(t)
 	ln.Close()
-
-	orig := ipc.TestDialAddr
-	ipc.TestDialAddr = addr
-	defer func() { ipc.TestDialAddr = orig }()
 
 	if probeDaemonAlive() {
 		t.Error("probeDaemonAlive deveria ser false sem daemon escutando")
@@ -1834,10 +1852,7 @@ func TestProbeDaemonAlive_NoDaemon(t *testing.T) {
 // TestProbeDaemonAlive_DaemonResponds verifies o ping de singleton responde
 // true quando um servidor IPC real responde na porta.
 func TestProbeDaemonAlive_DaemonResponds(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
+	ln := testProbeEndpoint(t)
 	defer ln.Close()
 
 	// Servidor IPC mínimo: aceita conexões e responde um ping de verdade.
@@ -1855,10 +1870,6 @@ func TestProbeDaemonAlive_DaemonResponds(t *testing.T) {
 			}(conn)
 		}
 	}()
-
-	orig := ipc.TestDialAddr
-	ipc.TestDialAddr = ln.Addr().String()
-	defer func() { ipc.TestDialAddr = orig }()
 
 	if !probeDaemonAlive() {
 		t.Error("probeDaemonAlive deveria ser true com um daemon respondendo")

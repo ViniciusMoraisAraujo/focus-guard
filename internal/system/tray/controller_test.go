@@ -28,14 +28,27 @@ func newMockMenuItem(title, tooltip string) *mockMenuItem {
 	return &mockMenuItem{title: title, tooltip: tooltip, clicked: make(chan struct{}, 10)}
 }
 
+// O menu é populado em goroutines de background do controller (presets,
+// status) enquanto o teste lê — todos os campos mutáveis do mock são
+// protegidos por mutex (o race detector pegaria o padrão sem lock).
 func (m *mockMenuItem) Clicked() <-chan struct{} { return m.clicked }
 func (m *mockMenuItem) AddSubMenuItem(title, tooltip string) MenuItem {
 	child := newMockMenuItem(title, tooltip)
+	m.mu.Lock()
 	m.children = append(m.children, child)
+	m.mu.Unlock()
 	return child
 }
-func (m *mockMenuItem) SetTitle(title string)     { m.title = title }
-func (m *mockMenuItem) SetTooltip(tooltip string) { m.tooltip = tooltip }
+func (m *mockMenuItem) SetTitle(title string) {
+	m.mu.Lock()
+	m.title = title
+	m.mu.Unlock()
+}
+func (m *mockMenuItem) SetTooltip(tooltip string) {
+	m.mu.Lock()
+	m.tooltip = tooltip
+	m.mu.Unlock()
+}
 func (m *mockMenuItem) Enable() {
 	m.mu.Lock()
 	m.disabled = false
@@ -50,6 +63,29 @@ func (m *mockMenuItem) isDisabled() bool {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return m.disabled
+}
+func (m *mockMenuItem) getTitle() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.title
+}
+func (m *mockMenuItem) getTooltip() string {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.tooltip
+}
+func (m *mockMenuItem) childrenCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.children)
+}
+func (m *mockMenuItem) child(i int) *mockMenuItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if i < 0 || i >= len(m.children) {
+		return nil
+	}
+	return m.children[i]
 }
 func (m *mockMenuItem) click() { m.clicked <- struct{}{} }
 
@@ -96,7 +132,9 @@ func (m *mockSystray) SetTooltip(t string) {
 }
 func (m *mockSystray) AddMenuItem(title, tooltip string) MenuItem {
 	item := newMockMenuItem(title, tooltip)
+	m.mu.Lock()
 	m.items = append(m.items, item)
+	m.mu.Unlock()
 	return item
 }
 func (m *mockSystray) AddSeparator() {
@@ -120,6 +158,11 @@ func (m *mockSystray) getTitle() string {
 	defer m.mu.Unlock()
 	return m.title
 }
+func (m *mockSystray) iconCallCount() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.iconCalls
+}
 func (m *mockSystray) separatorCount() int {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -131,8 +174,10 @@ func (m *mockSystray) quitCount() int {
 	return m.quitCalls
 }
 func (m *mockSystray) itemByTitle(title string) *mockMenuItem {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	for _, item := range m.items {
-		if item.title == title {
+		if item.getTitle() == title {
 			return item
 		}
 	}
@@ -204,7 +249,7 @@ func TestController_BuildsMenuAndShowsStatus(t *testing.T) {
 	c := NewController(s, d, nil)
 	c.Run()
 
-	if s.iconCalls == 0 {
+	if s.iconCallCount() == 0 {
 		t.Error("SetIcon nao foi chamado (o icone deve ser definido)")
 	}
 	if s.getTitle() != "FocusGuard" {
@@ -219,8 +264,8 @@ func TestController_BuildsMenuAndShowsStatus(t *testing.T) {
 		t.Errorf("separators = %d, want >= 3", s.separatorCount())
 	}
 	blockParent := s.itemByTitle("🚫 Bloco rápido")
-	if blockParent == nil || len(blockParent.children) != len(quickBlockDomains) {
-		t.Fatalf("bloco rapido deve ter %d domínios, tem %d", len(quickBlockDomains), len(blockParent.children))
+	if blockParent == nil || blockParent.childrenCount() != len(quickBlockDomains) {
+		t.Fatalf("bloco rapido deve ter %d domínios, tem %d", len(quickBlockDomains), blockParent.childrenCount())
 	}
 	if !strings.Contains(s.getTooltip(), "DoH/DoT ATIVA · 7 regras") {
 		t.Errorf("tooltip = %q, want status ATIVA", s.getTooltip())
@@ -261,7 +306,7 @@ func TestController_QuickBlockSendsRequest(t *testing.T) {
 	c.Run()
 
 	blockParent := s.itemByTitle("🚫 Bloco rápido")
-	blockParent.children[0].click()
+	blockParent.child(0).click()
 
 	waitFor(t, func() bool {
 		for _, req := range d.requests() {
@@ -403,7 +448,7 @@ func TestController_BlockFailureShowsDaemonMessage(t *testing.T) {
 	c.Run()
 
 	blockParent := s.itemByTitle("🚫 Bloco rápido")
-	blockParent.children[0].click()
+	blockParent.child(0).click()
 
 	// o tooltip inicial de status ja contem a mensagem do daemon, entao
 	// assertamos o texto acao-especifico para exercitar de fato o blockDomain
@@ -588,9 +633,9 @@ func TestController_PresetSubmenu_BlocksPreset(t *testing.T) {
 		t.Fatal("menu Categorias não criado")
 	}
 	// espera o submenu ser populado em background
-	waitFor(t, func() bool { return len(presetParent.children) == 2 })
+	waitFor(t, func() bool { return presetParent.childrenCount() == 2 })
 
-	presetParent.children[0].click()
+	presetParent.child(0).click()
 
 	waitFor(t, func() bool {
 		for _, req := range d.requests() {

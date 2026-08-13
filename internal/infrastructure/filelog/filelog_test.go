@@ -5,11 +5,15 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
 
 func TestPathFor_NextToExecutable(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("caminho com separador Windows só faz sentido no Windows")
+	}
 	got := PathFor(`C:\Program Files\FocusGuard\focusguard-watchdog.exe`, "focusguard-watchdog.log")
 	want := filepath.Join(`C:\Program Files\FocusGuard`, "focusguard-watchdog.log")
 	if got != want {
