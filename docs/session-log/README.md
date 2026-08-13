@@ -78,5 +78,8 @@ AGENT.md §5).
 
 Ordem cronológica, o mais recente no topo:
 
+- [2026-08-13](2026-08-13.md) — Plano de validação Linux criado + Etapa 0/1
+  no CI (jobs linux-full-suite, race ./..., windows-compile-check) — aguardando
+  execução do CI.
 - [2026-08-12](2026-08-12.md) — Convenção de session-log criada (este
   arquivo é a primeira entrada, exemplo real).

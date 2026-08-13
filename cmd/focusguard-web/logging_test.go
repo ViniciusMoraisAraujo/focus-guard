@@ -10,6 +10,9 @@ import (
 )
 
 func TestLogPathFor_NextToExecutable(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("caminho com separador Windows só faz sentido no Windows")
+	}
 	got := logPathFor(`C:\Program Files\FocusGuard\focusguard-web.exe`)
 	want := filepath.Join(`C:\Program Files\FocusGuard`, logFileName)
 	if got != want {
@@ -73,6 +76,21 @@ func TestFallbackLogPath_WindowsUsesProgramData(t *testing.T) {
 		defer os.Unsetenv("PROGRAMDATA")
 	}
 	want := filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard", logFileName)
+	if got := fallbackLogPath(); got != want {
+		t.Errorf("fallbackLogPath() = %q, want %q", got, want)
+	}
+}
+
+// TestFallbackLogPath_LinuxUsesXDGStateDir é a regressão do risco do
+// linux-validation-plan: o fallback antigo apontava para /var/lib/focusguard
+// (root-only), então o log do web (user-space) sumia de vez no Linux. O
+// fallback agora vive no $HOME do usuário (XDG state dir), sempre gravável.
+func TestFallbackLogPath_LinuxUsesXDGStateDir(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("comportamento específico do Linux")
+	}
+	t.Setenv("XDG_STATE_HOME", "/home/usuario/.local/state")
+	want := filepath.Join("/home/usuario/.local/state", "focusguard", logFileName)
 	if got := fallbackLogPath(); got != want {
 		t.Errorf("fallbackLogPath() = %q, want %q", got, want)
 	}

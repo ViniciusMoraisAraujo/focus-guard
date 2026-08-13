@@ -451,8 +451,13 @@ func (u *Updater) CleanupStale(installDir string) {
 			continue // binário real ou arquivo sem relação — nunca tocar
 		}
 		prefix := name[:idx]
+		// O timestamp da versão vive no NOME (.bak.<20060102150405>), não no
+		// ModTime: backups criados em rajada (um update por binário) nascem
+		// com ModTime idêntico/ambíguo no Linux, e a comparação por stat
+		// escolheria um vencedor não-determinístico. Timestamps de largura
+		// fixa (14 dígitos) ordenam lexicograficamente igual a cronologicamente.
 		if prev, ok := newest[prefix]; ok {
-			if newerFile(path, prev) {
+			if backupTime(name) > backupTime(prev) {
 				_ = os.Remove(prev)
 				newest[prefix] = path
 			} else {
@@ -480,15 +485,15 @@ func (u *Updater) CleanupStale(installDir string) {
 	}
 }
 
-// newerFile reports whether a has a more recent ModTime than b (stat failures
-// resolve to false, so a file that just vanished is treated as not-newer).
-func newerFile(a, b string) bool {
-	ai, aerr := os.Stat(a)
-	bi, berr := os.Stat(b)
-	if aerr != nil || berr != nil {
-		return false
+// backupTime extrai o timestamp de versão do nome de um .bak (<nome>.bak.
+// <20060102150405>). Entradas sem o marcador (binários reais ou artefatos
+// sem relação) devolvem "0", ficando atrás de qualquer backup na comparação.
+func backupTime(name string) string {
+	idx := strings.Index(name, ".bak.")
+	if idx < 0 {
+		return "0"
 	}
-	return ai.ModTime().After(bi.ModTime())
+	return name[idx+len(".bak."):]
 }
 
 // NewVersionDownloadedPath returns the path where the new version binary is expected.

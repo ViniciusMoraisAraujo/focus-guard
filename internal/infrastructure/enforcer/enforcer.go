@@ -254,6 +254,20 @@ const AllBlockMarker = "FOCUSGUARD_ALL"
 // AllowMarker tags the per-IP ACCEPT exceptions of the deep-focus allowlist.
 const AllowMarker = "FOCUSGUARD_ALLOW"
 
+// icmpPortUnreachableType returns the --reject-with type of the
+// protocol-agnostic REJECT for the address family of mask: ICMPv4
+// icmp-port-unreachable on IPv4 (iptables) and ICMPv6 icmp6-port-unreachable
+// on IPv6 (ip6tables). O nome ICMPv4 é rejeitado pelo backend nft do
+// ip6tables ("unknown reject type") — usar o tipo v4 no v6 quebrava o
+// bloqueio de domínios com IPs IPv6 no Ubuntu moderno (achado da Etapa 6
+// real).
+func icmpPortUnreachableType(mask string) string {
+	if mask == "/128" {
+		return "icmp6-port-unreachable"
+	}
+	return "icmp-port-unreachable"
+}
+
 // buildBlockAllScript renders the iptables-restore payload for BlockAll: one
 // ACCEPT per allowlisted IP first (so exceptions are evaluated before the
 // catch-all) and then a catch-all REJECT for the family mask. The catch-all is
@@ -276,7 +290,9 @@ func buildBlockAllScript(allowlistIPs []string, mask string) string {
 	b.WriteString("-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \"")
 	b.WriteString(AllBlockMarker)
 	b.WriteString("\"\n")
-	b.WriteString("-A OUTPUT -j REJECT --reject-with icmp-port-unreachable -m comment --comment \"")
+	b.WriteString("-A OUTPUT -j REJECT --reject-with ")
+	b.WriteString(icmpPortUnreachableType(mask))
+	b.WriteString(" -m comment --comment \"")
 	b.WriteString(AllBlockMarker)
 	b.WriteString("\"\n")
 	b.WriteString("COMMIT\n")
@@ -313,7 +329,9 @@ func buildRestoreScript(ips []string, mask string) string {
 		b.WriteString("-A OUTPUT -d ")
 		b.WriteString(ip)
 		b.WriteString(mask)
-		b.WriteString(" -j REJECT --reject-with icmp-port-unreachable\n")
+		b.WriteString(" -j REJECT --reject-with ")
+		b.WriteString(icmpPortUnreachableType(mask))
+		b.WriteString("\n")
 	}
 	b.WriteString("COMMIT\n")
 	return b.String()

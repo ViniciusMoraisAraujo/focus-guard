@@ -4,7 +4,6 @@ import (
 	"log"
 	"os"
 	"path/filepath"
-	"runtime"
 
 	"focusguard/internal/infrastructure/filelog"
 )
@@ -48,20 +47,12 @@ func logPath() string {
 
 // fallbackLogPath returns a log path writable by the user-space web process
 // when the install directory (next to the executable) is not writable: the
-// shared state dir, the same place the daemon keeps state.json
-// (%PROGRAMDATA%\FocusGuard on Windows, /var/lib/focusguard on Linux).
+// shared user state dir (filelog.UserLogPath — %PROGRAMDATA%\FocusGuard on
+// Windows, XDG state ~/.local/state/focusguard no Linux). No Linux o
+// /var/lib/focusguard do daemon é root-only, então o fallback vive no $HOME
+// do usuário — senão o log do web (user-space) desapareceria de vez.
 func fallbackLogPath() string {
-	if runtime.GOOS == "windows" {
-		pd := os.Getenv("PROGRAMDATA")
-		if pd == "" {
-			pd = `C:\ProgramData`
-		}
-		return filepath.Join(pd, "FocusGuard", logFileName)
-	}
-	if runtime.GOOS == "linux" {
-		return filepath.Join("/var/lib/focusguard", logFileName)
-	}
-	return logFileName
+	return filelog.UserLogPath(logFileName)
 }
 
 // setupLoggingAt redirects the standard logger to path (append mode, with

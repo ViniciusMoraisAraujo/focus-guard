@@ -5,6 +5,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -17,7 +18,15 @@ func TestLogPathFor_LinuxInstallDir(t *testing.T) {
 	}
 }
 
+// TestLogPathFor_WindowsInstallDir exercita o caminho Windows (separador `\`)
+// em qualquer plataforma: o filepath.Dir trata `\` como separador só no
+// Windows, então a expectativa é montada com o separador do SO atual (no
+// Linux um caminho Windows é um nome de arquivo puro — comportamento correto
+// do filepath para a plataforma, coberto pelo TestLogPathFor_LinuxInstallDir).
 func TestLogPathFor_WindowsInstallDir(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("caminho com separador Windows só faz sentido no Windows (ver TestLogPathFor_LinuxInstallDir)")
+	}
 	got := logPathFor(`C:\Program Files\FocusGuard\focusguard-daemon.exe`)
 	want := filepath.Join(`C:\Program Files\FocusGuard`, logFileName)
 	if got != want {

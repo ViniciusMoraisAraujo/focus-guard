@@ -24,12 +24,60 @@ jobs:
       - name: Session-log structure check
         run: bash scripts/check-session-log.sh
 
+  # Etapa 0/1 do docs/linux-validation-plan.md: a suíte COMPLETA nunca rodou
+  # no Linux — o CI só rodava build/vet e -race em 15 pacotes. Este job roda
+  # tudo (go test ./...), incluindo o cmd/focusguard-daemon: no Windows ele
+  # exige shell elevado (manifest requireAdministrator) e por isso nunca
+  # entrou no CI; aqui no Linux não há manifest, então a suíte do daemon roda
+  # normal (os testes que precisam de root fazem Skip via requireRoot).
+  linux-full-suite:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # ./... inclui o internal/system/tray, cgo no Linux — sem os headers o
+      # go build/test falham (mesma dependência que o release.yml instala).
+      - name: Install tray build dependencies (Linux cgo)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libayatana-appindicator3-dev libgtk-3-dev
+
+      - name: Build + vet
+        run: |
+          go build ./...
+          go vet ./...
+
+      # gofmt -l falha se houver arquivo fora do formato canônico. O runner
+      # ubuntu faz checkout com LF (o repositório guarda i/lf), então a
+      # checagem é válida — não é afetada pelo core.autocrlf do Windows local.
+      - name: gofmt
+        run: |
+          unformatted="$(gofmt -l .)"
+          if [ -n "$unformatted" ]; then
+            echo "Arquivos fora do gofmt:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Check Go→TS contract is up to date
+        run: make contract-check
+
+      # A suíte completa, incluindo cmd/focusguard-daemon (que no Windows só
+      # roda em shell elevado). Testes que exigem root (requireRoot) fazem
+      # Skip — o runner roda como usuário não-root.
+      - name: Full test suite
+        run: go test ./... -count=1 -timeout=120s
+
   # Etapa 3 do bug-hunt (docs/bug-hunt-plan.md): o -race não roda no Windows
-  # local (CGO_ENABLED=0) — a verificação de data races vive aqui, no CI Linux,
-  # nos pacotes concorrentes (lifecycle do daemon, event hub, roteador IPC,
-  # pomodoro, schedule, scheduler, processguard e store) + os pacotes novos
-  # das Fases 1–5 (clockguard, tlsca, interceptor, telemetry, devices,
-  # reports, achievements — pendência do docs/verification-plan.md).
+  # local (CGO_ENABLED=0) — a verificação de data races vive aqui, no CI Linux.
+  # Cobre a suíte COMPLETA (docs/linux-validation-plan.md Etapa 0).
   race:
     runs-on: ubuntu-latest
     steps:
@@ -56,28 +104,14 @@ jobs:
           go build ./...
           go vet ./...
 
-      # Plain scalar NÃO: o folding do YAML dobra a \ + newline em "\ " e o
-      # shell escapa o espaço, colando um espaço à frente de cada path
-      # ("malformed import path"). Usar run: | (literal block) preserva os
-      # newlines e a continuação de linha do shell funciona de verdade.
-      - name: Race detector — pacotes concorrentes
-        run: |
-          go test -race -count=1 -timeout=300s \
-            ./internal/system/daemon/ \
-            ./internal/transport/eventhub/ \
-            ./internal/transport/ipc/ \
-            ./internal/domain/pomodoro/ \
-            ./internal/domain/schedule/ \
-            ./internal/domain/scheduler/ \
-            ./internal/infrastructure/processguard/ \
-            ./internal/infrastructure/store/ \
-            ./internal/domain/achievements/ \
-            ./internal/domain/clockguard/ \
-            ./internal/domain/devices/ \
-            ./internal/domain/reports/ \
-            ./internal/domain/telemetry/ \
-            ./internal/infrastructure/interceptor/ \
-            ./internal/infrastructure/tlsca/
+      # -race na suíte COMPLETA (docs/linux-validation-plan.md Etapa 0): antes
+      # cobria só 15 pacotes escolhidos; agora roda tudo, incluindo o pacote
+      # cmd/focusguard-daemon — que no Windows não roda nem local (CGO off) nem
+      # no CI — e os testes de plataforma do Linux (enforcer, tlsca, ipc).
+      # O -race exige cgo (CGO_ENABLED=1 no runner ubuntu) e os headers do
+      # tray instalados no passo acima.
+      - name: Race detector — suíte completa
+        run: go test -race -count=1 -timeout=600s ./...
 
       # Etapa 7 do bug-hunt (docs/bug-hunt-plan.md): o teste de chown do
       # socket (root:focusguard 0660, TestListen_ChownsSocketToFocusGuardGroup)
@@ -94,3 +128,25 @@ jobs:
           echo "$out"
           echo "$out" | grep -q -- '--- PASS: TestListen_ChownsSocketToFocusGuardGroup' \
             || { echo 'chown test não passou (renomeado/skipado?)'; exit 1; }
+
+  # docs/linux-validation-plan.md Etapa 0: mudanças no código Linux nunca
+  # passaram por um check de build Windows no CI (o Windows só era validado na
+  # release). Este job cross-compila a suíte para Windows a partir do Linux —
+  # os rsrc_windows_*.syso são versionados, então o build funciona sem
+  # go-winres. O tray Windows é CGO_ENABLED=0 (como no .goreleaser.yaml).
+  windows-compile-check:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Cross-compile Windows (build + vet)
+        run: |
+          GOOS=windows CGO_ENABLED=0 go build ./...
+          GOOS=windows CGO_ENABLED=0 go vet ./...

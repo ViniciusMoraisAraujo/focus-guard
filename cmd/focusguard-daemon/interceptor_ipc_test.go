@@ -13,6 +13,8 @@ import (
 	"testing"
 	"time"
 
+	"focusguard/internal/domain/blocks"
+	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/scheduler"
 	"focusguard/internal/infrastructure/store"
 	"focusguard/internal/infrastructure/tlsca"
@@ -102,9 +104,29 @@ func TestIntegration_InterceptorSetOn_GeneratesCAAndSignsLeafs(t *testing.T) {
 	ensureCAInstalled = func(ca *tlsca.CA) error { return nil }
 	t.Cleanup(func() { ensureCAInstalled = orig })
 
-	// Server IPC real + a MESMA wiring do composition root (helper
-	// compartilhado registerInterceptorSet — o teste não replica o registro).
+	// Server IPC real + a MESMA wiring do composition root: além do helper
+	// compartilhado registerInterceptorSet, o teste registra o handler real do
+	// bloco (mesmo DomainAction do runDaemon) — sem ele a ação "block" não
+	// existe no server e o teste falharia em qualquer plataforma (no Linux ele
+	// nunca rodou até a suíte completa entrar no CI).
 	srv := ipc.NewServer(sched)
+	presetStore := preset.NewStore(filepath.Join(filepath.Dir(statePath), "presets.json"))
+	hBlock := blocks.New(sched, presetStore)
+	srv.Register(ipc.DomainAction[blocks.BlockInput, blocks.BlockResult]{
+		Name: hBlock.Action(),
+		Decode: func(r *ipc.Request) (*blocks.BlockInput, error) {
+			return &blocks.BlockInput{Domain: r.Domain, Duration: r.Duration, Preset: r.Preset, Extend: r.Extend, Replace: r.Replace}, nil
+		},
+		Validate: hBlock.Validate,
+		Handle:   hBlock.Handle,
+		Encode: func(out *blocks.BlockResult) (*ipc.Response, error) {
+			resp := &ipc.Response{Success: out.Code == "", Message: out.Message, Conflict: out.Conflict, ConflictBlock: out.ConflictBlock}
+			if out.Code != "" {
+				resp.Code = out.Code
+			}
+			return resp, nil
+		},
+	}.Handler())
 	registerInterceptorSet(srv, sched, il.set)
 	go func() {
 		if err := srv.Start(); err != nil {

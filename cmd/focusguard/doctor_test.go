@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -243,8 +244,16 @@ func TestDoctor_StateCorruptedFails(t *testing.T) {
 
 func TestDoctor_ServiceMissingFails(t *testing.T) {
 	env := healthyEnv(t)
-	env.exec = func(_ string, _ ...string) ([]byte, error) {
-		return []byte("exit status 1060"), errFakeUnreachable
+	if runtime.GOOS == "windows" {
+		// Windows: sc query de serviço inexistente → exit 1060.
+		env.exec = func(_ string, _ ...string) ([]byte, error) {
+			return []byte("exit status 1060"), errFakeUnreachable
+		}
+	} else {
+		// Linux: systemctl is-active de unit inexistente → exit 4.
+		env.exec = func(_ string, _ ...string) ([]byte, error) {
+			return []byte("Unit focusguard.service could not be found."), errors.New("exit status 4")
+		}
 	}
 
 	results := runDoctor(env)
