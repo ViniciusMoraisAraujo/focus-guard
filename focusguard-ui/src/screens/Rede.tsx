@@ -3,17 +3,15 @@ import {
   ArrowRight,
   BookOpen,
   Check,
+  Copy,
   EyeOff,
   Laptop,
   Loader2,
-  MonitorCog,
   Network,
   Play,
   Plus,
   Power,
   RefreshCw,
-  Router,
-  SearchCheck,
   ServerCog,
   ShieldBan,
   Trash2,
@@ -41,7 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useData } from "@/context";
+import { useData, type Screen as ScreenId } from "@/context";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -49,7 +47,7 @@ import { cn } from "@/lib/utils";
 // do daemon, o upstream (dns-set-upstream, persistido no state.json) e mostra
 // o estado ao vivo (listening, upstream, consultas, bloqueios e diagnóstico
 // de porta 53).
-export function Rede() {
+export function Rede({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
   const { daemonUp, status, refresh } = useData();
   const [busy, setBusy] = useState<null | "start" | "stop">(null);
   const [upstreamBusy, setUpstreamBusy] = useState<string | null>(null);
@@ -153,57 +151,62 @@ export function Rede() {
       ) : (
         <>
           <Card className={cn(enabled && listening && "ring-emerald-500/30")}>
-            <CardContent className="flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-4">
-                <div
-                  className={cn(
-                    "grid size-12 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
-                    listening && "bg-emerald-500/10 text-emerald-500 ring-emerald-500/30",
-                  )}
-                >
-                  {listening ? <Network className="size-6" /> : <ServerCog className="size-6" />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-heading text-lg font-semibold">
-                      {listening ? "Sinkhole ativo" : enabled ? "Habilitado, mas parado" : "Desativado"}
-                    </h3>
-                    <Badge
-                      variant={listening ? "secondary" : "outline"}
-                      className={cn(listening && "bg-emerald-500/10 text-emerald-500")}
-                    >
-                      {enabled ? "dns ligado" : "dns desligado"}
-                    </Badge>
+            <CardContent className="flex flex-col gap-4 px-5 py-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-4">
+                  <div
+                    className={cn(
+                      "grid size-12 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
+                      listening && "bg-emerald-500/10 text-emerald-500 ring-emerald-500/30",
+                    )}
+                  >
+                    {listening ? <Network className="size-6" /> : <ServerCog className="size-6" />}
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {listening
-                      ? `Ouvindo em ${dns?.dns_addr ?? "—"} (upstream ${activeUpstream ?? "—"})`
-                      : enabled
-                        ? "O servidor não subiu — veja o diagnóstico abaixo."
-                        : "Ligue o sinkhole para proteger a rede inteira."}
-                  </p>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-heading text-lg font-semibold">
+                        {listening ? "Sinkhole ativo" : enabled ? "Habilitado, mas parado" : "Desativado"}
+                      </h3>
+                      <Badge
+                        variant={listening ? "secondary" : "outline"}
+                        className={cn(listening && "bg-emerald-500/10 text-emerald-500")}
+                      >
+                        {enabled ? "dns ligado" : "dns desligado"}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      {listening
+                        ? `Ouvindo em ${dns?.dns_addr ?? "—"} (upstream ${activeUpstream ?? "—"})`
+                        : enabled
+                          ? "O servidor não subiu — veja o diagnóstico abaixo."
+                          : "Ligue o sinkhole para proteger a rede inteira."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 gap-2">
+                  {!enabled && (
+                    <Button
+                      onClick={() => void act("start")}
+                      disabled={busy !== null || upstreamBusy !== null}
+                    >
+                      {busy === "start" ? <Loader2 className="animate-spin" /> : <Play />} Ligar
+                    </Button>
+                  )}
+                  {enabled && (
+                    <Button
+                      variant="destructive"
+                      onClick={() => void act("stop")}
+                      disabled={busy !== null || upstreamBusy !== null}
+                    >
+                      {busy === "stop" ? <Loader2 className="animate-spin" /> : <Power />} Desligar
+                    </Button>
+                  )}
                 </div>
               </div>
 
-              <div className="flex shrink-0 gap-2">
-                {!enabled && (
-                  <Button
-                    onClick={() => void act("start")}
-                    disabled={busy !== null || upstreamBusy !== null}
-                  >
-                    {busy === "start" ? <Loader2 className="animate-spin" /> : <Play />} Ligar
-                  </Button>
-                )}
-                {enabled && (
-                  <Button
-                    variant="destructive"
-                    onClick={() => void act("stop")}
-                    disabled={busy !== null || upstreamBusy !== null}
-                  >
-                    {busy === "stop" ? <Loader2 className="animate-spin" /> : <Power />} Desligar
-                  </Button>
-                )}
-              </div>
+              {/* IP/MAC da máquina — os valores da reserva DHCP do roteador */}
+              <LanInfoStrip ip={dns?.lan_ip} mac={dns?.lan_mac} />
             </CardContent>
           </Card>
 
@@ -326,8 +329,8 @@ export function Rede() {
             </CardContent>
           </Card>
 
-          {/* Manual de configuração: como apontar o sinkhole no sistema e no roteador */}
-          <SinkholeManualCard />
+          {/* Manual de configuração: link para a tela Guia (sistema + roteador por fabricante) */}
+          <GuideCard onNavigate={onNavigate} />
         </>
       )}
     </Screen>
@@ -673,128 +676,93 @@ function UpstreamCard({
   );
 }
 
-// SinkholeManualCard — manual de configuração do DNS sinkhole: como ligar e
-// validar no sistema (Windows) e como apontar o roteador/modem para a máquina
-// (DHCP, failover e o bypass por IPv6 do RDNSS). As seções são colapsáveis
-// (details/summary) para não empurrar o resto da tela.
-function SinkholeManualCard() {
+// LanInfoStrip — IP/MAC da máquina no card principal da Rede: os valores que
+// entram na reserva DHCP do roteador (IP fixo + DNS primário). Best-effort:
+// some quando o daemon ainda não reportou a LAN.
+function LanInfoStrip({ ip, mac }: { ip?: string; mac?: string }) {
+  const copy = async (text: string, label: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(`${label} copiado.`, "ok");
+    } catch {
+      toast("Não foi possível copiar.", "err");
+    }
+  };
+
+  if (!ip) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-3">
+      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Network className="size-3.5 shrink-0" />
+        IP da máquina
+        <code className="rounded bg-muted px-1 font-mono text-foreground">{ip}</code>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Copiar IP"
+          title="Copiar IP"
+          onClick={() => void copy(ip, "IP")}
+        >
+          <Copy className="size-3.5" />
+        </Button>
+      </span>
+      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Laptop className="size-3.5 shrink-0" />
+        MAC
+        <code className="rounded bg-muted px-1 font-mono text-foreground">{mac || "—"}</code>
+        {mac && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Copiar MAC"
+            title="Copiar MAC"
+            onClick={() => void copy(mac, "MAC")}
+          >
+            <Copy className="size-3.5" />
+          </Button>
+        )}
+      </span>
+      <span className="text-xs text-muted-foreground">
+        Use na reserva DHCP do roteador — passo a passo na tela Guia.
+      </span>
+    </div>
+  );
+}
+
+// GuideCard — atalho para o manual completo (tela Guia): sistema Windows,
+// roteador com guias por fabricante e diagnóstico + IP/MAC da máquina (os
+// valores da reserva DHCP, com copiar). Mantém a tela Rede enxuta.
+function GuideCard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
+  const { status } = useData();
   return (
     <Card>
       <CardContent className="flex flex-col gap-3 px-5 py-4">
-        <div className="flex items-center gap-2">
-          <BookOpen className="size-4 text-muted-foreground" />
-          <h3 className="font-heading text-base font-semibold">
-            Manual — como configurar o DNS sinkhole
-          </h3>
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <BookOpen className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <div className="flex flex-col gap-0.5">
+              <h3 className="font-heading text-base font-semibold">
+                Manual de configuração
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Como apontar o sinkhole no sistema e no roteador — com guias
+                por fabricante (ZTE, TP-Link, Huawei…) e diagnóstico.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            className="shrink-0"
+            onClick={() => onNavigate("guia")}
+          >
+            <BookOpen /> Abrir guia completo
+          </Button>
         </div>
 
-        <details className="group text-sm" open>
-          <summary className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
-            <MonitorCog className="size-4 text-muted-foreground" />
-            No sistema (Windows)
-          </summary>
-          <ol className="mt-3 flex list-decimal flex-col gap-2.5 pl-5 text-muted-foreground">
-            <li>
-              <strong className="text-foreground">Ligue o sinkhole</strong> — nesta tela, no
-              botão <strong className="text-foreground">Ligar</strong>. O daemon passa a escutar
-              na porta 53 em IPv4 e IPv6 ({" "}
-              <code className="rounded bg-muted px-1">0.0.0.0:53</code> +{" "}
-              <code className="rounded bg-muted px-1">[::]:53</code>) e{" "}
-              <strong className="text-foreground">abre a porta 53 no firewall automaticamente</strong>{" "}
-              (regras <code className="rounded bg-muted px-1">FocusGuard_DNS_Inbound_UDP/TCP</code>).
-            </li>
-            <li>
-              <strong className="text-foreground">Perfil de rede Privada</strong> —{" "}
-              <code className="rounded bg-muted px-1">ncpa.cpl</code> → botão direito na rede →
-              Propriedades → perfil <strong className="text-foreground">Rede privada</strong>. Em
-              rede <em>Pública</em> o Windows trata a conexão como não confiável e o tráfego de
-              entrada pode ficar bloqueado mesmo com a regra criada.
-            </li>
-            <li>
-              <strong className="text-foreground">Porta 53 livre</strong> — se o daemon não subir
-              (aviso "Porta 53 em uso"), a causa mais comum no Windows é o ICS:{" "}
-              <code className="rounded bg-muted px-1">sc config SharedAccess start= disabled</code>{" "}
-              e <code className="rounded bg-muted px-1">net stop SharedAccess</code> (como
-              Administrador). Confira com{" "}
-              <code className="rounded bg-muted px-1">netstat -ano | findstr :53</code>.
-            </li>
-            <li>
-              <strong className="text-foreground">(Opcional) Políticas por dispositivo</strong> —
-              na seção <em>Dispositivos</em> desta tela, defina regras por IP (bloquear tudo ou
-              allowlist). Sem regra, o dispositivo segue a política global.
-            </li>
-          </ol>
-        </details>
-
-        <details className="group text-sm">
-          <summary className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
-            <Router className="size-4 text-muted-foreground" />
-            No roteador (modem)
-          </summary>
-          <ol className="mt-3 flex list-decimal flex-col gap-2.5 pl-5 text-muted-foreground">
-            <li>
-              <strong className="text-foreground">Fixe o IP do PC no DHCP</strong> — no painel do
-              roteador, reserva de endereço: MAC da máquina → IP fixo (ex.:{" "}
-              <code className="rounded bg-muted px-1">192.168.1.100</code>). Sem reserva, o DHCP
-              pode trocar o IP e o sinkhole some da rede.
-            </li>
-            <li>
-              <strong className="text-foreground">DNS primário do DHCP</strong> → o IP fixo do PC
-              (o FocusGuard).
-            </li>
-            <li>
-              <strong className="text-foreground">DNS secundário</strong> → um resolver público de
-              confiança (ex.: <code className="rounded bg-muted px-1">1.1.1.1</code>) — se o PC
-              cair, a rede continua navegando.
-            </li>
-            <li>
-              <strong className="text-foreground">IPv6: desligue o anúncio de DNS do roteador</strong>{" "}
-              (RDNSS/DHCPv6) ou aponte-o para a máquina. Se o roteador se anunciar como DNS via
-              IPv6 (<code className="rounded bg-muted px-1">fe80::1</code>), celulares e TVs
-              preferem ele e <strong className="text-foreground">burlam o sinkhole</strong>.
-            </li>
-            <li>
-              <strong className="text-foreground">Reconecte os dispositivos</strong> —
-              desconecte e reconecte o Wi-Fi (ou{" "}
-              <code className="rounded bg-muted px-1">ipconfig /renew</code>) para pegarem o novo
-              DNS.
-            </li>
-          </ol>
-        </details>
-
-        <details className="group text-sm">
-          <summary className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
-            <SearchCheck className="size-4 text-muted-foreground" />
-            Testar e diagnosticar
-          </summary>
-          <ul className="mt-3 flex list-disc flex-col gap-2.5 pl-5 text-muted-foreground">
-            <li>
-              Na máquina: <code className="rounded bg-muted px-1">nslookup google.com 127.0.0.1</code>{" "}
-              deve responder com IPs reais.
-            </li>
-            <li>
-              De um celular na rede:{" "}
-              <code className="rounded bg-muted px-1">nslookup google.com &lt;IP-do-PC&gt;</code> →
-              mesma resposta (sinkhole resolvendo a rede).
-            </li>
-            <li>
-              Domínio bloqueado responde <code className="rounded bg-muted px-1">0.0.0.0</code>{" "}
-              (nunca erro) — confirme com um site da sua lista de bloqueio.
-            </li>
-            <li>
-              Celulares sem internet: perfil de rede Público, regra inbound ausente ou roteador
-              sem o DNS apontado (seções acima).
-            </li>
-            <li>
-              Máquina sem IPv6: o sinkhole sobe só em IPv4 (normal) — o status mostra apenas o
-              endereço v4.
-            </li>
-            <li>
-              Quem está usando o sinkhole: os contadores desta tela e a seção{" "}
-              <em>Atividade bloqueada</em> mostram o tráfego ao vivo.
-            </li>
-          </ul>
-        </details>
+        {/* IP/MAC da máquina — os valores da reserva DHCP do roteador */}
+        <LanInfoStrip ip={status?.lan_ip} mac={status?.lan_mac} />
       </CardContent>
     </Card>
   );

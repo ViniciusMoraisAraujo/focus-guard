@@ -1,8 +1,8 @@
-// Testes do manual de configuração do DNS sinkhole na tela Rede: o card
-// "Manual — como configurar o DNS sinkhole" deve cobrir as duas pontas da
-// configuração (sistema Windows e roteador/modem) e o diagnóstico.
+// Testes do card de acesso ao manual do DNS sinkhole na tela Rede: o card
+// compacto deve resumir o guia e levar à tela Guia (manual completo com guias
+// por fabricante).
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { act, cleanup, render } from "@testing-library/react";
+import { act, cleanup, fireEvent, render } from "@testing-library/react";
 import type { ApiResponse } from "@/api/types";
 import { useData } from "@/context";
 import { Rede } from "./Rede";
@@ -31,6 +31,8 @@ function defaultData() {
       dns_enabled: false,
       dns_listening: false,
       dns_upstream: "1.1.1.2:53",
+      lan_ip: "192.168.1.100",
+      lan_mac: "aa:bb:cc:dd:ee:ff",
     } as ApiResponse,
     presets: [],
     stats: null,
@@ -49,45 +51,48 @@ afterEach(() => {
   cleanup();
 });
 
-describe("Rede — manual de configuração do DNS sinkhole", () => {
-  it("renderiza as três seções do manual (sistema, roteador e testes)", async () => {
+describe("Rede — acesso ao manual do DNS sinkhole", () => {
+  it("mostra o card compacto com o botão para o guia completo", async () => {
     let container: HTMLElement | undefined;
     await act(async () => {
-      const r = render(<Rede />);
+      const r = render(<Rede onNavigate={vi.fn()} />);
       container = r.container;
     });
 
     const text = container?.textContent ?? "";
-    expect(text).toContain("Manual — como configurar o DNS sinkhole");
-    expect(text).toContain("No sistema (Windows)");
-    expect(text).toContain("No roteador (modem)");
-    expect(text).toContain("Testar e diagnosticar");
+    expect(text).toContain("Manual de configuração");
+    expect(text).toContain("guias por fabricante");
+    expect(text).toContain("Abrir guia completo");
   });
 
-  it("manual do sistema: firewall automático, perfil Privada e porta 53", async () => {
+  it("mostra o IP e o MAC da máquina ao lado do botão Ligar (reserva DHCP)", async () => {
     let container: HTMLElement | undefined;
     await act(async () => {
-      const r = render(<Rede />);
+      const r = render(<Rede onNavigate={vi.fn()} />);
       container = r.container;
     });
 
     const text = container?.textContent ?? "";
-    expect(text).toContain("abre a porta 53 no firewall automaticamente");
-    expect(text).toContain("Rede privada");
-    expect(text).toContain("net stop SharedAccess");
+    expect(text).toContain("IP da máquina");
+    expect(text).toContain("aa:bb:cc:dd:ee:ff");
+    expect(text).toContain("reserva DHCP");
+    // O IP aparece no card principal E no card compacto do manual (2×).
+    const ips = text.match(/192\.168\.1\.100/g) ?? [];
+    expect(ips.length).toBeGreaterThanOrEqual(2);
   });
 
-  it("manual do roteador: DHCP, failover e o bypass IPv6 (fe80::1)", async () => {
-    let container: HTMLElement | undefined;
+  it("o botão 'Abrir guia completo' navega para a tela Guia", async () => {
+    const onNavigate = vi.fn();
+    let r: ReturnType<typeof render> | undefined;
     await act(async () => {
-      const r = render(<Rede />);
-      container = r.container;
+      r = render(<Rede onNavigate={onNavigate} />);
     });
 
-    const text = container?.textContent ?? "";
-    expect(text).toContain("DNS primário");
-    expect(text).toContain("DNS secundário");
-    expect(text).toContain("fe80::1");
-    expect(text).toContain("192.168.1.100");
+    fireEvent.click(
+      (r as ReturnType<typeof render>).getByRole("button", {
+        name: /Abrir guia completo/i,
+      }),
+    );
+    expect(onNavigate).toHaveBeenCalledWith("guia");
   });
 });

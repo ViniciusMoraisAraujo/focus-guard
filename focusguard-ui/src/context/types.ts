@@ -9,6 +9,7 @@ export type Screen =
   | "presets"
   | "stats"
   | "rede"
+  | "guia"
   | "seguranca"
   | "config";
 
