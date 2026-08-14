@@ -1,0 +1,29 @@
+#!/bin/sh
+# commit-msg — rejeita o rodapé/footer automático de IA em mensagens de commit.
+#
+# Política do repo (AGENT.md §7): as mensagens de commit são de autoria do
+# projeto — nenhum footer automático ("🤖 Generated with ..." /
+# "Co-Authored-By: ...") pode entrar na história.
+#
+# O hook mira os PADRÕES do rodapé (linha "Co-Authored-By: ... Codebuff" ou
+# "Generated with ... Codebuff"), não a palavra solta — descrever a regra numa
+# mensagem é legítimo e passa.
+#
+# Ativação: `make hooks` (ou `git config core.hooksPath .githooks`).
+# O CI não roda hooks — a proteção é local, na máquina de quem commita.
+
+msg_file="$1"
+if [ -z "$msg_file" ] || [ ! -f "$msg_file" ]; then
+    exit 0
+fi
+
+# Os rodapés reais sempre iniciam a linha (ex.: "🤖 Generated with
+# Codebuff" — o emoji é o prefixo não-alfanumérico). Ancorar ao início
+# evita pegar citações em prosa ("rejeita o rodapé 'Generated with ...'").
+if grep -qiE '^(Co-Authored-By:[[:space:]]*[Cc]odebuff|[^[:alnum:]]*Generated with[[:space:]].*[Cc]odebuff)' "$msg_file"; then
+    echo "✘ Commit rejeitado: a mensagem contém o rodapé automático ('Generated with' / 'Co-Authored-By: ... Codebuff')." >&2
+    echo "  Remova o footer antes de commitar — a história não leva assinatura de ferramenta." >&2
+    exit 1
+fi
+
+exit 0

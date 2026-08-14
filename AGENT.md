@@ -393,6 +393,13 @@ Rules:
   `rsrc_windows_*.syso` files, and `versioninfo.json` **are intentionally
   versioned** (`go build` and CI need them): commit them normally alongside
   code.
+- **No tool/agent footers in commit messages.** The history carries no
+  "Generated with ..." / "Co-Authored-By: ..." footer lines — commit
+  messages are the project's own voice. A versioned `commit-msg` hook
+  (`.githooks/commit-msg`, rejects the footer patterns "Generated with ...
+  Codebuff" / "Co-Authored-By: ... Codebuff") enforces this locally:
+  run `make hooks` once per clone (`git config core.hooksPath .githooks`)
+  to activate it.
 - Commit code **with passing tests** (section 5).
 
 ---
