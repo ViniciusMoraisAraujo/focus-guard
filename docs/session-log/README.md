@@ -78,6 +78,9 @@ AGENT.md §5).
 
 Ordem cronológica, o mais recente no topo:
 
+- [2026-08-14](2026-08-14.md) — Sinkhole de rede completo (dual-stack
+  [::]:53, firewall inbound, flush de cache, logs, recovery ~1s), manual na
+  UI e release v0.19.0 tagada localmente (push pendente).
 - [2026-08-13](2026-08-13.md) — Plano de validação Linux criado + Etapa 0/1
   no CI (jobs linux-full-suite, race ./..., windows-compile-check) — aguardando
   execução do CI.
