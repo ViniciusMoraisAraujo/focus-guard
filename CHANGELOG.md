@@ -7,6 +7,8 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Unreleased]
 
+## [0.19.0] - 2026-08-14
+
 ### 🧪 Testes
 
 - **Validação automática do session-log** — a convenção de handoff diário
