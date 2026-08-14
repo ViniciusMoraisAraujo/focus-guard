@@ -1,15 +1,19 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ArrowRight,
+  BookOpen,
   Check,
   EyeOff,
   Laptop,
   Loader2,
+  MonitorCog,
   Network,
   Play,
   Plus,
   Power,
   RefreshCw,
+  Router,
+  SearchCheck,
   ServerCog,
   ShieldBan,
   Trash2,
@@ -322,29 +326,8 @@ export function Rede() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardContent className="flex flex-col gap-3 px-5 py-4">
-              <h3 className="font-heading text-sm font-semibold text-muted-foreground">
-                Configuração "Rei da Rede" no roteador
-              </h3>
-              <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm text-muted-foreground">
-                <li>
-                  Fixe o IP do PC que roda o FocusGuard no DHCP do roteador
-                  (ex.: <code className="rounded bg-muted px-1">192.168.1.100</code>).
-                </li>
-                <li>
-                  Aponte o <strong className="text-foreground">DNS primário</strong> do DHCP para
-                  o IP do PC.
-                </li>
-                <li>
-                  Configure um DNS público de confiança (ex.:{" "}
-                  <code className="rounded bg-muted px-1">1.1.1.1</code>) como{" "}
-                  <strong className="text-foreground">DNS secundário</strong> — se o PC cair, a
-                  rede continua navegando.
-                </li>
-              </ol>
-            </CardContent>
-          </Card>
+          {/* Manual de configuração: como apontar o sinkhole no sistema e no roteador */}
+          <SinkholeManualCard />
         </>
       )}
     </Screen>
@@ -685,6 +668,133 @@ function UpstreamCard({
             Aplicar
           </Button>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// SinkholeManualCard — manual de configuração do DNS sinkhole: como ligar e
+// validar no sistema (Windows) e como apontar o roteador/modem para a máquina
+// (DHCP, failover e o bypass por IPv6 do RDNSS). As seções são colapsáveis
+// (details/summary) para não empurrar o resto da tela.
+function SinkholeManualCard() {
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3 px-5 py-4">
+        <div className="flex items-center gap-2">
+          <BookOpen className="size-4 text-muted-foreground" />
+          <h3 className="font-heading text-base font-semibold">
+            Manual — como configurar o DNS sinkhole
+          </h3>
+        </div>
+
+        <details className="group text-sm" open>
+          <summary className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
+            <MonitorCog className="size-4 text-muted-foreground" />
+            No sistema (Windows)
+          </summary>
+          <ol className="mt-3 flex list-decimal flex-col gap-2.5 pl-5 text-muted-foreground">
+            <li>
+              <strong className="text-foreground">Ligue o sinkhole</strong> — nesta tela, no
+              botão <strong className="text-foreground">Ligar</strong>. O daemon passa a escutar
+              na porta 53 em IPv4 e IPv6 ({" "}
+              <code className="rounded bg-muted px-1">0.0.0.0:53</code> +{" "}
+              <code className="rounded bg-muted px-1">[::]:53</code>) e{" "}
+              <strong className="text-foreground">abre a porta 53 no firewall automaticamente</strong>{" "}
+              (regras <code className="rounded bg-muted px-1">FocusGuard_DNS_Inbound_UDP/TCP</code>).
+            </li>
+            <li>
+              <strong className="text-foreground">Perfil de rede Privada</strong> —{" "}
+              <code className="rounded bg-muted px-1">ncpa.cpl</code> → botão direito na rede →
+              Propriedades → perfil <strong className="text-foreground">Rede privada</strong>. Em
+              rede <em>Pública</em> o Windows trata a conexão como não confiável e o tráfego de
+              entrada pode ficar bloqueado mesmo com a regra criada.
+            </li>
+            <li>
+              <strong className="text-foreground">Porta 53 livre</strong> — se o daemon não subir
+              (aviso "Porta 53 em uso"), a causa mais comum no Windows é o ICS:{" "}
+              <code className="rounded bg-muted px-1">sc config SharedAccess start= disabled</code>{" "}
+              e <code className="rounded bg-muted px-1">net stop SharedAccess</code> (como
+              Administrador). Confira com{" "}
+              <code className="rounded bg-muted px-1">netstat -ano | findstr :53</code>.
+            </li>
+            <li>
+              <strong className="text-foreground">(Opcional) Políticas por dispositivo</strong> —
+              na seção <em>Dispositivos</em> desta tela, defina regras por IP (bloquear tudo ou
+              allowlist). Sem regra, o dispositivo segue a política global.
+            </li>
+          </ol>
+        </details>
+
+        <details className="group text-sm">
+          <summary className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
+            <Router className="size-4 text-muted-foreground" />
+            No roteador (modem)
+          </summary>
+          <ol className="mt-3 flex list-decimal flex-col gap-2.5 pl-5 text-muted-foreground">
+            <li>
+              <strong className="text-foreground">Fixe o IP do PC no DHCP</strong> — no painel do
+              roteador, reserva de endereço: MAC da máquina → IP fixo (ex.:{" "}
+              <code className="rounded bg-muted px-1">192.168.1.100</code>). Sem reserva, o DHCP
+              pode trocar o IP e o sinkhole some da rede.
+            </li>
+            <li>
+              <strong className="text-foreground">DNS primário do DHCP</strong> → o IP fixo do PC
+              (o FocusGuard).
+            </li>
+            <li>
+              <strong className="text-foreground">DNS secundário</strong> → um resolver público de
+              confiança (ex.: <code className="rounded bg-muted px-1">1.1.1.1</code>) — se o PC
+              cair, a rede continua navegando.
+            </li>
+            <li>
+              <strong className="text-foreground">IPv6: desligue o anúncio de DNS do roteador</strong>{" "}
+              (RDNSS/DHCPv6) ou aponte-o para a máquina. Se o roteador se anunciar como DNS via
+              IPv6 (<code className="rounded bg-muted px-1">fe80::1</code>), celulares e TVs
+              preferem ele e <strong className="text-foreground">burlam o sinkhole</strong>.
+            </li>
+            <li>
+              <strong className="text-foreground">Reconecte os dispositivos</strong> —
+              desconecte e reconecte o Wi-Fi (ou{" "}
+              <code className="rounded bg-muted px-1">ipconfig /renew</code>) para pegarem o novo
+              DNS.
+            </li>
+          </ol>
+        </details>
+
+        <details className="group text-sm">
+          <summary className="flex cursor-pointer items-center gap-2 font-medium text-foreground">
+            <SearchCheck className="size-4 text-muted-foreground" />
+            Testar e diagnosticar
+          </summary>
+          <ul className="mt-3 flex list-disc flex-col gap-2.5 pl-5 text-muted-foreground">
+            <li>
+              Na máquina: <code className="rounded bg-muted px-1">nslookup google.com 127.0.0.1</code>{" "}
+              deve responder com IPs reais.
+            </li>
+            <li>
+              De um celular na rede:{" "}
+              <code className="rounded bg-muted px-1">nslookup google.com &lt;IP-do-PC&gt;</code> →
+              mesma resposta (sinkhole resolvendo a rede).
+            </li>
+            <li>
+              Domínio bloqueado responde <code className="rounded bg-muted px-1">0.0.0.0</code>{" "}
+              (nunca erro) — confirme com um site da sua lista de bloqueio.
+            </li>
+            <li>
+              Celulares sem internet: perfil de rede Público, regra inbound ausente ou roteador
+              sem o DNS apontado (seções acima).
+            </li>
+            <li>
+              Máquina sem IPv6: o sinkhole sobe só em IPv4 (normal) — o status mostra apenas o
+              endereço v4.
+            </li>
+            <li>
+              Quem está usando o sinkhole: os contadores desta tela e a seção{" "}
+              <em>Atividade bloqueada</em> mostram o tráfego ao vivo.
+            </li>
+          </ul>
+        </details>
       </CardContent>
     </Card>
   );
