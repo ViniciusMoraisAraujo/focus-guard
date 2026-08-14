@@ -5,7 +5,36 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
-## [Unreleased]
+## [0.20.0] - 2026-08-14
+
+### ✨ Novas funcionalidades
+
+- **Tela Guia — manual de configuração do DNS sinkhole em espaço dedicado**
+  (`focusguard-ui`): o manual que vivia colapsado no card da tela Rede virou
+  uma tela própria (item "Guia" na navegação), com os passos no sistema
+  (Windows), os passos genéricos de roteador e **guias passo a passo por
+  fabricante** (abas ZTE, TP-Link, Huawei, Intelbras, D-Link, Asus e "Outro"
+  — com o caminho de menu de reserva DHCP, DNS e IPv6/RDNSS de cada painel
+  e o link para o manual/emulador oficial do fabricante, abrindo em nova
+  aba). A tela Rede agora mostra um card compacto "Abrir guia completo" que
+  navega para o Guia.
+- **Screenshots dos painéis no Guia** — cada aba de fabricante mostra uma
+  captura de tela do painel (`public/manuais/{id}.png`, com legenda, `alt` e
+  área de rolagem `max-h` em telas menores); sem o arquivo, um placeholder
+  com a instrução de onde salvá-lo aparece no lugar (nunca quebra a aba).
+  **5 de 6 fabricantes já têm capturas reais** de documentação oficial
+  (TP-Link FAQ DNS, ASUS FAQ LAN>DHCP, manual web Intelbras, guia ZTE da
+  operadora e painel Huawei EchoLife) — fontes documentadas no README da
+  pasta; a aba D-Link segue no placeholder (captura oficial indisponível em
+  fonte viva).
+- **Card "IP e MAC desta máquina" no Guia + faixa no card da tela Rede** — o
+  status do daemon agora expõe o IP e o MAC da máquina na LAN
+  (`lan_ip`/`lan_mac`, novos campos do contrato IPC preenchidos pela ação
+  `status` via `internal/transport/ipc`). O Guia os mostra no topo com botão
+  de copiar, e a tela Rede exibe a faixa IP/MAC (com copiar) no card
+  principal, ao lado do botão Ligar, e também no card compacto do manual
+  ("Abrir guia completo") — os valores exatos da reserva DHCP do roteador,
+  sem o usuário precisar abrir o `ipconfig`.
 
 ## [0.19.0] - 2026-08-14
 
