@@ -230,6 +230,8 @@ export interface ApiResponse {
   dns_queries?: number;
   dns_blocked?: number;
   dns_bind_error?: string;
+  lan_ip?: string; // LanIP/LanMAC report the machine's own IPv4 and MAC on the LAN
+  lan_mac?: string;
   telemetry_entries?: TelemetryEntry[]; // Telemetry reports the DNS sinkhole's blocked-query activity
   telemetry_summary?: TelemetrySummary[];
   telemetry_total?: number;

@@ -57,5 +57,8 @@ func (s *Server) handleStatus(_ context.Context, _ *Request) (*Response, error) 
 	// Focus Interceptor Page (Fase 3): flag persistido para a tela
 	// Configurações ligar/desligar a página de bloqueio.
 	resp.InterceptorEnabled = s.scheduler.InterceptorEnabled()
+	// IP/MAC da máquina na LAN (Guia): os valores da reserva DHCP do roteador.
+	// Best-effort — vazio sem rota default.
+	resp.LanIP, resp.LanMAC = lanInfo()
 	return resp, nil
 }

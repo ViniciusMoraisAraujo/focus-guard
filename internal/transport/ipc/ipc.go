@@ -205,6 +205,11 @@ type Response struct {
 	DNSQueries   uint64 `json:"dns_queries,omitempty"`
 	DNSBlocked   uint64 `json:"dns_blocked,omitempty"`
 	DNSBindError string `json:"dns_bind_error,omitempty"`
+	// LanIP/LanMAC report the machine's own IPv4 and MAC on the LAN
+	// (status) — the values the user enters in the router's DHCP reservation
+	// for the sinkhole. Best-effort: empty without a default route.
+	LanIP  string `json:"lan_ip,omitempty"`
+	LanMAC string `json:"lan_mac,omitempty"`
 	// Telemetry reports the DNS sinkhole's blocked-query activity
 	// (dns-telemetry): recent entries, the aggregate summary per domain and
 	// the total count. Additive — old clients ignore it.
