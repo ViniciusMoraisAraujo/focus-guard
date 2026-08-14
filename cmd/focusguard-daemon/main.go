@@ -478,6 +478,39 @@ func localIP4() string {
 	return strings.Split(conn.LocalAddr().String(), ":")[0]
 }
 
+// dnsPortOpener é a capacidade opcional do enforcer de abrir a porta 53
+// (inbound) no firewall — implementada pelo enforcer Windows; no Linux é no-op
+// e plataformas sem a capacidade simplesmente não abrem nada. O type-assert
+// local evita adicionar o método à interface Enforcer (e quebrar os fakes de
+// teste do scheduler/ipc/hostswatch).
+type dnsPortOpener interface {
+	AllowDNSInbound() error
+}
+
+// dnsCacheFlusher é a capacidade opcional do enforcer de limpar o cache DNS do
+// SO (ipconfig /flushdns no Windows; no-op no Linux).
+type dnsCacheFlusher interface {
+	FlushDNSCache() error
+}
+
+// setupDNSHostMachine prepara a máquina hospedeira para ser o servidor DNS da
+// rede ("Plug & Play" — o usuário só configura o IP no roteador): abre a porta
+// 53 para conexões de ENTRADA (UDP/TCP) e limpa o cache DNS local para a
+// máquina começar a resolver pelo sinkhole. Best-effort: falha loga e não
+// derruba o daemon. Idempotente.
+func setupDNSHostMachine(enf enforcer.Enforcer) {
+	if opener, ok := enf.(dnsPortOpener); ok {
+		if err := opener.AllowDNSInbound(); err != nil {
+			log.Printf("[FocusGuard Daemon] Falha ao abrir a porta 53 no firewall (inbound): %v", err)
+		}
+	}
+	if flusher, ok := enf.(dnsCacheFlusher); ok {
+		if err := flusher.FlushDNSCache(); err != nil {
+			log.Printf("[FocusGuard Daemon] Falha ao limpar o cache DNS: %v", err)
+		}
+	}
+}
+
 // interceptorLifecycle é o estado do listener HTTP(S) da Interceptor Page
 // (Fase 3): os servers (best-effort — porta 80/443 ocupada não derruba o
 // daemon) e o IP respondido pelo DNS quando ativo. O daemon os sobe no boot
@@ -1105,7 +1138,12 @@ func runDaemon() bool {
 		if err := dnsSrv.Start(); err != nil {
 			log.Printf("[FocusGuard Daemon] DNS habilitado, mas não subiu: %v", err)
 		} else {
-			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsserver.DefaultBindAddr, dnsUpstream)
+			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsSrv.Addr(), dnsUpstream)
+			// Sinkhole de rede ("Plug & Play"): abre a porta 53 inbound no
+			// firewall e limpa o cache DNS local, para os dispositivos da LAN
+			// alcançarem o servidor e a máquina resolver pelo sinkhole
+			// (best-effort).
+			setupDNSHostMachine(enf)
 		}
 	}
 	components = append(components, daemon.StopOnly(func() { _ = dnsSrv.Stop() }))
@@ -1309,7 +1347,13 @@ func runDaemon() bool {
 		},
 	}.Handler())
 	// dns via ipc.DomainAction (DIP — pós-reorg item 2).
-	hDNSStart := dns.NewStart(dnsSrv, sched, dohHook)
+	// dns-start também prepara a máquina hospedeira (porta 53 inbound no
+	// firewall + flush do cache DNS) para os dispositivos da rede alcançarem o
+	// sinkhole — além do hook DoH existente.
+	hDNSStart := dns.NewStart(dnsSrv, sched, func() {
+		dohHook()
+		setupDNSHostMachine(enf)
+	})
 	server.Register(ipc.DomainAction[dns.NoInput, dns.StartResult]{
 		Name:   hDNSStart.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),

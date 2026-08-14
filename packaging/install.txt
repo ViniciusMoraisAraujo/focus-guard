@@ -123,7 +123,8 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
    - Linux:   unit systemd habilitada (inicia no boot) e INICIADA
               na instalação, com Restart=always.
    - Windows: serviço SCM "FocusGuard" com start=auto, INICIADO na
-              instalação e recovery restart/5000/10000/30000.
+              instalação e recovery restart/1000 (ressuscita o DNS da
+              rede em ~1s se o processo fechar — spec §5).
 
  Dica: o "focusguard status" responde a qualquer momento enquanto
  o daemon estiver online; se não responder, verifique o serviço

@@ -49,6 +49,19 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   **"Bloqueio preventivo do relógio"** (clock guard) de "Modo pânico"
   (intencional do usuário).
 
+### ✨ Novas funcionalidades (UI)
+
+- **Manual de configuração do DNS sinkhole na tela Rede** — card
+  "Manual — como configurar o DNS sinkhole" com três seções colapsáveis:
+  **No sistema (Windows)** (ligar o sinkhole, firewall automático da porta
+  53, perfil de rede Privada, porta 53 ocupada/ICS, políticas por
+  dispositivo), **No roteador (modem)** (IP fixo no DHCP, DNS primário →
+  PC, DNS secundário público de failover, desligar/apontar o anúncio de DNS
+  IPv6 — RDNSS/`fe80::1` — para não burlar o sinkhole, reconectar os
+  dispositivos) e **Testar e diagnosticar** (`nslookup`, domínio bloqueado →
+  `0.0.0.0`, máquina sem IPv6, quem está usando o sinkhole). TDD nos 3
+  testes da tela.
+
 ### 🐛 Correções
 
 - **Página de bloqueio: tempo restante só em minutos** — o interceptor
@@ -91,6 +104,52 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
   persistida também não gera mais a âncora — "nada a remover"), e um helper
   com diretório injetável garante por teste que shell não elevado nunca cria
   os artefatos (TDD).
+- **DNS sinkhole escuta em IPv4 **e** IPv6** — além do `0.0.0.0:53` (já
+  existente), o daemon abre o par `[::]:53` (UDP/TCP) para clientes da rede
+  que preferem IPv6. Os dois wildcards coexistem via `IPV6_V6ONLY` no socket
+  v6 (no Linux o default dual-stack causaria EADDRINUSE), e cada família é
+  best-effort: máquina sem IPv6 sobe só em v4, sem erro. O `dns-status`
+  reporta os dois endereços (TDD em `server_test.go`).
+- **Firewall inbound da porta 53 (Windows)** — dispositivos da LAN recebiam
+  timeout ao usar o sinkhole porque o Windows Firewall bloqueia tráfego de
+  entrada por padrão. O daemon agora abre `FocusGuard_DNS_Inbound_UDP/TCP`
+  (`dir=in action=allow localport=53`) automaticamente ao ligar o sinkhole
+  (boot ou `dns-start`), idempotente e mantido no `dns-stop` de propósito
+  (um dispositivo que ainda aponta para a máquina não pode perder o DNS
+  silenciosamente) — TDD nos args e na idempotência do `AllowDNSInbound`.
+- **"Plug & Play" do sinkhole: flush do cache DNS ao subir** — além das
+  regras inbound, o daemon agora executa `ipconfig /flushdns` na máquina
+  hospedeira quando o sinkhole sobe (boot ou `dns-start`), para a máquina
+  começar a resolver pelo servidor local sem o usuário abrir o PowerShell
+  (`setupDNSHostMachine`: `AllowDNSInbound` + `FlushDNSCache`; o flush por
+  novo bloqueio/pomodoro já existia no enforcer) — TDD no método exportado
+  e no wiring.
+- **Ressuscitação do daemon em ~1s (Fase 4 do spec DNS)** — como o daemon é
+  o DNS da rede, uma queda do processo derruba a internet da casa: o
+  recovery do SCM passou de `restart/5000/10000/30000` para
+  `restart/1000/restart/1000/restart/1000` (Windows, em `install-daemon.ps1`,
+  `wix.json`/`wix-server.json` e `internal/autostart`) e o systemd de
+  `RestartSec=3` para `RestartSec=1` (`focusguard.service` e autostart),
+  mantendo o `WatchdogSec=30`/watchdog IPC para o caso de freeze (processo
+  vivo mas travado). O panic recovery por query do sinkhole já existia
+  (`recoverPanic` em `handleDNSRequest`).
+- **Docs: bypass por IPv6 (`fe80::1`) documentado** — o roteador se anuncia
+  como DNS via RDNSS/DHCPv6; o README da edição Server agora orienta a
+  desligar o anúncio de DNS IPv6 ou apontá-lo para a máquina (config de
+  roteador, não de código).
+- **Sinkhole agora registra todos os erros no log do daemon** — falha ao
+  encaminhar ao upstream (domínio + IP do cliente + upstream + erro, antes
+  virava SERVFAIL mudo), fallback TCP de resposta truncada, requisições não
+  convencionais (opcode/contagem de questions), falha de escrita ao cliente
+  (inclusive durante restart do listener), bind falho no `dns-start`/troca
+  de upstream e erros de close no Stop — tudo com o prefixo
+  `[FocusGuard DNS]` para rastreio de timeout na rede.
+- **Log periódico de contadores do sinkhole** — a cada minuto, quando há
+  tráfego, o daemon registra as queries/bloqueadas do intervalo e os totais
+  acumulados (`[FocusGuard DNS] atividade no intervalo: N queries (B
+  bloqueadas) · total ...`), para verificar ao vivo se os dispositivos da
+  rede estão usando o servidor; servidor ocioso permanece silencioso (TDD
+  com intervalo reduzido).
 
 ## [0.18.1] - 2026-08-11
 

@@ -1,9 +1,13 @@
 package dnsserver
 
 import (
+	"bytes"
+	"errors"
+	"log"
 	"net"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -438,4 +442,166 @@ func TestPanicInCheckerDoesNotKillServer(t *testing.T) {
 	if resp2.Rcode != dns.RcodeSuccess || len(resp2.Answer) != 1 {
 		t.Errorf("servidor não sobreviveu ao panic: rcode=%s answer=%d", dns.RcodeToString[resp2.Rcode], len(resp2.Answer))
 	}
+}
+
+// supportsIPv6 reports whether the host has a usable IPv6 loopback, so the
+// dual-stack tests skip on machines with IPv6 disabled instead of failing.
+func supportsIPv6(t *testing.T) bool {
+	t.Helper()
+	pc, err := net.ListenPacket("udp", "[::1]:0")
+	if err != nil {
+		return false
+	}
+	_ = pc.Close()
+	return true
+}
+
+// v6LoopbackAddr extracts the bound IPv6 wildcard address from an Addr()
+// payload ("0.0.0.0:P, [::]:Q") rewritten to the loopback host, so queries
+// can target the v6 listener concretely.
+func v6LoopbackAddr(bound string) string {
+	for _, a := range strings.Split(bound, ", ") {
+		host, port, err := net.SplitHostPort(a)
+		if err == nil && host == "::" {
+			return net.JoinHostPort("::1", port)
+		}
+	}
+	return ""
+}
+
+// TestStartDualStackBind: o bind wildcard padrão (0.0.0.0) abre também o par
+// IPv6 ([::]) na mesma porta e o handler compartilhado responde queries
+// vindas por IPv6 (clientes da rede que preferem v6 alcançam o sinkhole).
+func TestStartDualStackBind(t *testing.T) {
+	if !supportsIPv6(t) {
+		t.Skip("IPv6 indisponível neste host")
+	}
+
+	s := New(newFakeChecker("youtube.com"), "127.0.0.1:9")
+	if err := s.Start("0.0.0.0:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	addr := s.Addr()
+	entries := strings.Split(addr, ", ")
+	if len(entries) != 2 {
+		t.Fatalf("Addr() = %q, esperava dois listeners (IPv4 + IPv6)", addr)
+	}
+	// Query via loopback IPv6: o sinkhole responde com endereço morto. Em
+	// plataformas onde o listener v4 reporta [::] (Windows dual-stack), o
+	// primeiro [::] funciona; no Linux o v6 é o segundo entry (V6ONLY).
+	v6 := v6LoopbackAddr(addr)
+	if v6 == "" {
+		t.Fatalf("Addr() = %q, esperava listener IPv6 ([::]:porta)", addr)
+	}
+	resp := doQuery(t, v6, "udp", "youtube.com", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess || len(resp.Answer) != 1 {
+		t.Fatalf("query v6: rcode=%s answer=%d, want success/1", dns.RcodeToString[resp.Rcode], len(resp.Answer))
+	}
+	a, ok := resp.Answer[0].(*dns.A)
+	if !ok || !a.A.Equal(net.IPv4zero) {
+		t.Errorf("A = %v, want 0.0.0.0 (sinkhole via IPv6)", a.A)
+	}
+}
+
+// TestStart_BestEffortFamilyFailure: uma família que não bindar (aqui o IPv6,
+// simulando máquina com IPv6 desabilitado) não derruba o servidor — ele serve
+// na família que sobreviveu e o Addr reflete apenas ela.
+func TestStart_BestEffortFamilyFailure(t *testing.T) {
+	orig := listenConfigForAddr
+	listenConfigForAddr = func(addr string) *net.ListenConfig {
+		if strings.HasPrefix(addr, "[") {
+			return &net.ListenConfig{Control: func(_, _ string, _ syscall.RawConn) error {
+				return errors.New("IPv6 indisponível (simulado)")
+			}}
+		}
+		return nil
+	}
+	t.Cleanup(func() { listenConfigForAddr = orig })
+
+	s := New(newFakeChecker("youtube.com"), "127.0.0.1:9")
+	if err := s.Start("0.0.0.0:0"); err != nil {
+		t.Fatalf("Start deveria servir com uma família: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	if entries := strings.Split(s.Addr(), ", "); len(entries) != 1 {
+		t.Errorf("Addr() = %q, esperava apenas a família que bindou", s.Addr())
+	}
+	// O servidor continua respondendo na família que bindou.
+	resp := doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+	if resp.Rcode != dns.RcodeSuccess {
+		t.Errorf("servidor não respondeu após falha de uma família: rcode=%s", dns.RcodeToString[resp.Rcode])
+	}
+}
+
+// lockedBuffer é um bytes.Buffer seguro para escrita concorrente (o statsLoop
+// loga via log.SetOutput de outra goroutine) e leitura no teste — sem mutex,
+// o -race acusa a race entre o Write do log e o String() do polling.
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
+}
+
+// TestStatsLoopLogsActivity: o loop periódico de contadores loga a atividade
+// do sinkhole (queries/bloqueadas do intervalo) quando há tráfego.
+func TestStatsLoopLogsActivity(t *testing.T) {
+	orig := statsInterval
+	statsInterval = 50 * time.Millisecond
+	defer func() { statsInterval = orig }()
+
+	buf := &lockedBuffer{}
+	origWriter := log.Writer()
+	origFlags := log.Flags()
+	log.SetOutput(buf)
+	log.SetFlags(0)
+	defer func() {
+		log.SetOutput(origWriter)
+		log.SetFlags(origFlags)
+	}()
+
+	s := startSUT(t, newFakeChecker("youtube.com"), "127.0.0.1:9")
+	_ = doQuery(t, s.Addr(), "udp", "youtube.com", dns.TypeA)
+
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		if strings.Contains(buf.String(), "atividade no intervalo") {
+			break
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	if got := buf.String(); !strings.Contains(got, "atividade no intervalo") {
+		t.Fatalf("log periódico de contadores não apareceu; output: %q", got)
+	}
+}
+
+// TestStart_BothFamiliesFail: quando nenhuma família binda, o Start reporta
+// erro (e o bindHint segue aplicável) em vez de reportar sucesso.
+func TestStart_BothFamiliesFail(t *testing.T) {
+	orig := listenConfigForAddr
+	listenConfigForAddr = func(addr string) *net.ListenConfig {
+		return &net.ListenConfig{Control: func(_, _ string, _ syscall.RawConn) error {
+			return errors.New("bind simulado: porta em uso")
+		}}
+	}
+	t.Cleanup(func() { listenConfigForAddr = orig })
+
+	s := New(newFakeChecker("youtube.com"), "127.0.0.1:9")
+	if err := s.Start("0.0.0.0:0"); err == nil {
+		t.Fatal("Start deveria falhar quando as duas famílias falham")
+	}
+	t.Cleanup(func() { _ = s.Stop() })
 }

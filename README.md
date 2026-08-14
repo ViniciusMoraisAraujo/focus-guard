@@ -172,7 +172,15 @@ ficam protegidos — celular, TV, console. Ative pela tela **Rede** do painel.
 
 **No roteador:** ① reserve um IP fixo para o PC do FocusGuard; ② aponte o DNS
 primário do DHCP para esse IP; ③ deixe um DNS público (ex: `1.1.1.1`) como
-secundário, para a rede seguir navegando se o PC cair.
+secundário, para a rede seguir navegando se o PC cair; ④ **desligue o anúncio
+de DNS IPv6 (RDNSS/DHCPv6) ou aponte-o para a máquina** — senão celulares e
+TVs preferem o roteador (`fe80::1`) via IPv6 e burlam o sinkhole.
+
+**Firewall e rede:** o daemon escuta a porta 53 em IPv4 **e** IPv6
+(`0.0.0.0:53` + `[::]:53`) e abre as regras de entrada no firewall do Windows
+(`FocusGuard_DNS_Inbound_UDP/TCP`) automaticamente ao ligar o sinkhole — mas
+o perfil da rede precisa ser **Privada** para o tráfego de entrada fluir
+normalmente.
 
 Recursos extras da edição Server: **políticas por dispositivo** (regras
 diferentes por IP na rede, pela tela *Rede*) e **página de bloqueio** nos

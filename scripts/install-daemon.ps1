@@ -129,8 +129,10 @@ function Install-Daemon {
     if ($LASTEXITCODE -eq 0) {
         # Recovery automática: o daemon se auto-reinicia após aplicar um update
         # (exit code 1 — ver restartAfterUpdate). O SCM só sobe o serviço de
-        # novo se a recovery estiver configurada: restart em 5s, 10s e 30s.
-        sc.exe failure $ServiceName reset= 86400 actions= restart/5000/restart/10000/restart/30000 | Out-Null
+        # novo se a recovery estiver configurada. Como o daemon é o DNS da rede
+        # (spec §5), a ressuscitação é em ~1s (restart/1000) — queda do
+        # processo derruba a internet da casa.
+        sc.exe failure $ServiceName reset= 86400 actions= restart/1000/restart/1000/restart/1000 | Out-Null
         Write-Host "[FocusGuard] ✔ Serviço Windows '$ServiceName' instalado com sucesso!" -ForegroundColor Green
         Write-Host "[FocusGuard] O daemon iniciará automaticamente na inicialização do sistema." -ForegroundColor Cyan
         Write-Host "[FocusGuard] Recovery configurada: o daemon reinicia sozinho após atualização." -ForegroundColor Cyan

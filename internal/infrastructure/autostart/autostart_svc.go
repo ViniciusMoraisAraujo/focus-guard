@@ -31,10 +31,14 @@ func installWindows(exePath string) error {
 		return fmt.Errorf("autostart: falha ao criar serviço: %w (%s)", err, strings.TrimSpace(string(out)))
 	}
 
+	// Recovery do SCM em no máximo 1 segundo (spec DNS sinkhole §5): como o
+	// daemon é o DNS da rede, uma queda do processo derruba a internet da casa
+	// — o restart/1000 ressuscita o serviço em ~1s. O watchdog (não-DNS) mantém
+	// o 5000; o daemon NÃO, por ser crítico de rede.
 	failureArgs := []string{
 		"failure", serviceName,
 		"reset=", "86400",
-		"actions=", "restart/5000/restart/10000/restart/30000",
+		"actions=", "restart/1000/restart/1000/restart/1000",
 	}
 	if out2, err2 := execCommand("sc", failureArgs...).CombinedOutput(); err2 != nil {
 		log.Printf("[FocusGuard Daemon] Aviso: não foi possível configurar recuperação automática: %v (%s)", err2, strings.TrimSpace(string(out2)))

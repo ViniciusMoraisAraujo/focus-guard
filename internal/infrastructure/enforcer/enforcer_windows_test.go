@@ -733,6 +733,26 @@ func TestFlushDNS_RunsIpconfig(t *testing.T) {
 	}
 }
 
+// TestFlushDNSCache_ExportedRunsIpconfig verifies the exported FlushDNSCache
+// (chamado pelo daemon quando o sinkhole sobe) executa ipconfig /flushdns.
+func TestFlushDNSCache_ExportedRunsIpconfig(t *testing.T) {
+	f := &flushStub{}
+	stubFlushExec(t, f)
+
+	e := newTestEnforcer(t)
+	if err := e.FlushDNSCache(); err != nil {
+		t.Fatalf("FlushDNSCache: %v", err)
+	}
+
+	if len(f.calls) != 1 {
+		t.Fatalf("expected 1 ipconfig invocation, got %d: %v", len(f.calls), f.calls)
+	}
+	call := f.calls[0]
+	if call[0] != "ipconfig" || !slices.Contains(call, "/flushdns") {
+		t.Errorf("expected ipconfig /flushdns, got %v", call)
+	}
+}
+
 // TestFlushDNS_BestEffort verifies a flush failure (ipconfig ausente, sem
 // privilégio) is silently ignored — the netsh block rule already stops new
 // flows.
@@ -1065,5 +1085,81 @@ func TestStatus_MutationInvalidatesCache(t *testing.T) {
 	}
 	if len(netshShows) != 1 {
 		t.Errorf("mudança deve invalidar o cache e gerar nova consulta, got %d netsh show calls: %v", len(netshShows), second.calls)
+	}
+}
+
+func TestAddDNSPortRuleArgs(t *testing.T) {
+	wantUDP := []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=FocusGuard_DNS_Inbound_UDP",
+		"dir=in",
+		"action=allow",
+		"protocol=udp",
+		"localport=53",
+	}
+	if got := addDNSPortRuleArgs(dnsInboundUDPRuleName, "udp"); !reflect.DeepEqual(got, wantUDP) {
+		t.Errorf("addDNSPortRuleArgs(udp) = %v, want %v", got, wantUDP)
+	}
+
+	wantTCP := []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=FocusGuard_DNS_Inbound_TCP",
+		"dir=in",
+		"action=allow",
+		"protocol=tcp",
+		"localport=53",
+	}
+	if got := addDNSPortRuleArgs(dnsInboundTCPRuleName, "tcp"); !reflect.DeepEqual(got, wantTCP) {
+		t.Errorf("addDNSPortRuleArgs(tcp) = %v, want %v", got, wantTCP)
+	}
+}
+
+// TestAllowDNSInbound_AddsOnceAndSkips verifies the rules are created with one
+// netsh add per protocol (inbound, localport 53) and that a second call skips
+// them once the firewall already lists them (idempotência).
+func TestAllowDNSInbound_AddsOnceAndSkips(t *testing.T) {
+	b := &batchStubWin{
+		showDumps: []string{
+			"", // 1ª enumeração: nenhuma regra inbound existe
+			"Regra:\n    Nome da regra:    FocusGuard_DNS_Inbound_UDP\n\nRegra:\n    Nome da regra:    FocusGuard_DNS_Inbound_TCP\n",
+		},
+	}
+	stubBatchExecWin(t, b)
+
+	e := newTestEnforcer(t)
+
+	// 1ª chamada: net session (admin) + netsh show (inventário) + 2 netsh adds.
+	if err := e.AllowDNSInbound(); err != nil {
+		t.Fatalf("AllowDNSInbound: %v", err)
+	}
+	var adds [][]string
+	for _, c := range b.calls {
+		if c[0] == "netsh" && slices.Contains(c, "add") {
+			adds = append(adds, c)
+		}
+	}
+	if len(adds) != 2 {
+		t.Fatalf("esperava 2 netsh adds (UDP+TCP), got %d: %v", len(adds), b.calls)
+	}
+	for _, add := range adds {
+		joined := strings.Join(add, " ")
+		if !strings.Contains(joined, "dir=in") || !strings.Contains(joined, "action=allow") ||
+			!strings.Contains(joined, "localport=53") {
+			t.Errorf("regra inbound malformada: %v", add)
+		}
+	}
+
+	// 2ª chamada: regras já existem no inventário → nenhum add novo.
+	if err := e.AllowDNSInbound(); err != nil {
+		t.Fatalf("AllowDNSInbound (2ª): %v", err)
+	}
+	adds = adds[:0]
+	for _, c := range b.calls {
+		if c[0] == "netsh" && slices.Contains(c, "add") {
+			adds = append(adds, c)
+		}
+	}
+	if len(adds) != 2 {
+		t.Errorf("2ª chamada deveria pular os adds (idempotente), got %d: %v", len(adds), b.calls)
 	}
 }
