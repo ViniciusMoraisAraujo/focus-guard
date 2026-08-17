@@ -78,6 +78,9 @@ AGENT.md §5).
 
 Ordem cronológica, o mais recente no topo:
 
+- [2026-08-17](2026-08-17.md) — Clock Guard compatível com dual boot
+  (burla confirmada não bloqueia mais; expirações ajustadas via
+  ShiftExpirations no boot) + release v0.20.1.
 - [2026-08-14](2026-08-14.md) — Sinkhole de rede completo (dual-stack
   [::]:53, firewall inbound, flush de cache, logs, recovery ~1s), manual na
   UI e release v0.19.0 tagada localmente (push pendente).
