@@ -421,23 +421,20 @@ func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func(
 	return func() { once.Do(func() { close(stop) }) }
 }
 
-// startClockGuardWorker roda a validação do relógio (Clock Tamper Protection
-// — Fase 2): um Check imediato no boot + um Check periódico a cada
-// clockguard.CheckInterval. Quando o gap do wall clock ultrapassa a
-// tolerância (SUSPEITA) e o NTP não consegue limpar a suspeita — offline,
-// falhou ou CONFIRMANDO a burla — o bloqueio preventivo all-internet é
-// aplicado (relógio adiantado + restart não expira os bloqueios sem
-// proteção; a burla confirmada é registrada no tamper-log). NTP validando o
-// relógio local libera um bloqueio pendente e re-ancora a referência. O NTP
-// é best-effort e com timeout curto — um daemon offline nunca trava o boot.
-// Retorna um stop func para o lifecycle.
-func startClockGuardWorker(st clockguard.State, lock clockguard.Lockdown, logger clockguard.Logger, interval time.Duration) func() {
-	guard := clockguard.New(clockguard.Deps{
-		State:    st,
-		NTP:      ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
-		Lockdown: lock,
-		Logger:   logger,
-	})
+// startClockGuardWorker roda a validação periódica do relógio (Clock Tamper
+// Protection — Fase 2): um Check imediato + um Check a cada
+// clockguard.CheckInterval, reusando o guard do check síncrono do boot (o
+// dedup do tamper-log e a re-ancoragem continuam entre ciclos). Quando o gap
+// do wall clock ultrapassa a tolerância (SUSPEITA) e o NTP não consegue
+// limpar a suspeita — offline ou falhou — o bloqueio preventivo all-internet
+// é aplicado (relógio adiantado + restart não expira os bloqueios sem
+// proteção). O NTP validando o relógio local OU confirmando a divergência
+// (hora real agora conhecida; expirações já ajustadas no boot) libera um
+// bloqueio pendente e re-ancora a referência; a burla confirmada é
+// registrada no tamper-log (dedup por offset). O NTP é best-effort e com
+// timeout curto — um daemon offline nunca trava. Retorna um stop func para o
+// lifecycle.
+func startClockGuardWorker(guard *clockguard.Guard, interval time.Duration) func() {
 	stop := make(chan struct{})
 	go func() {
 		check := func() {
@@ -1028,6 +1025,38 @@ func runDaemon() bool {
 	hub := eventhub.New(64)
 	sched.SetOnChange(func() { hub.Publish(ipc.EventBlocksChanged) })
 
+	// Tamper log: histórico de tentativas de burla (adulterações externas do
+	// hosts/state detectadas e revertidas) — "focusguard tamper-log". Precisa
+	// existir antes do clock guard do boot (o logger do guard é ele).
+	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
+
+	// Clock Tamper Protection (Fase 2): validação do wall clock ANTES do
+	// reconcile do boot. Carrega o estado (Bootstrap), valida o relógio
+	// contra o NTP e, se a divergência for CONFIRMADA, ajusta as expirações
+	// pendentes para a hora REAL (ShiftExpirations) antes de o reconcile
+	// avaliá-las contra o relógio local — um relógio adulterado (ou dual
+	// boot com RTC fora) não expira bloqueios cedo nem os segura além do
+	// tempo real. Com NTP indisponível (offline/falha) a suspeita aplica o
+	// bloqueio preventivo (sentinela all-internet) — ver startClockGuardWorker.
+	// Boot saudável não consulta o NTP (gap ≤ tolerância), então o boot não
+	// ganha latência.
+	if err := sched.Bootstrap(); err != nil {
+		log.Printf("[FocusGuard Daemon] Erro ao carregar estado: %v", err)
+		stopLifecycleComponents(components)
+		return false
+	}
+	clockGuard := clockguard.New(clockguard.Deps{
+		State:    sched,
+		NTP:      ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
+		Lockdown: clockLockdownAdapter{s: sched},
+		Logger:   clockLoggerAdapter{rec: tamperRec},
+	})
+	if out := clockGuard.Check(); out.Confirmed {
+		if err := sched.ShiftExpirations(out.Offset); err != nil {
+			log.Printf("[ClockGuard] Falha ao ajustar expirações para a hora real: %v", err)
+		}
+	}
+
 	if err := sched.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro na reconciliação: %v", err)
 		stopLifecycleComponents(components)
@@ -1052,16 +1081,12 @@ func runDaemon() bool {
 	wd := watchdog.New(sched, watchdogSec)
 	go wd.Start()
 
-	// Tamper log: histórico de tentativas de burla (adulterações externas do
-	// hosts/state detectadas e revertidas) — "focusguard tamper-log".
-	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
-
-	// Clock Tamper Protection (Fase 2): validação do wall clock no boot e a
-	// cada 10 min. Um salto além da tolerância (suspeita) aplica o bloqueio
-	// preventivo (sentinela all-internet, via scheduler) já de imediato; o NTP
-	// valida → libera, confirma → registra no tamper-log. O tamperRec satifaz
-	// o clockguard.Logger (Log(source, action, detail)).
-	stopClock := startClockGuardWorker(sched, clockLockdownAdapter{s: sched}, clockLoggerAdapter{rec: tamperRec}, clockguard.CheckInterval)
+	// Worker periódico do Clock Guard (mesmo guard do boot — o dedup do
+	// tamper-log e a re-ancoragem continuam entre ciclos): um salto além da
+	// tolerância com NTP indisponível/falho mantém o bloqueio preventivo; o
+	// NTP validando o relógio (ou confirmando a divergência — hora real
+	// agora conhecida) libera um bloqueio pendente e re-ancora a referência.
+	stopClock := startClockGuardWorker(clockGuard, clockguard.CheckInterval)
 	if stopClock != nil {
 		components = append(components, daemon.StopOnly(stopClock))
 	}

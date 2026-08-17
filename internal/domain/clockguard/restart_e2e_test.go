@@ -87,15 +87,20 @@ func (l e2eLogger) Log(source, action, detail string) {
 // conta chamadas: o enforcer real (netsh/iptables), o NTP real e o relógio
 // do SO ficam para o checklist manual da Etapa 9 (exigem shell elevado).
 //
-//  1. Boot saudável em T: referência gravada e deslizando; nada bloqueado.
+//  1. Boot saudável em T: referência gravada e deslizando; um bloqueio de
+//     domínio ativo (ExpiresAt real) é criado; nada de all-internet.
 //  2. "Restart" com o relógio ADIANTADO (+24h) e a rede BLOQUEADA (NTP nil):
 //     lockdown preventivo aplicado JÁ NA SUSPEITA, persistido com origem
 //     clock-guard; o tamper-log NÃO registra (suspeita não confirmada não é
 //     evento histórico — só o estado vivo aparece).
-//  3. A rede volta e o NTP CONFIRMA a burla: tamper-log registra
-//     clock/lockdown ("confirmado por NTP") e o bloqueio é mantido.
-//  4. O relógio é corrigido (gap normal): liberação automática — o sentinela
-//     sai do RAM e do state.json e o enforcer.UnblockAll é chamado.
+//  3. A rede volta e o NTP CONFIRMA a divergência: tamper-log registra
+//     clock/lockdown ("confirmado por NTP"), o lockdown preventivo é
+//     LIBERADO (a hora real agora é conhecida) e o daemon ajusta as
+//     expirações pendentes para a hora real (ShiftExpirations pelo offset
+//     confirmado) — o bloqueio de domínio sobrevive com a expiração
+//     corrigida em vez de ser avaliado pelo relógio adulterado.
+//  4. O relógio é corrigido (gap normal): nada de suspeita; a liberação é
+//     no-op (o sentinela já saiu do RAM e do state.json).
 func TestClockGuard_RestartE2E_AdvanceOfflineConfirmRelease(t *testing.T) {
 	dir := t.TempDir()
 	st, err := store.NewStore(filepath.Join(dir, "state.json"))
@@ -127,8 +132,18 @@ func TestClockGuard_RestartE2E_AdvanceOfflineConfirmRelease(t *testing.T) {
 	if out := guard1b.Check(); out.Suspicion {
 		t.Fatalf("boot 1: relógio consistente não pode gerar suspeita: %+v", out)
 	}
-	if sched1.HasActiveBlocks() {
-		t.Fatal("boot 1: nenhum bloqueio deveria existir")
+	// Um bloqueio de domínio REAL fica ativo para o restart seguinte — ele é
+	// quem prova o ajuste das expirações (o scheduler usa o relógio real para
+	// StartedAt/ExpiresAt; o relógio injetado vale só para o guard).
+	blocks, err := sched1.BlockDomains([]string{"example.com"}, 2*time.Hour)
+	if err != nil {
+		t.Fatalf("BlockDomains (boot 1): %v", err)
+	}
+	if len(blocks) != 1 || blocks[0].Domain != "example.com" {
+		t.Fatalf("boot 1: bloqueio de domínio inesperado: %+v", blocks)
+	}
+	if list, _ := sched1.ListBlocks(); findSentinel(list) != nil {
+		t.Fatal("boot 1: nenhum all-internet deveria existir (só o domínio)")
 	}
 	if loaded, _ := st.Load(); loaded.LastKnownTime.IsZero() {
 		t.Fatal("boot 1: last_known_time deveria estar persistido")
@@ -181,17 +196,27 @@ func TestClockGuard_RestartE2E_AdvanceOfflineConfirmRelease(t *testing.T) {
 		t.Errorf("boot 2: sentinela deveria estar persistido com source=clock-guard, got %+v", saved)
 	}
 
-	// --- 3. Rede volta; NTP confirma a burla --------------------------------
+	// --- 3. Rede volta; NTP confirma a divergência --------------------------
 	guard3 := New(Deps{
 		State: sched2, NTP: &fakeNTP{t: T.Add(2 * time.Minute)}, // hora REAL
 		Lockdown: e2eLockdown{s: sched2}, Now: func() time.Time { return T.Add(24 * time.Hour) }, Logger: logger,
 	})
 	out = guard3.Check()
 	if !out.Suspicion || !out.Confirmed {
-		t.Fatalf("check 3: burla deveria ser confirmada pelo NTP: %+v", out)
+		t.Fatalf("check 3: divergência deveria ser confirmada pelo NTP: %+v", out)
 	}
-	if !sched2.HasActiveBlocks() {
-		t.Fatal("check 3: lockdown deveria ser mantido após a confirmação")
+	// A hora real agora é CONHECIDA: o guard LIBERA o lockdown preventivo
+	// (sem reaplicar) em vez de manter o usuário sem internet — o motivo do
+	// bloqueio (hora real desconhecida) deixou de existir. O bloqueio de
+	// domínio continua ativo (e terá a expiração ajustada logo abaixo).
+	if list, _ := sched2.ListBlocks(); findSentinel(list) != nil {
+		t.Fatal("check 3: confirmação deveria liberar o lockdown preventivo (sentinela all-internet)")
+	}
+	if enf.unblockAll() != 1 {
+		t.Errorf("check 3: enforcer.UnblockAll chamado %d vezes, want 1 (liberação na confirmação)", enf.unblockAll())
+	}
+	if enf.blockAll() != 1 {
+		t.Errorf("check 3: enforcer.BlockAll chamado %d vezes, want 1 (só o da suspeita)", enf.blockAll())
 	}
 	events, err = rec.Events()
 	if err != nil {
@@ -203,6 +228,31 @@ func TestClockGuard_RestartE2E_AdvanceOfflineConfirmRelease(t *testing.T) {
 	if !strings.Contains(events[0].Detail, "confirmado por NTP") {
 		t.Errorf("detalhe do tamper: %q, want mencionando confirmação por NTP", events[0].Detail)
 	}
+	// O daemon (composition root) ajusta as expirações para a hora REAL antes
+	// do próximo reconcile — espelho do ShiftExpirations do boot. O offset
+	// confirmado é local − real ≈ +24h (relógio adiantado), então a expiração
+	// do domínio é empurrada para frente: avaliada contra o relógio
+	// adulterado, ela expira exatamente quando a hora REAL passar do término
+	// real — nem antes (bloqueio derrubado cedo) nem depois.
+	before := findBlock(sched2, "example.com")
+	if before == nil {
+		t.Fatal("check 3: bloqueio de domínio deveria continuar ativo")
+	}
+	if err := sched2.ShiftExpirations(out.Offset); err != nil {
+		t.Fatalf("ShiftExpirations: %v", err)
+	}
+	after := findBlock(sched2, "example.com")
+	if after == nil {
+		t.Fatal("check 3: ShiftExpirations não pode remover o bloqueio")
+	}
+	if got := after.ExpiresAt.Sub(before.ExpiresAt); got != out.Offset {
+		t.Errorf("expiração deslocada por %v, want %v (offset confirmado)", got, out.Offset)
+	}
+	// O ajuste persiste no state.json (o próximo restart já carrega corrigido).
+	loaded, _ = st.Load()
+	if saved, ok := loaded.Blocks["example.com"]; !ok || !saved.ExpiresAt.Equal(after.ExpiresAt) {
+		t.Errorf("state.json deveria persistir a expiração ajustada, got %+v", saved)
+	}
 
 	// --- 4. Relógio corrigido (dentro da tolerância da referência real) -----
 	guard4 := New(Deps{
@@ -213,16 +263,29 @@ func TestClockGuard_RestartE2E_AdvanceOfflineConfirmRelease(t *testing.T) {
 	if out.Suspicion || out.Confirmed {
 		t.Fatalf("relógio corrigido não pode gerar suspeita: %+v", out)
 	}
-	if sched2.HasActiveBlocks() {
-		t.Fatal("relógio corrigido deveria liberar o lockdown preventivo")
-	}
+	// O sentinela já saiu na confirmação; a liberação do relógio consistente
+	// é no-op (UnblockAll não é chamado de novo).
 	if enf.unblockAll() != 1 {
-		t.Errorf("enforcer.UnblockAll chamado %d vezes, want 1 (liberação)", enf.unblockAll())
+		t.Errorf("enforcer.UnblockAll chamado %d vezes, want 1 (só na confirmação)", enf.unblockAll())
 	}
 	loaded, _ = st.Load()
 	if _, ok := loaded.Blocks[enforcer.AllInternetDomain]; ok {
-		t.Error("state.json deveria estar sem o sentinela após a liberação")
+		t.Error("state.json deveria estar sem o sentinela")
 	}
+}
+
+// findBlock localiza um bloqueio por domínio na lista (nil quando ausente).
+func findBlock(s *scheduler.Scheduler, domain string) *policy.Block {
+	list, err := s.ListBlocks()
+	if err != nil {
+		return nil
+	}
+	for i := range list {
+		if list[i].Domain == domain {
+			return &list[i]
+		}
+	}
+	return nil
 }
 
 // findSentinel localiza o bloco all-internet na lista (nil quando ausente).
