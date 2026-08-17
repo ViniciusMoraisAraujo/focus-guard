@@ -83,8 +83,8 @@ export function Seguranca() {
               </h3>
               <p className="mt-1 text-sm text-muted-foreground">
                 O relógio do sistema foi alterado além da tolerância e o horário ainda não foi
-                validado online (NTP indisponível) — ou a burla foi confirmada. Toda a internet
-                está bloqueada até a sincronização validar o horário real, ou até{" "}
+                validado online (NTP indisponível). Toda a internet está bloqueada até a
+                sincronização validar o horário real, ou até{" "}
                 <strong>{fmtDate(lockdown.expires_at)}</strong>.
               </p>
             </div>
@@ -120,18 +120,21 @@ export function Seguranca() {
                       {e.source === "hosts" ? "hosts" : e.source === "clock" ? "relógio" : "estado"}
                     </Badge>
                     <Badge variant="secondary">
-                      {e.action === "lockdown"
-                        ? "bloqueio preventivo"
-                        : e.action === "restore"
-                          ? "restaurado"
-                          : "reconciliado"}
+                      {isClock
+                        ? "relógio fora da hora real"
+                        : e.action === "lockdown"
+                          ? "bloqueio preventivo"
+                          : e.action === "restore"
+                            ? "restaurado"
+                            : "reconciliado"}
                     </Badge>
                     <span className="text-xs text-muted-foreground">{fmtDate(e.at)}</span>
                   </div>
                   {isClock && (
                     <p className="m-0 text-xs text-destructive/90">
-                      Relógio do sistema adulterado — bloqueio preventivo aplicado até a
-                      sincronização online validar o horário real.
+                      Relógio do sistema fora da hora real (confirmado por NTP) — expirações
+                      ajustadas para a hora real, sem bloqueio. Verifique o RTC/fuso (ex.: dual
+                      boot).
                     </p>
                   )}
                   {e.detail && (

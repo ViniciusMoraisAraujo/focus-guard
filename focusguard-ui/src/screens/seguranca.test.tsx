@@ -147,13 +147,13 @@ describe("Segurança — bloqueio preventivo do Clock Guard ativo", () => {
     expect(container?.querySelector('[role="alert"]')).toBeNull();
   });
 
-  it("mantém o badge do tamper-log para burla confirmada (source=clock + action=lockdown)", async () => {
+  it("mantém o badge do tamper-log para divergência confirmada (source=clock + action=lockdown)", async () => {
     okTamper([
       {
         at: now.toISOString(),
         source: "clock",
         action: "lockdown",
-        detail: "relógio adulterado confirmado por NTP; bloqueio preventivo até 13:00",
+        detail: "relógio local 3h0m0s à frente do real, confirmado por NTP; expirações ajustadas para a hora real",
       },
     ]);
 
@@ -164,7 +164,11 @@ describe("Segurança — bloqueio preventivo do Clock Guard ativo", () => {
     });
 
     expect(container?.textContent).toContain("relógio");
-    expect(container?.textContent).toContain("bloqueio preventivo");
+    // NTP confirmou → sem bloqueio: o badge de clock diz a verdade (o
+    // "bloqueio preventivo" só existe na suspeita com NTP indisponível).
+    expect(container?.textContent).toContain("relógio fora da hora real");
+    expect(container?.textContent).not.toContain("bloqueio preventivo");
     expect(container?.textContent).toContain("confirmado por NTP");
+    expect(container?.textContent).toContain("sem bloqueio");
   });
 });
