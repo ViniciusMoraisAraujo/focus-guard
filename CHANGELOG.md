@@ -5,6 +5,33 @@ Todas as mudanças notáveis do **FocusGuard** serão documentadas neste arquivo
 O formato é baseado em [Keep a Changelog](https://keepachangelog.com/pt-BR/1.1.0/),
 e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR/).
 
+## [Não publicado]
+
+## [0.20.1] - 2026-08-17
+
+### 🐛 Correções
+
+- **Clock Guard compatível com dual boot — burla confirmada não bloqueia mais
+  toda a internet** — a confirmação por NTP aplicava o lockdown all-internet e
+  o re-aplicava a cada ciclo enquanto o offset persistisse. Num dual boot
+  (Windows com RTC em hora local × Linux com RTC em UTC) o relógio do SO fica
+  deslocado por horas em todo boot, então o usuário ficava **sem internet
+  permanentemente** sem ter adulterado nada. Agora, com o NTP respondendo, a
+  hora real é **conhecida** e o guard não bloqueia: registra a divergência no
+  tamper-log (dedup por offset — um relógio persistentemente fora gera um
+  evento por boot, não a cada 10 min), re-ancora a referência na hora real e
+  **libera** um bloqueio preventivo pendente. O daemon ainda **ajusta as
+  expirações pendentes para a hora real antes do reconcile do boot**
+  (`scheduler.ShiftExpirations` — o item 3 do features-plan que havia ficado
+  de fora): um relógio adiantado não derruba bloqueios cedo nem um atrasado
+  os segura além do tempo real (TDD + E2E do restart atualizado: a confirmação
+  libera o sentinela e desloca a expiração do domínio pelo offset). O lockdown
+  all-internet fica reservado ao caso em que o NTP **não decide**
+  (offline/falha) — o único em que a hora real é desconhecida. UI: o alerta
+  do Painel e o badge da tela Segurança passam a dizer "relógio fora da hora
+  real / expirações ajustadas, sem bloqueio" em vez de "bloqueio preventivo
+  aplicado".
+
 ## [0.20.0] - 2026-08-14
 
 ### ✨ Novas funcionalidades
