@@ -148,8 +148,18 @@ func TestClockRewoundConfirmedByNTP(t *testing.T) {
 	if !out.Suspicion || !out.Confirmed {
 		t.Fatalf("burla confirmada esperada: %+v", out)
 	}
-	if lock.count() != 1 {
-		t.Errorf("lockdown chamado %d vezes, want 1", lock.count())
+	// NTP confirmou → a hora real é CONHECIDA: o guard NÃO aplica lockdown
+	// (bloquear tudo puniria um relógio do SO configurado errado — dual
+	// boot), registra no tamper-log e libera um bloqueio pendente.
+	if lock.count() != 0 {
+		t.Errorf("NTP confirmou — lockdown não deveria ser aplicado, chamado %d vezes", lock.count())
+	}
+	if lock.unblockCount() != 1 {
+		t.Errorf("confirmação deveria liberar um lockdown pendente, unblocks=%d", lock.unblockCount())
+	}
+	// Offset exposto para o daemon ajustar as expirações (local − real).
+	if want := local.Sub(real); out.Offset != want {
+		t.Errorf("Offset = %v, want %v", out.Offset, want)
 	}
 	if len(lg.events()) != 1 {
 		t.Errorf("tamper não registrado: %v", lg.events())
@@ -172,11 +182,85 @@ func TestClockAdvancedConfirmedByNTP(t *testing.T) {
 	if !out.Suspicion || !out.Confirmed {
 		t.Fatalf("burla por adiantamento deveria ser confirmada: %+v", out)
 	}
-	if lock.count() != 1 {
-		t.Errorf("lockdown chamado %d vezes, want 1", lock.count())
+	if lock.count() != 0 {
+		t.Errorf("NTP confirmou — lockdown não deveria ser aplicado, chamado %d vezes", lock.count())
+	}
+	if want := local.Sub(real); out.Offset != want {
+		t.Errorf("Offset = %v, want %v", out.Offset, want)
 	}
 	if len(lg.events()) != 1 {
 		t.Errorf("tamper não registrado: %v", lg.events())
+	}
+}
+
+// TestConfirmedDedup_SameOffsetLogsOnce: um relógio PERSISTENTEMENTE fora
+// (dual boot com RTC em padrão errado) é confirmado a cada Check — o
+// tamper-log não pode espalhar um evento a cada 10 min para uma máquina cujo
+// usuário não fez nada. Só um offset NOVO (relógio mexido de novo) gera outro
+// evento.
+func TestConfirmedDedup_SameOffsetLogsOnce(t *testing.T) {
+	real := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	local := real.Add(-3 * time.Hour) // dual boot: relógio fixo 3h atrás do real
+	last := real
+	st := &fakeState{last: last}
+	lock := &fakeLockdown{}
+	lg := &fakeLogger{}
+	g := New(Deps{State: st, NTP: &fakeNTP{t: real}, Lockdown: lock, Now: func() time.Time { return local }, Logger: lg})
+
+	for i := 0; i < 3; i++ {
+		out := g.Check()
+		if !out.Suspicion || !out.Confirmed {
+			t.Fatalf("check %d: divergência persistente deveria ser confirmada: %+v", i, out)
+		}
+		if lock.count() != 0 {
+			t.Fatalf("check %d: nenhum lockdown deveria ser aplicado, chamado %d vezes", i, lock.count())
+		}
+	}
+	if len(lg.events()) != 1 {
+		t.Errorf("offset estável deveria logar UMA vez, got %v", lg.events())
+	}
+
+	// Usuário mexe o relógio de novo (offset novo) → novo evento.
+	g2 := New(Deps{State: st, NTP: &fakeNTP{t: real}, Lockdown: lock, Now: func() time.Time { return real.Add(-5 * time.Hour) }, Logger: lg})
+	if out := g2.Check(); !out.Confirmed {
+		t.Fatalf("offset novo deveria ser confirmado: %+v", out)
+	}
+	if len(lg.events()) != 2 {
+		t.Errorf("offset novo deveria registrar novo evento, got %v", lg.events())
+	}
+}
+
+// TestConfirmed_ReleasesPendingLockdown: uma suspeita anterior com NTP
+// offline aplicou o lockdown; o NTP volta e CONFIRMA a divergência → o guard
+// libera o bloqueio preventivo (a hora real agora é conhecida e as expirações
+// serão ajustadas) em vez de mantê-lo indefinidamente.
+func TestConfirmed_ReleasesPendingLockdown(t *testing.T) {
+	real := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	local := real.Add(-2 * time.Hour)
+
+	// 1º Check sem NTP: suspeita → lockdown preventivo aplicado e mantido.
+	g1, st, lock, lg := guardWith(local, real, NTPClient(nil))
+	if out := g1.Check(); !out.Suspicion || out.Confirmed {
+		t.Fatalf("1º Check: suspeita sem NTP esperada: %+v", out)
+	}
+	if lock.count() != 1 {
+		t.Fatalf("lockdown deveria ter sido aplicado na suspeita, chamado %d vezes", lock.count())
+	}
+
+	// 2º Check com NTP confirmando: libera o bloqueio (sem reaplicar).
+	g2 := New(Deps{State: st, NTP: &fakeNTP{t: real}, Lockdown: lock, Now: func() time.Time { return local }, Logger: lg})
+	out := g2.Check()
+	if !out.Suspicion || !out.Confirmed {
+		t.Fatalf("2º Check: confirmação esperada: %+v", out)
+	}
+	if lock.count() != 1 {
+		t.Errorf("confirmação não pode reaplicar o lockdown, chamado %d vezes", lock.count())
+	}
+	if lock.unblockCount() != 1 {
+		t.Errorf("confirmação deveria liberar o lockdown pendente, unblocks=%d", lock.unblockCount())
+	}
+	if len(lg.events()) != 1 {
+		t.Errorf("confirmação deveria registrar 1 evento, got %v", lg.events())
 	}
 }
 

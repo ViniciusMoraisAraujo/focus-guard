@@ -16,7 +16,9 @@ After=network.target
 Type=simple
 ExecStart=%s
 Restart=always
-RestartSec=3
+# DNS da rede: ressuscitar o processo em ~1s se fechar (spec §5). O
+# WatchdogSec=30 cobre freeze (o daemon alimenta via sd_notify a cada 15s).
+RestartSec=1
 WatchdogSec=30
 
 [Install]

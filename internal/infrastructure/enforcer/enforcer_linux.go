@@ -807,3 +807,18 @@ func (e *linuxEnforcer) removeIptablesDoHRule(provider DoHProvider) error {
 	}
 	return nil
 }
+
+// AllowDNSInbound é um no-op no Linux: o daemon já bindou em 0.0.0.0/[::], e
+// os firewalls de host típicos (ufw desativado, iptables com política ACCEPT
+// no INPUT) aceitam o tráfego de entrada por padrão. Abrir explicitamente o
+// INPUT com iptables/nftables fica fora de escopo desta Task (Windows).
+func (e *linuxEnforcer) AllowDNSInbound() error {
+	return nil
+}
+
+// FlushDNSCache é um no-op no Linux: o cache do sistema é gerenciado pelo
+// systemd-resolved (que normalmente segura a porta 53) e o flush seria
+// `resolvectl flush-caches` — fora de escopo desta automação (Windows).
+func (e *linuxEnforcer) FlushDNSCache() error {
+	return nil
+}

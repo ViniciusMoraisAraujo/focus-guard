@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet session-check clean install uninstall msi help fmt tidy
+.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet hooks session-check clean install uninstall msi help fmt tidy
 
 GO       := go
 BIN_DIR  := bin
@@ -37,6 +37,13 @@ winres:
 	cd cmd/focusguard && go-winres make --in versioninfo.json --arch amd64,arm64
 	cd cmd/focusguard-tray && go-winres make --in versioninfo.json --arch amd64,arm64
 	cd cmd/focusguard-watchdog && go-winres make --in versioninfo.json --arch amd64,arm64
+
+# hooks ativa os hooks versionados (.githooks/commit-msg): o commit-msg
+# rejeita mensagens com o footer automático ("Codebuff") — política do AGENT.md
+# §7. Rodar uma vez por clone (git config core.hooksPath é local).
+hooks:
+	git config core.hooksPath .githooks
+	@echo "✔ Hooks instalados: .githooks/commit-msg (mensagens com 'Codebuff' serão rejeitadas)."
 
 build-cli:
 	$(GO) build -o $(CLI_BIN) ./cmd/focusguard

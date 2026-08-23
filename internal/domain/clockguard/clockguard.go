@@ -16,10 +16,18 @@
 //  2. NTP validation: a public NTP query confirms the real time. The local
 //     OS clock can be forged; the NTP server's answer cannot.
 //  3. Lockdown: a jump beyond tolerance (SUSPICION) triggers a preventive
-//     all-internet block when NTP cannot clear the suspicion — unavailable,
-//     failed, or CONFIRMING the tamper (features-plan: an advanced clock +
-//     restart would expire blocks early). NTP validating the local clock
-//     releases a pending lockdown and re-anchors the reference.
+//     all-internet block only when NTP cannot clear the suspicion —
+//     unavailable or failed (features-plan: an advanced clock + restart
+//     would expire blocks early and there is no way to know the real time).
+//     When NTP CONFIRMS the discrepancy, the guard knows the real time, so
+//     it does NOT block everything: it logs the confirmed discrepancy
+//     (deduped per offset), re-anchors the reference on the real time and
+//     releases any pending lockdown — the daemon additionally shifts the
+//     pending expirations to real time before the boot reconcile. This keeps
+//     dual-boot users (Windows RTC em hora local × Linux RTC em UTC) usable:
+//     a persistently offset clock is a configuration issue, not an attack.
+//     NTP validating the local clock releases a pending lockdown and
+//     re-anchors the reference.
 package clockguard
 
 import (
@@ -53,13 +61,14 @@ type State interface {
 	SetLastKnownTime(t time.Time) error
 }
 
-// Lockdown interface: when the wall clock jumps beyond tolerance (suspicion),
-// the guard applies the preventive block (BlockAllInternet — the same
-// all-internet sentinel the panic mode uses, with its own expiry) and, when
-// NTP validates the local clock again (or the gap normalizes), releases it
-// (UnblockAllInternet). The daemon wires it to the scheduler, which only
-// removes ITS OWN lockdown — a user-initiated panic block is never touched
-// by the release.
+// Lockdown interface: when the wall clock jumps beyond tolerance (suspicion)
+// AND NTP cannot verify the real time (offline/failed), the guard applies the
+// preventive block (BlockAllInternet — the same all-internet sentinel the
+// panic mode uses, with its own expiry). When NTP validates the local clock
+// again, confirms a discrepancy (real time now known), or the gap
+// normalizes, it releases the lockdown (UnblockAllInternet). The daemon
+// wires it to the scheduler, which only removes ITS OWN lockdown — a
+// user-initiated panic block is never touched by the release.
 type Lockdown interface {
 	BlockAllInternet(allowlist []string, duration time.Duration) error
 	UnblockAllInternet() error
@@ -71,6 +80,14 @@ type Logger interface {
 	Log(source, action, detail string)
 }
 
+// logDedupTolerance is how much the confirmed offset must change between
+// Checks for a new tamper-log entry. A persistently offset clock (dual boot,
+// RTC wrong time standard) is confirmed at every Check — without this, the
+// tamper-log would fill with one entry every CheckInterval for a machine
+// whose user did nothing wrong. A NEW jump (offset moved beyond tolerance)
+// is a new event worth recording.
+const logDedupTolerance = Tolerance
+
 // Guard runs the clock-tamper detection. All dependencies are injectable so
 // tests exercise every branch without a real clock or network.
 type Guard struct {
@@ -79,10 +96,17 @@ type Guard struct {
 	lock   Lockdown
 	now    func() time.Time
 	logger Logger
-	// lockdownDuration é quanto dura o bloqueio preventivo quando a burla é
-	// confirmada (até NTP validar de novo; o guard re-tenta a validação no
-	// próximo ciclo).
+	// lockdownDuration é quanto dura o bloqueio preventivo aplicado na
+	// suspeita quando o NTP não decide (até NTP validar de novo; o guard
+	// re-tenta a validação no próximo ciclo).
 	lockdownDuration time.Duration
+	// lastLoggedOffset é o offset (local − real) do último evento de
+	// divergência confirmada registrado no tamper-log — dedup para um
+	// relógio persistentemente fora (dual boot) não espalhar o log a cada
+	// Check. Vive só em memória: a cada boot um novo offset é registrado
+	// uma vez.
+	lastLoggedOffset time.Duration
+	hasLoggedOffset  bool
 }
 
 // Deps wires a guard. ntp may be nil (offline daemon): a nil NTP client makes
@@ -120,6 +144,13 @@ type Outcome struct {
 	Suspicion bool
 	// Confirmed true = NTP agreed the local clock is wrong (tamper).
 	Confirmed bool
+	// Offset is the confirmed local−real clock offset (local.Sub(real)),
+	// meaningful only when Confirmed. Positive when the local clock is AHEAD
+	// of real time. The daemon shifts the pending expirations by this offset
+	// (scheduler.ShiftExpirations) BEFORE the boot reconcile, so a boot with
+	// a forged clock neither expires blocks early nor holds them past their
+	// real expiry.
+	Offset time.Duration
 	// Detail is a human-readable summary of the decision.
 	Detail string
 }
@@ -158,7 +189,8 @@ func (g *Guard) Check() Outcome {
 	// pode ser resolvida — aplica o bloqueio preventivo de imediato (Fase 2 do
 	// features-plan: o cenário "relógio adiantado + sem rede + restart"
 	// expiraria os bloqueios cedo sem proteção). Com NTP disponível, o
-	// veredito dele decide: valida → sem bloqueio; confirma → bloqueia.
+	// veredito dele decide: valida → sem bloqueio; confirma → registra,
+	// re-ancora e ajusta (sem lockdown — a hora real agora é conhecida).
 	// (Aplicar antes de consultar o NTP reescreveria o firewall a cada ciclo
 	// em sistemas saudáveis — CheckInterval 10 min > Tolerance 5 min — então
 	// o bloqueio imediato fica reservado aos casos em que o NTP não decide.)
@@ -181,9 +213,9 @@ func (g *Guard) Check() Outcome {
 	}
 	if realGap > Tolerance {
 		out.Confirmed = true
-		out.Detail += fmt.Sprintf(" — NTP confirma burla: relógio local %s fora do real", realGap.Round(time.Second))
-		g.applyLockdown()
-		g.confirmLockdown(ntpTime)
+		out.Offset = now.Sub(ntpTime) // local − real: positivo = relógio à frente
+		out.Detail += fmt.Sprintf(" — NTP confirma divergência: relógio local %s fora do real; expirações ajustadas para a hora real, sem bloqueio", realGap.Round(time.Second))
+		g.recordConfirmed(ntpTime, out.Offset)
 		return out
 	}
 
@@ -197,11 +229,11 @@ func (g *Guard) Check() Outcome {
 }
 
 // applyLockdown aplica o bloqueio preventivo all-internet (sentinela) nos
-// casos em que o NTP não limpa a suspeita: indisponível, falhou ou CONFIRMOU
-// a burla. É re-aplicado a cada ciclo enquanto a burla for confirmada (o
-// sentinela é substituído com expiração nova, então nunca expira antes de o
-// NTP validar). A liberação fica a cargo do scheduler (só remove o sentinela
-// do próprio guard).
+// casos em que o NTP NÃO decide a suspeita: indisponível ou falhou. É
+// re-aplicado a cada ciclo enquanto o NTP não voltar (o sentinela é
+// substituído com expiração nova, então nunca expira antes de o NTP
+// validar). A liberação fica a cargo do scheduler (só remove o sentinela do
+// próprio guard).
 func (g *Guard) applyLockdown() {
 	if g.lock == nil {
 		return
@@ -224,17 +256,37 @@ func (g *Guard) releaseLockdown() {
 	}
 }
 
-// confirmLockdown registra a burla confirmada no tamper-log e re-ancora a
-// referência no horário REAL (o bloqueio preventivo é aplicado pelo chamador
-// no caminho de confirmação — aqui o guard só registra e corrige a
-// referência).
-func (g *Guard) confirmLockdown(ntpTime time.Time) {
-	if g.logger != nil {
+// recordConfirmed registra a divergência confirmada por NTP no tamper-log
+// (dedup por offset — um relógio persistentemente fora, como no dual boot,
+// não gera um evento a cada Check), re-ancora a referência no horário REAL e
+// libera um lockdown preventivo pendente. NÃO aplica lockdown: com o NTP
+// respondendo, o guard sabe a hora real e as expirações são ajustadas para
+// ela (ShiftExpirations, no boot) — bloquear toda a internet seria punir um
+// relógio do SO configurado errado (RTC/fuso, dual boot). O lockdown
+// pendente (aplicado numa janela sem NTP) é liberado porque o motivo dele —
+// hora real desconhecida — deixou de existir.
+func (g *Guard) recordConfirmed(ntpTime time.Time, offset time.Duration) {
+	if changed := !g.hasLoggedOffset || absDuration(offset-g.lastLoggedOffset) > logDedupTolerance; changed && g.logger != nil {
+		dir := "à frente"
+		if offset < 0 {
+			dir = "atrás"
+		}
 		g.logger.Log("clock", "lockdown",
-			fmt.Sprintf("relógio adulterado confirmado por NTP; bloqueio preventivo até %s; hora real via NTP: %s",
-				ntpTime.Add(g.lockdownDuration).Format("2006-01-02 15:04:05"), ntpTime.Format("2006-01-02 15:04:05")))
+			fmt.Sprintf("relógio local %s %s do real, confirmado por NTP; expirações ajustadas para a hora real (%s); verifique o RTC/fuso (ex.: dual boot)",
+				absDuration(offset).Round(time.Second), dir, ntpTime.Format("2006-01-02 15:04:05")))
+		g.lastLoggedOffset = offset
+		g.hasLoggedOffset = true
 	}
 	// Re-ancora a referência no horário real: o próximo Check compara com o
 	// NTP, não com o relógio adulterado.
+	g.releaseLockdown()
 	_ = g.state.SetLastKnownTime(ntpTime)
+}
+
+// absDuration devolve |d|.
+func absDuration(d time.Duration) time.Duration {
+	if d < 0 {
+		return -d
+	}
+	return d
 }

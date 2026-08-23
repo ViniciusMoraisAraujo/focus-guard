@@ -205,7 +205,12 @@ type Scheduler struct {
 	blocks       map[string]policy.Block
 	timers       map[string]*time.Timer
 	bootstrapped bool
-	refreshStop  chan struct{}
+	// enforcePending marca um boot via Bootstrap(): o Reconcile seguinte deve
+	// rodar o passe completo do enforcer (Sync/BlockAll) mesmo sem divergência
+	// disco×RAM, porque o processo recém-nascido ainda não tem regras no SO.
+	// Consumida uma única vez pelo primeiro Reconcile.
+	enforcePending bool
+	refreshStop    chan struct{}
 	// stopOnce garante que Stop é idempotente: fechar um canal já fechado
 	// panicaria — o teardown do daemon pode chamá-lo mais de uma vez.
 	stopOnce sync.Once
@@ -424,6 +429,53 @@ func (s *Scheduler) invalidateSnapshot() {
 	s.snapshotDirty.Store(true)
 }
 
+// Bootstrap loads the persisted state into RAM without pruning or enforcing.
+// The daemon runs the clock validation (Clock Tamper Protection) between
+// Bootstrap and Reconcile: when NTP confirms the wall clock is forged by a
+// known offset, ShiftExpirations corrects the pending expirations to real
+// time BEFORE the reconcile evaluates them against the (still wrong) wall
+// clock. The next Reconcile still runs the full enforce pass (see
+// enforcePending), so a restart never skips re-applying the OS rules.
+// Reconcile itself still bootstraps on first call (tests and other callers),
+// so Bootstrap is only needed on the boot path that must interleave the
+// clock correction.
+func (s *Scheduler) Bootstrap() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if err := s.bootstrapLocked(); err != nil {
+		return err
+	}
+	// O Reconcile seguinte (boot) precisa reaplicar o enforcer mesmo que o
+	// disco já espelhe a RAM — o processo acabou de nascer e as regras do SO
+	// (hosts/firewall) ainda não existem. Sem esta flag, um boot com o estado
+	// já consistente retornaria cedo do Reconcile e o restart deixaria a
+	// máquina sem proteção.
+	s.enforcePending = true
+	return nil
+}
+
+// bootstrapLocked loads the persisted state into RAM. The caller must hold
+// s.mu.
+func (s *Scheduler) bootstrapLocked() error {
+	if s.bootstrapped {
+		return nil
+	}
+	state, err := s.store.Load()
+	if err != nil {
+		return fmt.Errorf("scheduler: erro ao carregar estado: %w", err)
+	}
+	for domain, block := range state.Blocks {
+		s.blocks[domain] = block
+	}
+	s.dnsEnabled = state.DNSEnabled
+	s.dnsUpstream = state.DNSUpstream
+	s.lastKnownTime = state.LastKnownTime
+	s.interceptorEnabled = state.InterceptorEnabled
+	s.invalidateSnapshot()
+	s.bootstrapped = true
+	return nil
+}
+
 // Reconcile loads the persisted state into RAM on the first call (bootstrap)
 // and, on every subsequent call, restores any disk tampering from the in-memory
 // state. Expired blocks are cleaned up and the enforcer is re-applied only when
@@ -441,22 +493,19 @@ func (s *Scheduler) Reconcile() error {
 	changed := false
 
 	if !s.bootstrapped {
-		state, err := s.store.Load()
-		if err != nil {
+		if err := s.bootstrapLocked(); err != nil {
 			s.mu.Unlock()
-			return fmt.Errorf("scheduler: erro ao carregar estado: %w", err)
+			return err
 		}
-		for domain, block := range state.Blocks {
-			s.blocks[domain] = block
-		}
-		s.dnsEnabled = state.DNSEnabled
-		s.dnsUpstream = state.DNSUpstream
-		s.lastKnownTime = state.LastKnownTime
-		s.interceptorEnabled = state.InterceptorEnabled
-		s.invalidateSnapshot()
-		s.bootstrapped = true
 		changed = true
 	} else {
+		// Boot via Bootstrap(): o enforcer precisa ser reaplicado mesmo sem
+		// divergência disco×RAM (o processo recém-nascido não tem regras no
+		// SO) — consumido uma única vez.
+		if s.enforcePending {
+			s.enforcePending = false
+			changed = true
+		}
 		// The disk is only a mirror: if it diverges from RAM (edited, emptied,
 		// deleted or corrupted), it is overwritten with the in-memory state.
 		// This comparison only runs after bootstrap — the boot path already
@@ -1337,6 +1386,48 @@ func (s *Scheduler) SetInterceptorEnabled(enabled bool) error {
 	}
 	s.mu.Unlock()
 	s.notifyChange()
+	return nil
+}
+
+// ShiftExpirations shifts every block's StartedAt/ExpiresAt by offset and
+// persists the corrected state (Clock Tamper Protection — Fase 2). When NTP
+// confirms the wall clock is forged by a known offset (local − real), the
+// daemon calls this BEFORE the boot reconcile: the reconcile compares
+// ExpiresAt against the forged wall clock, so shifting the expirations by the
+// offset makes it prune exactly when the REAL time passes the REAL expiry —
+// an advanced clock no longer expires blocks early (and a delayed clock no
+// longer holds them past their real expiry). Only meaningful at the restart
+// boundary: in-process timers are monotonic and immune, so mid-run calls are
+// harmless no-ops for enforcement (but still persist the corrected times).
+func (s *Scheduler) ShiftExpirations(offset time.Duration) error {
+	if offset == 0 {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	// Guarda quais bloqueios tinham timer para re-armá-los com a expiração
+	// corrigida (robustez fora do boot; no boot ainda não há timers).
+	hadTimer := make(map[string]bool, len(s.timers))
+	for domain := range s.timers {
+		hadTimer[domain] = true
+		s.timers[domain].Stop()
+		delete(s.timers, domain)
+	}
+	for domain, block := range s.blocks {
+		block.StartedAt = block.StartedAt.Add(offset)
+		block.ExpiresAt = block.ExpiresAt.Add(offset)
+		s.blocks[domain] = block
+	}
+	for domain := range hadTimer {
+		if block, ok := s.blocks[domain]; ok {
+			s.setupTimerLocked(block)
+		}
+	}
+	s.invalidateSnapshot()
+	if err := s.store.Save(s.ramState()); err != nil {
+		return fmt.Errorf("scheduler: erro ao salvar expirações ajustadas: %w", err)
+	}
 	return nil
 }
 

@@ -62,8 +62,9 @@ nas releases (`install-daemon.ps1`, `install-linux.sh`, `focusguard.service`,
   PowerShell, variável inexistente vira string vazia → `sc.exe create
   binPath=...` sem nome, e o watchdog não era instalado/removido. **Fix:**
   `$WatchdogServiceName = "FocusGuardWatchdog"` declarado junto com
-  `$ServiceName`, com o recovery alinhado às `actions=restart/5000/...`
-  (consistente com o `wix.json`/`internal/autostart`).
+  `$ServiceName`, com o recovery alinhado às `actions=restart/5000/...` do
+  watchdog (consistente com o `wix.json`/`internal/autostart`); o daemon
+  (DNS da rede) usa `restart/1000` — spec §5, ressuscita em ~1s.
 - **`install-linux.sh` — atalho desktop com `Terminal=true` e comentário da
   TUI** — a TUI foi removida e a CLI sem argumentos abre a interface web no
   navegador. **Fix:** comentário atualizado e `Terminal=false` (clicar no

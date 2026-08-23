@@ -1422,6 +1422,145 @@ func TestScheduler_ReleaseClockLockdown_DoesNotTouchUserPanic(t *testing.T) {
 	}
 }
 
+// TestScheduler_ShiftExpirations desloca StartedAt/ExpiresAt de TODOS os
+// bloqueios pelo offset confirmado pelo NTP (Clock Tamper Protection): o
+// reconcile do boot compara ExpiresAt contra o relógio local (possivelmente
+// adulterado), então o ajuste pré-reconcile faz a expiração acontecer quando
+// a hora REAL passar do término real. O estado corrigido persiste no
+// state.json e um offset zero é no-op.
+func TestScheduler_ShiftExpirations(t *testing.T) {
+	sched, _, st := setupTestScheduler(t)
+	stubResolveFuncCtx(t, map[string][]string{"docs.com": {"1.1.1.1"}})
+
+	if _, err := sched.Block("docs.com", 2*time.Hour); err != nil {
+		t.Fatalf("Block: %v", err)
+	}
+	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
+		t.Fatalf("BlockAllInternet: %v", err)
+	}
+
+	before := make(map[string]policy.Block)
+	list, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks: %v", err)
+	}
+	for _, b := range list {
+		before[b.Domain] = b
+	}
+
+	offset := 3 * time.Hour // relógio local à frente do real → expirações para frente
+	if err := sched.ShiftExpirations(offset); err != nil {
+		t.Fatalf("ShiftExpirations: %v", err)
+	}
+
+	after, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks (after): %v", err)
+	}
+	if len(after) != 2 {
+		t.Fatalf("ShiftExpirations removeu bloqueios: %d, want 2", len(after))
+	}
+	for _, b := range after {
+		prev, ok := before[b.Domain]
+		if !ok {
+			t.Fatalf("bloqueio %q sumiu após o shift", b.Domain)
+		}
+		if got := b.ExpiresAt.Sub(prev.ExpiresAt); got != offset {
+			t.Errorf("%q: ExpiresAt deslocado %v, want %v", b.Domain, got, offset)
+		}
+		if got := b.StartedAt.Sub(prev.StartedAt); got != offset {
+			t.Errorf("%q: StartedAt deslocado %v, want %v", b.Domain, got, offset)
+		}
+	}
+
+	// Persistido: o próximo restart já carrega a expiração corrigida.
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	for _, b := range after {
+		saved, ok := state.Blocks[b.Domain]
+		if !ok {
+			t.Fatalf("bloqueio %q não persistido após o shift", b.Domain)
+		}
+		if !saved.ExpiresAt.Equal(b.ExpiresAt) {
+			t.Errorf("%q: state.json com expiração %v, want %v", b.Domain, saved.ExpiresAt, b.ExpiresAt)
+		}
+	}
+
+	// Offset zero = no-op (não reescreve nem quebra nada).
+	if err := sched.ShiftExpirations(0); err != nil {
+		t.Fatalf("ShiftExpirations(0): %v", err)
+	}
+	final, _ := sched.ListBlocks()
+	for _, b := range final {
+		prev := after[0]
+		for _, p := range after {
+			if p.Domain == b.Domain {
+				prev = p
+			}
+		}
+		if !b.ExpiresAt.Equal(prev.ExpiresAt) {
+			t.Errorf("%q: shift zero deveria ser no-op, got %v → %v", b.Domain, prev.ExpiresAt, b.ExpiresAt)
+		}
+	}
+}
+
+// TestScheduler_BootstrapThenReconcile cobre o novo caminho de boot do daemon:
+// Bootstrap carrega o estado (bloqueios + last_known_time) SEM podar; o
+// ShiftExpirations corrige as expirações; o Reconcile seguinte poda apenas o
+// que expirou de verdade — nunca perde um bloqueio ativo por causa do
+// deslocamento.
+func TestScheduler_BootstrapThenReconcile(t *testing.T) {
+	// Seed: um scheduler grava um bloqueio ativo + a referência do relógio.
+	seed, _, st := setupTestScheduler(t)
+	stubResolveFuncCtx(t, map[string][]string{"docs.com": {"1.1.1.1"}})
+	if _, err := seed.Block("docs.com", 2*time.Hour); err != nil {
+		t.Fatalf("Block (seed): %v", err)
+	}
+	ref := time.Date(2026, 8, 10, 12, 0, 0, 0, time.UTC)
+	if err := seed.SetLastKnownTime(ref); err != nil {
+		t.Fatalf("SetLastKnownTime (seed): %v", err)
+	}
+
+	// "Restart": novo scheduler sobre o mesmo store.
+	sched, enf, _ := setupTestScheduler(t)
+	sched.store = st // reaproveita o mesmo state.json do seed
+	if err := sched.Bootstrap(); err != nil {
+		t.Fatalf("Bootstrap: %v", err)
+	}
+	if !sched.LastKnownTime().Equal(ref) {
+		t.Errorf("Bootstrap deveria carregar last_known_time, got %v", sched.LastKnownTime())
+	}
+	if !sched.HasActiveBlocks() {
+		t.Fatal("Bootstrap deveria carregar o bloqueio ativo")
+	}
+
+	// Correção do relógio (simula o guard confirmando relógio 3h à frente).
+	if err := sched.ShiftExpirations(3 * time.Hour); err != nil {
+		t.Fatalf("ShiftExpirations: %v", err)
+	}
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile após Bootstrap+Shift: %v", err)
+	}
+	if !sched.HasActiveBlocks() {
+		t.Fatal("Reconcile não pode podar o bloqueio que continua ativo (expiração corrigida)")
+	}
+	if enf.syncCalls == 0 {
+		t.Error("Reconcile deveria reaplicar o sync do enforcer com o bloqueio ativo")
+	}
+
+	// RAM e disco consistentes (o Reconcile não pode reescrever com nada
+	// divergente após o shift).
+	disk, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !statesEqual(disk, sched.ramState()) {
+		t.Error("disco e RAM divergiram após Bootstrap+Shift+Reconcile")
+	}
+}
+
 // TestScheduler_ApplyClockLockdown_SkipsActiveUserBlock: com um pânico do
 // usuário já ativo, o guard NÃO substitui o sentinela (tudo já está
 // bloqueado; tomar posse roubaria o bloqueio do usuário e o release depois

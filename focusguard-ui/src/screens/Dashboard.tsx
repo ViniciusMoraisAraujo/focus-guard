@@ -217,9 +217,10 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
                     Inconsistência de relógio detectada
                   </h3>
                   <p className="mt-1 text-sm text-muted-foreground">
-                    O relógio do sistema foi alterado além da tolerância e o NTP confirmou a
-                    divergência. O FocusGuard aplicou um <strong>bloqueio preventivo</strong> até a
-                    sincronização online validar o horário real — proteção reforçada contra burla.
+                    O relógio do sistema está fora da hora real (confirmado por NTP). O FocusGuard
+                    ajustou as expirações dos bloqueios para a hora real e registrou a ocorrência —
+                    <strong> nenhum bloqueio foi aplicado</strong>. Verifique o relógio/RTC do
+                    sistema (ex.: dual boot com Windows/Linux).
                   </p>
                   {clockLockdown.detail && (
                     <p className="mt-1 text-xs break-all text-muted-foreground/80">

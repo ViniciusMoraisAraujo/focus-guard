@@ -198,6 +198,30 @@ Para proteger toda a rede local **sem precisar passar o IP manual em cada celula
 
 
 
+### 2.1. Firewall Inbound da Porta 53 (Windows)
+
+* 
+**O Bug**: O servidor DNS bindou em `0.0.0.0:53` (e `[::]:53`), mas celulares e TVs da rede recebem *timeout* nas consultas.
+
+
+* 
+**A Causa**: O Windows Firewall bloqueia tráfego de **entrada** não solicitado por padrão — o bind abre o socket, mas o pacote nunca chega ao processo.
+
+
+* 
+**A Solução**: O daemon abre as regras de entrada da porta 53 automaticamente quando o sinkhole sobe (boot ou `dns-start`), via `AllowDNSInbound()` do enforcer:
+
+
+* `netsh advfirewall firewall add rule name=FocusGuard_DNS_Inbound_UDP dir=in action=allow protocol=udp localport=53`
+
+
+* `netsh advfirewall firewall add rule name=FocusGuard_DNS_Inbound_TCP dir=in action=allow protocol=tcp localport=53`
+
+
+* As regras são idempotentes e **mantidas** no `dns-stop` de propósito: um dispositivo que ainda aponta para a máquina não pode perder o DNS silenciosamente. Além disso, o perfil de rede deve ser **Privada** (não Pública).
+
+
+
 ### 3. Cache DNS Local dos Dispositivos Móveis (TTL)
 
 * 

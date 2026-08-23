@@ -124,6 +124,16 @@ corrompida), handler IPC com spec, tela Rede exibindo agregação, `contract-che
 2. **Bloquear tudo preventivamente** (sentinela all-internet) até NTP validar
 3. Ajustar expirações pendentes pelo gap **em qualquer direção** (re-persistir com o tempo correto)
 
+> **Correção (dual boot):** o item 2 foi **revogado** quando o NTP **confirma**
+> a divergência — com o NTP respondendo, a hora real é conhecida, então o
+> guard registra (dedup por offset), re-ancora e **ajusta as expirações** (item
+> 3, implementado como `scheduler.ShiftExpirations` no boot) **sem bloquear**
+> nada; um lockdown pendente é liberado. O lockdown all-internet ficou
+> reservado à suspeita com NTP **indisponível/falho** (hora real desconhecida).
+> Motivo: dual boot (Windows RTC hora local × Linux RTC UTC) deixa o relógio
+> do SO deslocado por horas em todo boot — a confirmação recorrente do NTP
+> mantinha o usuário sem internet permanentemente (ver CHANGELOG).
+
 **Decisões:**
 - Tolerância (5 min) e timeout NTP (3s) como constantes testáveis
 - NTP falha (sem rede) → manter suspeita, não liberar

@@ -69,11 +69,11 @@ afterEach(() => {
 });
 
 describe("Dashboard — alerta de Clock Guard (Fase 2)", () => {
-  it("renderiza o alerta destrutivo com lockdown de relógio recente", async () => {
+  it("renderiza o alerta destrutivo com divergência de relógio recente", async () => {
     okTamper([
       evento({
         at: new Date(now.getTime() - 5 * 60 * 1000).toISOString(), // 5 min atrás
-        detail: "relógio adulterado; bloqueio preventivo até 13:00",
+        detail: "relógio local 3h0m0s à frente do real, confirmado por NTP; expirações ajustadas para a hora real (13:00:00)",
       }),
     ]);
 
@@ -88,8 +88,12 @@ describe("Dashboard — alerta de Clock Guard (Fase 2)", () => {
     expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
       "Inconsistência de relógio detectada",
     );
-    expect(container?.querySelector('[role="alert"]')?.textContent).toContain("bloqueio preventivo");
-    expect(container?.querySelector('[role="alert"]')?.textContent).toContain("13:00");
+    // NTP confirmou → a hora real é conhecida: o FocusGuard ajusta as
+    // expirações, NÃO bloqueia a internet (dual boot continua funcionando).
+    expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
+      "nenhum bloqueio foi aplicado",
+    );
+    expect(container?.querySelector('[role="alert"]')?.textContent).toContain("13:00:00");
   });
 
   it("não renderiza o alerta sem eventos de clock/lockdown", async () => {

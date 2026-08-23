@@ -421,23 +421,20 @@ func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func(
 	return func() { once.Do(func() { close(stop) }) }
 }
 
-// startClockGuardWorker roda a validação do relógio (Clock Tamper Protection
-// — Fase 2): um Check imediato no boot + um Check periódico a cada
-// clockguard.CheckInterval. Quando o gap do wall clock ultrapassa a
-// tolerância (SUSPEITA) e o NTP não consegue limpar a suspeita — offline,
-// falhou ou CONFIRMANDO a burla — o bloqueio preventivo all-internet é
-// aplicado (relógio adiantado + restart não expira os bloqueios sem
-// proteção; a burla confirmada é registrada no tamper-log). NTP validando o
-// relógio local libera um bloqueio pendente e re-ancora a referência. O NTP
-// é best-effort e com timeout curto — um daemon offline nunca trava o boot.
-// Retorna um stop func para o lifecycle.
-func startClockGuardWorker(st clockguard.State, lock clockguard.Lockdown, logger clockguard.Logger, interval time.Duration) func() {
-	guard := clockguard.New(clockguard.Deps{
-		State:    st,
-		NTP:      ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
-		Lockdown: lock,
-		Logger:   logger,
-	})
+// startClockGuardWorker roda a validação periódica do relógio (Clock Tamper
+// Protection — Fase 2): um Check imediato + um Check a cada
+// clockguard.CheckInterval, reusando o guard do check síncrono do boot (o
+// dedup do tamper-log e a re-ancoragem continuam entre ciclos). Quando o gap
+// do wall clock ultrapassa a tolerância (SUSPEITA) e o NTP não consegue
+// limpar a suspeita — offline ou falhou — o bloqueio preventivo all-internet
+// é aplicado (relógio adiantado + restart não expira os bloqueios sem
+// proteção). O NTP validando o relógio local OU confirmando a divergência
+// (hora real agora conhecida; expirações já ajustadas no boot) libera um
+// bloqueio pendente e re-ancora a referência; a burla confirmada é
+// registrada no tamper-log (dedup por offset). O NTP é best-effort e com
+// timeout curto — um daemon offline nunca trava. Retorna um stop func para o
+// lifecycle.
+func startClockGuardWorker(guard *clockguard.Guard, interval time.Duration) func() {
 	stop := make(chan struct{})
 	go func() {
 		check := func() {
@@ -476,6 +473,39 @@ func localIP4() string {
 	}
 	defer conn.Close()
 	return strings.Split(conn.LocalAddr().String(), ":")[0]
+}
+
+// dnsPortOpener é a capacidade opcional do enforcer de abrir a porta 53
+// (inbound) no firewall — implementada pelo enforcer Windows; no Linux é no-op
+// e plataformas sem a capacidade simplesmente não abrem nada. O type-assert
+// local evita adicionar o método à interface Enforcer (e quebrar os fakes de
+// teste do scheduler/ipc/hostswatch).
+type dnsPortOpener interface {
+	AllowDNSInbound() error
+}
+
+// dnsCacheFlusher é a capacidade opcional do enforcer de limpar o cache DNS do
+// SO (ipconfig /flushdns no Windows; no-op no Linux).
+type dnsCacheFlusher interface {
+	FlushDNSCache() error
+}
+
+// setupDNSHostMachine prepara a máquina hospedeira para ser o servidor DNS da
+// rede ("Plug & Play" — o usuário só configura o IP no roteador): abre a porta
+// 53 para conexões de ENTRADA (UDP/TCP) e limpa o cache DNS local para a
+// máquina começar a resolver pelo sinkhole. Best-effort: falha loga e não
+// derruba o daemon. Idempotente.
+func setupDNSHostMachine(enf enforcer.Enforcer) {
+	if opener, ok := enf.(dnsPortOpener); ok {
+		if err := opener.AllowDNSInbound(); err != nil {
+			log.Printf("[FocusGuard Daemon] Falha ao abrir a porta 53 no firewall (inbound): %v", err)
+		}
+	}
+	if flusher, ok := enf.(dnsCacheFlusher); ok {
+		if err := flusher.FlushDNSCache(); err != nil {
+			log.Printf("[FocusGuard Daemon] Falha ao limpar o cache DNS: %v", err)
+		}
+	}
 }
 
 // interceptorLifecycle é o estado do listener HTTP(S) da Interceptor Page
@@ -995,6 +1025,38 @@ func runDaemon() bool {
 	hub := eventhub.New(64)
 	sched.SetOnChange(func() { hub.Publish(ipc.EventBlocksChanged) })
 
+	// Tamper log: histórico de tentativas de burla (adulterações externas do
+	// hosts/state detectadas e revertidas) — "focusguard tamper-log". Precisa
+	// existir antes do clock guard do boot (o logger do guard é ele).
+	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
+
+	// Clock Tamper Protection (Fase 2): validação do wall clock ANTES do
+	// reconcile do boot. Carrega o estado (Bootstrap), valida o relógio
+	// contra o NTP e, se a divergência for CONFIRMADA, ajusta as expirações
+	// pendentes para a hora REAL (ShiftExpirations) antes de o reconcile
+	// avaliá-las contra o relógio local — um relógio adulterado (ou dual
+	// boot com RTC fora) não expira bloqueios cedo nem os segura além do
+	// tempo real. Com NTP indisponível (offline/falha) a suspeita aplica o
+	// bloqueio preventivo (sentinela all-internet) — ver startClockGuardWorker.
+	// Boot saudável não consulta o NTP (gap ≤ tolerância), então o boot não
+	// ganha latência.
+	if err := sched.Bootstrap(); err != nil {
+		log.Printf("[FocusGuard Daemon] Erro ao carregar estado: %v", err)
+		stopLifecycleComponents(components)
+		return false
+	}
+	clockGuard := clockguard.New(clockguard.Deps{
+		State:    sched,
+		NTP:      ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
+		Lockdown: clockLockdownAdapter{s: sched},
+		Logger:   clockLoggerAdapter{rec: tamperRec},
+	})
+	if out := clockGuard.Check(); out.Confirmed {
+		if err := sched.ShiftExpirations(out.Offset); err != nil {
+			log.Printf("[ClockGuard] Falha ao ajustar expirações para a hora real: %v", err)
+		}
+	}
+
 	if err := sched.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro na reconciliação: %v", err)
 		stopLifecycleComponents(components)
@@ -1019,16 +1081,12 @@ func runDaemon() bool {
 	wd := watchdog.New(sched, watchdogSec)
 	go wd.Start()
 
-	// Tamper log: histórico de tentativas de burla (adulterações externas do
-	// hosts/state detectadas e revertidas) — "focusguard tamper-log".
-	tamperRec := tamper.NewRecorder(filepath.Join(filepath.Dir(statePath), "tamper.jsonl"))
-
-	// Clock Tamper Protection (Fase 2): validação do wall clock no boot e a
-	// cada 10 min. Um salto além da tolerância (suspeita) aplica o bloqueio
-	// preventivo (sentinela all-internet, via scheduler) já de imediato; o NTP
-	// valida → libera, confirma → registra no tamper-log. O tamperRec satifaz
-	// o clockguard.Logger (Log(source, action, detail)).
-	stopClock := startClockGuardWorker(sched, clockLockdownAdapter{s: sched}, clockLoggerAdapter{rec: tamperRec}, clockguard.CheckInterval)
+	// Worker periódico do Clock Guard (mesmo guard do boot — o dedup do
+	// tamper-log e a re-ancoragem continuam entre ciclos): um salto além da
+	// tolerância com NTP indisponível/falho mantém o bloqueio preventivo; o
+	// NTP validando o relógio (ou confirmando a divergência — hora real
+	// agora conhecida) libera um bloqueio pendente e re-ancora a referência.
+	stopClock := startClockGuardWorker(clockGuard, clockguard.CheckInterval)
 	if stopClock != nil {
 		components = append(components, daemon.StopOnly(stopClock))
 	}
@@ -1105,7 +1163,12 @@ func runDaemon() bool {
 		if err := dnsSrv.Start(); err != nil {
 			log.Printf("[FocusGuard Daemon] DNS habilitado, mas não subiu: %v", err)
 		} else {
-			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsserver.DefaultBindAddr, dnsUpstream)
+			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsSrv.Addr(), dnsUpstream)
+			// Sinkhole de rede ("Plug & Play"): abre a porta 53 inbound no
+			// firewall e limpa o cache DNS local, para os dispositivos da LAN
+			// alcançarem o servidor e a máquina resolver pelo sinkhole
+			// (best-effort).
+			setupDNSHostMachine(enf)
 		}
 	}
 	components = append(components, daemon.StopOnly(func() { _ = dnsSrv.Stop() }))
@@ -1309,7 +1372,13 @@ func runDaemon() bool {
 		},
 	}.Handler())
 	// dns via ipc.DomainAction (DIP — pós-reorg item 2).
-	hDNSStart := dns.NewStart(dnsSrv, sched, dohHook)
+	// dns-start também prepara a máquina hospedeira (porta 53 inbound no
+	// firewall + flush do cache DNS) para os dispositivos da rede alcançarem o
+	// sinkhole — além do hook DoH existente.
+	hDNSStart := dns.NewStart(dnsSrv, sched, func() {
+		dohHook()
+		setupDNSHostMachine(enf)
+	})
 	server.Register(ipc.DomainAction[dns.NoInput, dns.StartResult]{
 		Name:   hDNSStart.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),

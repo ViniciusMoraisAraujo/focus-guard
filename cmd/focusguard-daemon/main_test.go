@@ -1371,6 +1371,42 @@ func (f *fakeDaemonEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
 
+// dnsHostSetupRecorder implementa o enforcer com as capacidades opcionais
+// dnsPortOpener e dnsCacheFlusher, registrando as chamadas para o teste do
+// wiring do setup da máquina hospedeira do sinkhole.
+type dnsHostSetupRecorder struct {
+	openCalls  atomic.Int32
+	flushCalls atomic.Int32
+	enforcer.Enforcer
+}
+
+func (r *dnsHostSetupRecorder) AllowDNSInbound() error {
+	r.openCalls.Add(1)
+	return nil
+}
+
+func (r *dnsHostSetupRecorder) FlushDNSCache() error {
+	r.flushCalls.Add(1)
+	return nil
+}
+
+func TestSetupDNSHostMachine_OpensPortAndFlushesCache(t *testing.T) {
+	r := &dnsHostSetupRecorder{}
+	setupDNSHostMachine(r)
+	if r.openCalls.Load() != 1 {
+		t.Errorf("AllowDNSInbound chamado %d vez(es), esperava 1", r.openCalls.Load())
+	}
+	if r.flushCalls.Load() != 1 {
+		t.Errorf("FlushDNSCache chamado %d vez(es), esperava 1", r.flushCalls.Load())
+	}
+}
+
+func TestSetupDNSHostMachine_SkipsWithoutCapability(t *testing.T) {
+	// fakeDaemonEnforcer não implementa as capacidades: os type-asserts falham
+	// e nada é chamado (nem panic).
+	setupDNSHostMachine(&fakeDaemonEnforcer{})
+}
+
 // seededStateFile writes a state.json containing one active block, so the
 // scheduler has RAM content after bootstrap without any DNS lookups.
 func seededStateFile(t *testing.T) string {

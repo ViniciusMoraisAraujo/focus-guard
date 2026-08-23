@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   ArrowRight,
+  BookOpen,
   Check,
+  Copy,
   EyeOff,
   Laptop,
   Loader2,
@@ -37,7 +39,7 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { useData } from "@/context";
+import { useData, type Screen as ScreenId } from "@/context";
 import { toast } from "@/lib/toast";
 import { cn } from "@/lib/utils";
 
@@ -45,7 +47,7 @@ import { cn } from "@/lib/utils";
 // do daemon, o upstream (dns-set-upstream, persistido no state.json) e mostra
 // o estado ao vivo (listening, upstream, consultas, bloqueios e diagnóstico
 // de porta 53).
-export function Rede() {
+export function Rede({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
   const { daemonUp, status, refresh } = useData();
   const [busy, setBusy] = useState<null | "start" | "stop">(null);
   const [upstreamBusy, setUpstreamBusy] = useState<string | null>(null);
@@ -149,57 +151,62 @@ export function Rede() {
       ) : (
         <>
           <Card className={cn(enabled && listening && "ring-emerald-500/30")}>
-            <CardContent className="flex flex-col gap-4 px-5 py-4 sm:flex-row sm:items-center sm:justify-between">
-              <div className="flex items-center gap-4">
-                <div
-                  className={cn(
-                    "grid size-12 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
-                    listening && "bg-emerald-500/10 text-emerald-500 ring-emerald-500/30",
-                  )}
-                >
-                  {listening ? <Network className="size-6" /> : <ServerCog className="size-6" />}
-                </div>
-                <div>
-                  <div className="flex items-center gap-2">
-                    <h3 className="font-heading text-lg font-semibold">
-                      {listening ? "Sinkhole ativo" : enabled ? "Habilitado, mas parado" : "Desativado"}
-                    </h3>
-                    <Badge
-                      variant={listening ? "secondary" : "outline"}
-                      className={cn(listening && "bg-emerald-500/10 text-emerald-500")}
-                    >
-                      {enabled ? "dns ligado" : "dns desligado"}
-                    </Badge>
+            <CardContent className="flex flex-col gap-4 px-5 py-4">
+              <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                <div className="flex items-center gap-4">
+                  <div
+                    className={cn(
+                      "grid size-12 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
+                      listening && "bg-emerald-500/10 text-emerald-500 ring-emerald-500/30",
+                    )}
+                  >
+                    {listening ? <Network className="size-6" /> : <ServerCog className="size-6" />}
                   </div>
-                  <p className="text-sm text-muted-foreground">
-                    {listening
-                      ? `Ouvindo em ${dns?.dns_addr ?? "—"} (upstream ${activeUpstream ?? "—"})`
-                      : enabled
-                        ? "O servidor não subiu — veja o diagnóstico abaixo."
-                        : "Ligue o sinkhole para proteger a rede inteira."}
-                  </p>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="font-heading text-lg font-semibold">
+                        {listening ? "Sinkhole ativo" : enabled ? "Habilitado, mas parado" : "Desativado"}
+                      </h3>
+                      <Badge
+                        variant={listening ? "secondary" : "outline"}
+                        className={cn(listening && "bg-emerald-500/10 text-emerald-500")}
+                      >
+                        {enabled ? "dns ligado" : "dns desligado"}
+                      </Badge>
+                    </div>
+                    <p className="text-sm text-muted-foreground">
+                      {listening
+                        ? `Ouvindo em ${dns?.dns_addr ?? "—"} (upstream ${activeUpstream ?? "—"})`
+                        : enabled
+                          ? "O servidor não subiu — veja o diagnóstico abaixo."
+                          : "Ligue o sinkhole para proteger a rede inteira."}
+                    </p>
+                  </div>
+                </div>
+
+                <div className="flex shrink-0 gap-2">
+                  {!enabled && (
+                    <Button
+                      onClick={() => void act("start")}
+                      disabled={busy !== null || upstreamBusy !== null}
+                    >
+                      {busy === "start" ? <Loader2 className="animate-spin" /> : <Play />} Ligar
+                    </Button>
+                  )}
+                  {enabled && (
+                    <Button
+                      variant="destructive"
+                      onClick={() => void act("stop")}
+                      disabled={busy !== null || upstreamBusy !== null}
+                    >
+                      {busy === "stop" ? <Loader2 className="animate-spin" /> : <Power />} Desligar
+                    </Button>
+                  )}
                 </div>
               </div>
 
-              <div className="flex shrink-0 gap-2">
-                {!enabled && (
-                  <Button
-                    onClick={() => void act("start")}
-                    disabled={busy !== null || upstreamBusy !== null}
-                  >
-                    {busy === "start" ? <Loader2 className="animate-spin" /> : <Play />} Ligar
-                  </Button>
-                )}
-                {enabled && (
-                  <Button
-                    variant="destructive"
-                    onClick={() => void act("stop")}
-                    disabled={busy !== null || upstreamBusy !== null}
-                  >
-                    {busy === "stop" ? <Loader2 className="animate-spin" /> : <Power />} Desligar
-                  </Button>
-                )}
-              </div>
+              {/* IP/MAC da máquina — os valores da reserva DHCP do roteador */}
+              <LanInfoStrip ip={dns?.lan_ip} mac={dns?.lan_mac} />
             </CardContent>
           </Card>
 
@@ -322,29 +329,8 @@ export function Rede() {
             </CardContent>
           </Card>
 
-          <Card>
-            <CardContent className="flex flex-col gap-3 px-5 py-4">
-              <h3 className="font-heading text-sm font-semibold text-muted-foreground">
-                Configuração "Rei da Rede" no roteador
-              </h3>
-              <ol className="flex list-decimal flex-col gap-2 pl-5 text-sm text-muted-foreground">
-                <li>
-                  Fixe o IP do PC que roda o FocusGuard no DHCP do roteador
-                  (ex.: <code className="rounded bg-muted px-1">192.168.1.100</code>).
-                </li>
-                <li>
-                  Aponte o <strong className="text-foreground">DNS primário</strong> do DHCP para
-                  o IP do PC.
-                </li>
-                <li>
-                  Configure um DNS público de confiança (ex.:{" "}
-                  <code className="rounded bg-muted px-1">1.1.1.1</code>) como{" "}
-                  <strong className="text-foreground">DNS secundário</strong> — se o PC cair, a
-                  rede continua navegando.
-                </li>
-              </ol>
-            </CardContent>
-          </Card>
+          {/* Manual de configuração: link para a tela Guia (sistema + roteador por fabricante) */}
+          <GuideCard onNavigate={onNavigate} />
         </>
       )}
     </Screen>
@@ -685,6 +671,98 @@ function UpstreamCard({
             Aplicar
           </Button>
         </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+// LanInfoStrip — IP/MAC da máquina no card principal da Rede: os valores que
+// entram na reserva DHCP do roteador (IP fixo + DNS primário). Best-effort:
+// some quando o daemon ainda não reportou a LAN.
+function LanInfoStrip({ ip, mac }: { ip?: string; mac?: string }) {
+  const copy = async (text: string, label: string) => {
+    if (!text) return;
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(`${label} copiado.`, "ok");
+    } catch {
+      toast("Não foi possível copiar.", "err");
+    }
+  };
+
+  if (!ip) return null;
+
+  return (
+    <div className="flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border pt-3">
+      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Network className="size-3.5 shrink-0" />
+        IP da máquina
+        <code className="rounded bg-muted px-1 font-mono text-foreground">{ip}</code>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          aria-label="Copiar IP"
+          title="Copiar IP"
+          onClick={() => void copy(ip, "IP")}
+        >
+          <Copy className="size-3.5" />
+        </Button>
+      </span>
+      <span className="flex items-center gap-1.5 text-sm text-muted-foreground">
+        <Laptop className="size-3.5 shrink-0" />
+        MAC
+        <code className="rounded bg-muted px-1 font-mono text-foreground">{mac || "—"}</code>
+        {mac && (
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Copiar MAC"
+            title="Copiar MAC"
+            onClick={() => void copy(mac, "MAC")}
+          >
+            <Copy className="size-3.5" />
+          </Button>
+        )}
+      </span>
+      <span className="text-xs text-muted-foreground">
+        Use na reserva DHCP do roteador — passo a passo na tela Guia.
+      </span>
+    </div>
+  );
+}
+
+// GuideCard — atalho para o manual completo (tela Guia): sistema Windows,
+// roteador com guias por fabricante e diagnóstico + IP/MAC da máquina (os
+// valores da reserva DHCP, com copiar). Mantém a tela Rede enxuta.
+function GuideCard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
+  const { status } = useData();
+  return (
+    <Card>
+      <CardContent className="flex flex-col gap-3 px-5 py-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex items-start gap-3">
+            <BookOpen className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+            <div className="flex flex-col gap-0.5">
+              <h3 className="font-heading text-base font-semibold">
+                Manual de configuração
+              </h3>
+              <p className="text-sm text-muted-foreground">
+                Como apontar o sinkhole no sistema e no roteador — com guias
+                por fabricante (ZTE, TP-Link, Huawei…) e diagnóstico.
+              </p>
+            </div>
+          </div>
+          <Button
+            variant="outline"
+            className="shrink-0"
+            onClick={() => onNavigate("guia")}
+          >
+            <BookOpen /> Abrir guia completo
+          </Button>
+        </div>
+
+        {/* IP/MAC da máquina — os valores da reserva DHCP do roteador */}
+        <LanInfoStrip ip={status?.lan_ip} mac={status?.lan_mac} />
       </CardContent>
     </Card>
   );

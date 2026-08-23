@@ -356,6 +356,85 @@ func (e *windowsEnforcer) flushDNS() {
 	_, _ = cmd.CombinedOutput()
 }
 
+// Nomes estáveis das regras inbound do DNS sinkhole — não alterar: a
+// idempotência do AllowDNSInbound depende deles para pular regras já
+// existentes. O Windows Firewall bloqueia tráfego de entrada não solicitado
+// por padrão; sem estas regras os dispositivos da LAN não alcançam a porta 53
+// do daemon (timeout nas consultas).
+const (
+	dnsInboundUDPRuleName = "FocusGuard_DNS_Inbound_UDP"
+	dnsInboundTCPRuleName = "FocusGuard_DNS_Inbound_TCP"
+)
+
+// AllowDNSInbound abre a porta 53 (UDP e TCP) para conexões de ENTRADA
+// (dir=in), permitindo que celulares, TVs e demais dispositivos da rede usem
+// o sinkhole como DNS primário. Idempotente: regras já presentes são puladas.
+// Chamado pelo daemon quando o servidor DNS sobe (boot ou dns-start); as
+// regras são MANTIDAS no dns-stop de propósito — um dispositivo que ainda
+// aponta para a máquina perderia o DNS silenciosamente se a regra sumisse.
+func (e *windowsEnforcer) AllowDNSInbound() error {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+
+	if err := e.checkAdmin(); err != nil {
+		return err
+	}
+
+	rules := []struct {
+		name     string
+		protocol string
+	}{
+		{dnsInboundUDPRuleName, "udp"},
+		{dnsInboundTCPRuleName, "tcp"},
+	}
+	existing := e.existingFocusGuardRules()
+
+	added := false
+	for _, r := range rules {
+		if existing[r.name] {
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		cmd := execCommandContext(ctx, "netsh", addDNSPortRuleArgs(r.name, r.protocol)...)
+		out, err := cmd.CombinedOutput()
+		cancel()
+		if err != nil {
+			return fmt.Errorf("netsh DNS inbound (%s) falhou: %w (%s)", r.name, err, strings.TrimSpace(string(out)))
+		}
+		added = true
+	}
+	if added {
+		e.invalidateRuleCache()
+		e.invalidateStatusCache()
+	}
+	return nil
+}
+
+// FlushDNSCache clears the Windows resolver cache (ipconfig /flushdns) so
+// stale resolutions of freshly blocked/unblocked domains don't linger on the
+// host. Best-effort: a failure (ipconfig ausente, sem privilégio) é ignorada.
+// O daemon chama quando o sinkhole sobe (boot/dns-start) para a máquina
+// começar a resolver pelo servidor DNS local — "Plug & Play", sem o usuário
+// abrir o PowerShell.
+func (e *windowsEnforcer) FlushDNSCache() error {
+	e.flushDNS()
+	return nil
+}
+
+// addDNSPortRuleArgs builds the netsh args for an inbound allow rule on port
+// 53 (localport), used by AllowDNSInbound. Name and protocol are the only
+// variables so tests can assert the exact command shape.
+func addDNSPortRuleArgs(ruleName, protocol string) []string {
+	return []string{
+		"advfirewall", "firewall", "add", "rule",
+		"name=" + ruleName,
+		"dir=in",
+		"action=allow",
+		"protocol=" + protocol,
+		"localport=53",
+	}
+}
+
 func parseFocusGuardRuleNames(output []byte) map[string]bool {
 	names := make(map[string]bool)
 	for _, line := range bytes.Split(output, []byte("\n")) {

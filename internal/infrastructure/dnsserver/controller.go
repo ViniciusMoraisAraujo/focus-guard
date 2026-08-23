@@ -2,6 +2,7 @@ package dnsserver
 
 import (
 	"fmt"
+	"log"
 	"net"
 	"sync"
 	"time"
@@ -70,6 +71,9 @@ func (c *Controller) Start() error {
 	srv.SetInterceptIP(c.interceptIP)
 	if err := srv.Start(c.bindAddr); err != nil {
 		c.startErr = fmt.Errorf("%w%s", err, bindHint(c.bindAddr))
+		// Registra também aqui: o dns-start via IPC (CLI/painel) devolve o
+		// erro ao chamador, mas o log do daemon é o registro de quem ativou.
+		log.Printf("[FocusGuard DNS] falha ao subir o listener em %s: %v", c.bindAddr, c.startErr)
 		return c.startErr
 	}
 
@@ -155,6 +159,7 @@ func (c *Controller) SetUpstream(upstream string) error {
 	srv.SetInterceptIP(c.interceptIP)
 	if err := srv.Start(c.bindAddr); err != nil {
 		c.startErr = fmt.Errorf("%w%s", err, bindHint(c.bindAddr))
+		log.Printf("[FocusGuard DNS] falha ao reiniciar o listener em %s (troca de upstream): %v", c.bindAddr, c.startErr)
 		return c.startErr
 	}
 	c.server = srv
