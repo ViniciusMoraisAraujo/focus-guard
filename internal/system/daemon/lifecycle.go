@@ -17,6 +17,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 )
 
 // Server is the surface the lifecycle needs from the IPC server: Start blocks
@@ -51,6 +52,15 @@ type Deps struct {
 	// CanStop reports whether a shutdown may proceed (no active blocks or
 	// pomodoro session). Consulted for signals and service stops.
 	CanStop func() bool
+	// ForceShutdownTimeout is the maximum time the daemon waits for CanStop
+	// to become true after receiving a shutdown signal (SIGTERM/SIGINT/service
+	// stop) before forcing an immediate shutdown. Zero disables the forced
+	// shutdown (legacy behavior: the daemon ignores the signal until CanStop
+	// returns true, which risks a SIGKILL from systemd/SCM).
+	//
+	// Recommended: 60s — well within systemd's default TimeoutStopSec=90s,
+	// leaving time for the daemon to persist state and exit cleanly.
+	ForceShutdownTimeout time.Duration
 }
 
 // stopOnly adapta um stop func a um Component cujo Start é no-op — usado
@@ -111,6 +121,22 @@ func (d *Daemon) Run(ctx context.Context) error {
 	// zerado — um canal fechado fica "pronto" para sempre no select, o que
 	// faria este loop hot-looper como um canal de sinal fechado.
 	svcStop := d.deps.Stop
+
+	// Force timer: quando um pedido de parada é recusado (CanStop=false), o
+	// daemon aguarda ForceShutdownTimeout antes de forçar o encerramento —
+	// sem isso o systemd mata o processo com SIGKILL após o TimeoutStopSec.
+	// forceTimer é recriado a cada novo pedido de parada recusado; forceCh
+	// é o canal que dispara quando o timeout expira.
+	var forceTimer *time.Timer
+	var forceCh <-chan time.Time
+
+	requestShutdown := func(reason string) {
+		_ = d.deps.Server.Stop()
+		<-serverDone
+		log.Printf("[FocusGuard Daemon] %s. Encerrando servidor IPC...", reason)
+		d.shutdown()
+	}
+
 	for {
 		select {
 		case err := <-serverDone:
@@ -127,24 +153,56 @@ func (d *Daemon) Run(ctx context.Context) error {
 				return nil
 			}
 			if !d.canStop() {
-				log.Println("[FocusGuard Daemon] Sinal ignorado: existem bloqueios/sessão ativos.")
+				if d.deps.ForceShutdownTimeout > 0 {
+					log.Printf("[FocusGuard Daemon] Sinal recebido, mas existem bloqueios/sessão ativos. Forçando encerramento em %s (se bloqueios não forem liberados)...", d.deps.ForceShutdownTimeout)
+					if forceTimer == nil {
+						forceTimer = time.NewTimer(d.deps.ForceShutdownTimeout)
+						forceCh = forceTimer.C
+					} else {
+						forceTimer.Reset(d.deps.ForceShutdownTimeout)
+					}
+				} else {
+					log.Println("[FocusGuard Daemon] Sinal ignorado: existem bloqueios/sessão ativos.")
+				}
 				continue
 			}
+			if forceTimer != nil {
+				forceTimer.Stop()
+				forceTimer = nil
+				forceCh = nil
+			}
 			log.Println("[FocusGuard Daemon] Nenhum bloqueio/sessão ativo. Encerrando servidor IPC...")
-			_ = d.deps.Server.Stop()
-			<-serverDone
-			d.shutdown()
+			requestShutdown("Parada limpa")
 			return nil
 		case <-svcStop:
 			svcStop = nil
 			if !d.canStop() {
-				log.Println("[FocusGuard Daemon] Parada do serviço ignorada: existem bloqueios/sessão ativos.")
+				if d.deps.ForceShutdownTimeout > 0 {
+					log.Printf("[FocusGuard Daemon] Parada do serviço recebida, mas existem bloqueios/sessão ativos. Forçando encerramento em %s...", d.deps.ForceShutdownTimeout)
+					if forceTimer == nil {
+						forceTimer = time.NewTimer(d.deps.ForceShutdownTimeout)
+						forceCh = forceTimer.C
+					} else {
+						forceTimer.Reset(d.deps.ForceShutdownTimeout)
+					}
+				} else {
+					log.Println("[FocusGuard Daemon] Parada do serviço ignorada: existem bloqueios/sessão ativos.")
+				}
 				continue
 			}
+			if forceTimer != nil {
+				forceTimer.Stop()
+				forceTimer = nil
+				forceCh = nil
+			}
 			log.Println("[FocusGuard Daemon] Serviço parando. Encerrando servidor IPC...")
-			_ = d.deps.Server.Stop()
-			<-serverDone
-			d.shutdown()
+			requestShutdown("Parada do serviço")
+			return nil
+		case <-forceCh:
+			forceTimer = nil
+			forceCh = nil
+			log.Println("[FocusGuard Daemon] Timeout de encerramento atingido — forçando saída (bloqueios/sessão ainda ativos). O estado será restaurado no próximo boot.")
+			requestShutdown("Encerramento forçado")
 			return nil
 		}
 	}

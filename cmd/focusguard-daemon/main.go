@@ -674,6 +674,17 @@ func ipOrNil(s string) net.IP {
 var serviceStopCh = make(chan struct{})
 var daemonDoneCh = make(chan struct{})
 
+// isFatalBootError reports whether the error is a permanent boot failure
+// that should NOT be retried (e.g. permission denied on state.json). A
+// transient error (disk full, temporary NFS outage) might resolve on retry,
+// but a permission error never will — retrying just crash-loops.
+func isFatalBootError(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, os.ErrPermission)
+}
+
 func getStateFilePath() string {
 	if goos == "windows" {
 		return filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard", "state.json")
@@ -1001,6 +1012,10 @@ func runDaemon() bool {
 	if err != nil {
 		log.Printf("[FocusGuard Daemon] Erro ao criar store: %v", err)
 		stopLifecycleComponents(components)
+		if isFatalBootError(err) {
+			log.Printf("[FocusGuard Daemon] Erro fatal: %s não é acessível (permissão negada). Verifique as permissões (chmod 0644 %s) ou execute como root.", statePath, statePath)
+			return true
+		}
 		return false
 	}
 
@@ -1043,6 +1058,10 @@ func runDaemon() bool {
 	if err := sched.Bootstrap(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro ao carregar estado: %v", err)
 		stopLifecycleComponents(components)
+		if isFatalBootError(err) {
+			log.Printf("[FocusGuard Daemon] Erro fatal: %s não é acessível (permissão negada). Verifique as permissões (chmod 0644 %s) ou execute como root.", statePath, statePath)
+			return true
+		}
 		return false
 	}
 	clockGuard := clockguard.New(clockguard.Deps{
@@ -1060,6 +1079,10 @@ func runDaemon() bool {
 	if err := sched.Start(); err != nil {
 		log.Printf("[FocusGuard Daemon] Erro na reconciliação: %v", err)
 		stopLifecycleComponents(components)
+		if isFatalBootError(err) {
+			log.Printf("[FocusGuard Daemon] Erro fatal na reconciliação: %v", err)
+			return true
+		}
 		return false
 	}
 	log.Println("[FocusGuard Daemon] Estado reconciliado com sucesso.")
@@ -1820,6 +1843,11 @@ func runDaemon() bool {
 		Components: components,
 		Stop:       serviceStopCh,
 		CanStop:    func() bool { return !sched.HasActiveBlocks() && !server.HasActiveSession() },
+		// After 60s, force shutdown even with active blocks — the state is
+		// persisted in state.json and restored on the next boot. Without this,
+		// the daemon would be SIGKILLed by systemd (default TimeoutStopSec=90s)
+		// without a chance to clean up.
+		ForceShutdownTimeout: 60 * time.Second,
 	}).Run(context.Background())
 
 	if err != nil {
