@@ -7,6 +7,21 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
+## [0.20.2] - 2026-08-23
+
+### 🐛 Correções
+
+- **Crash-loop infinito com state.json inacessível** — o daemon entrava em
+  loop de restart (Reiniciando... a cada 1s) quando o arquivo de estado não
+  era legível (ex.: permissão 0600 root:root executado como usuário comum).
+  Agora detecta erros permanentes (permission denied) e encerra limpo com
+  mensagem de diagnóstico.
+- **Shutdown timeout — daemon não era mais SIGKILLado pelo systemd** — com
+  bloqueios/sessão ativos, o SIGTERM era ignorado indefinidamente e o
+  systemd matava o processo com SIGKILL após o TimeoutStopSec=90s sem
+  chance de persistir estado. Agora o daemon força o encerramento após 60s
+  (ForceShutdownTimeout), persistindo o estado no próximo boot.
+
 ## [0.20.1] - 2026-08-17
 
 ### 🐛 Correções
