@@ -994,60 +994,7 @@ func (f *fakeScheduleManager) ImportICS(data []byte, preset string) ([]schedule.
 	return f.imported, f.importErr
 }
 
-// ---------------------------------------------------------------------------
-// Block-all (modo pânico / allowlist deep-focus)
-// ---------------------------------------------------------------------------
 
-func TestServer_BlockAll_PanicMode(t *testing.T) {
-	server := setupTestServer(t)
-
-	resp := executeRequest(t, server, Request{Action: "block-all", Duration: "30m"})
-	if !resp.Success {
-		t.Fatalf("block-all falhou: %s", resp.Message)
-	}
-	if !strings.Contains(resp.Message, "toda a internet") {
-		t.Errorf("mensagem deveria indicar modo pânico, got %q", resp.Message)
-	}
-
-	// O sentinela deve aparecer no status
-	status := executeRequest(t, server, Request{Action: "status"})
-	if !status.Success {
-		t.Fatalf("status falhou: %s", status.Message)
-	}
-	found := false
-	for _, b := range status.Blocks {
-		if b.Domain == enforcer.AllInternetDomain {
-			found = true
-		}
-	}
-	if !found {
-		t.Errorf("sentinela do block-all deveria aparecer no status: %+v", status.Blocks)
-	}
-}
-
-func TestServer_BlockAll_DeepFocusMode(t *testing.T) {
-	server := setupTestServer(t)
-
-	resp := executeRequest(t, server, Request{Action: "block-all", Duration: "1h", Allowlist: []string{"docs.google.com"}})
-	if !resp.Success {
-		t.Fatalf("block-all falhou: %s", resp.Message)
-	}
-	if !strings.Contains(resp.Message, "docs.google.com") {
-		t.Errorf("mensagem deveria mencionar a allowlist, got %q", resp.Message)
-	}
-}
-
-func TestServer_BlockAll_InvalidDuration(t *testing.T) {
-	server := setupTestServer(t)
-
-	resp := executeRequest(t, server, Request{Action: "block-all", Duration: "0s"})
-	if resp.Success {
-		t.Fatal("block-all com duração inválida deve falhar")
-	}
-	if !strings.HasPrefix(resp.Message, "Duration invalid") {
-		t.Errorf("mensagem inesperada: %q", resp.Message)
-	}
-}
 
 // ---------------------------------------------------------------------------
 // Meta diária (goal-get / goal-set)

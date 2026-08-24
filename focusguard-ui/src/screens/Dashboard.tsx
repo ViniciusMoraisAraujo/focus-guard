@@ -8,12 +8,9 @@ import {
   Network,
   Settings,
   ShieldCheck,
-  Siren,
   Timer,
-  TriangleAlert,
 } from "lucide-react";
-import { api } from "@/api/client";
-import type { Block, TamperEvent } from "@/api/types";
+import type { Block } from "@/api/types";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -32,77 +29,17 @@ import { useData, type Screen as ScreenId } from "@/context";
 import { formatClock, formatMinutes, formatMs, useCountdown } from "@/hooks/useCountdown";
 import { cn } from "@/lib/utils";
 
-const ALL_INTERNET = "*all-internet*";
-
-// CLOCK_LOCKDOWN_WINDOW é a janela em que um lockdown do Clock Guard (Fase 2)
-// ainda é relevante para o alerta: 1h = a duração padrão do bloqueio
-// preventivo all-internet aplicado pelo guard.
-const CLOCK_LOCKDOWN_WINDOW_MS = 60 * 60 * 1000;
-
-/**
- * clockLockdownRecente devolve o evento de lockdown do Clock Guard mais
- * recente (source "clock" + action "lockdown") dentro da janela, ou null.
- * O guard grava o evento no tamper-log quando o NTP confirma a burla e aplica
- * o bloqueio preventivo — a UI lê o mesmo log da tela Segurança (sem IPC
- * novo, Fase 2 só no front-end).
- */
-function clockLockdownRecente(events: TamperEvent[] | undefined): TamperEvent | null {
-  const cutoff = Date.now() - CLOCK_LOCKDOWN_WINDOW_MS;
-  let latest: TamperEvent | null = null;
-  for (const e of events ?? []) {
-    if (e.source !== "clock" || e.action !== "lockdown") continue;
-    const at = new Date(e.at).getTime();
-    if (Number.isNaN(at) || at < cutoff) continue;
-    if (!latest || at > new Date(latest.at).getTime()) latest = e;
-  }
-  return latest;
-}
-
 export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void }) {
   const { daemonUp, status, stats } = useData();
 
-  const blocks = useMemo(() => {
-    const list = (status?.blocks ?? []).filter((b) => b.domain !== ALL_INTERNET);
-    return [...list].sort((a, b) => a.expires_at.localeCompare(b.expires_at));
-  }, [status?.blocks]);
-
-  // O sentinela all-internet tem duas origens: pânico/deep-focus do USUÁRIO
-  // (source "user"/ausente) ou o bloqueio preventivo do Clock Guard (Fase 2,
-  // source "clock-guard" — aplicado na suspeita quando o NTP não decide). O
-  // card de status distingue os dois; os dois continuam com o visual de
-  // bloqueio total.
-  const sentinel = useMemo(
-    () => (status?.blocks ?? []).find((b) => b.domain === ALL_INTERNET),
+  const blocks = useMemo(
+    () => [...(status?.blocks ?? [])].sort((a, b) => a.expires_at.localeCompare(b.expires_at)),
     [status?.blocks],
   );
-  const isClockLockdown = sentinel?.source === "clock-guard";
-  const panic = sentinel !== undefined && !isClockLockdown;
 
   const pomo = status?.pomodoro?.active ? status.pomodoro : null;
   const nearest = blocks[0]?.expires_at ?? null;
   const nearestMs = useCountdown(nearest);
-
-  // Alerta do Clock Guard (Fase 2): polling do tamper-log a cada 30s enquanto
-  // o painel estiver montado — detecta o lockdown de relógio adulterado sem
-  // exigir estado novo do backend (o evento já é gravado pelo guard).
-  const [clockLockdown, setClockLockdown] = useState<TamperEvent | null>(null);
-  useEffect(() => {
-    let alive = true;
-    const load = async () => {
-      try {
-        const r = await api.tamperLog();
-        if (alive) setClockLockdown(clockLockdownRecente(r.success ? r.tamper_log : []));
-      } catch {
-        if (alive) setClockLockdown(null);
-      }
-    };
-    void load();
-    const id = window.setInterval(() => void load(), 30_000);
-    return () => {
-      alive = false;
-      window.clearInterval(id);
-    };
-  }, []);
 
   const goalNs = status?.goal ?? 0;
   const goalMin = goalNs / 6e10;
@@ -128,27 +65,19 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
   const todayFocusMs = todayFocusNs / 1e6;
   const progress = goalMin > 0 ? Math.min(1, todayFocusMs / (goalMin * 60_000)) : 0;
 
-  const statusKind = panic || isClockLockdown ? "panic" : blocks.length > 0 || pomo ? "focus" : "idle";
-  const statusTitle = panic
-    ? "Modo pânico ativo"
-    : isClockLockdown
-      ? "Bloqueio preventivo do relógio"
-      : pomo
-        ? `Pomodoro ativo — ${pomo.phase === "rest" ? "descanso" : "foco"} (ciclo ${pomo.cycle}/${pomo.cycles})`
-        : blocks.length > 0
-          ? `Foco ativo — ${blocks.length} bloqueio${blocks.length > 1 ? "s" : ""}`
-          : "Sem bloqueios ativos";
-  const statusSub = panic
-    ? "Toda a internet está bloqueada até o fim do período."
-    : isClockLockdown
-      ? "Relógio adulterado — internet bloqueada até o horário real ser validado online."
-      : pomo
-        ? `Sessão sobre o preset ${pomo.preset ?? "—"}`
-        : blocks.length > 0
-          ? "A distração está fora do alcance. Bons estudos! 🎯"
-          : "Ótimo momento para iniciar um foco.";
+  const statusKind = blocks.length > 0 || pomo ? "focus" : "idle";
+  const statusTitle = pomo
+    ? `Pomodoro ativo — ${pomo.phase === "rest" ? "descanso" : "foco"} (ciclo ${pomo.cycle}/${pomo.cycles})`
+    : blocks.length > 0
+      ? `Foco ativo — ${blocks.length} bloqueio${blocks.length > 1 ? "s" : ""}`
+      : "Sem bloqueios ativos";
+  const statusSub = pomo
+    ? `Sessão sobre o preset ${pomo.preset ?? "—"}`
+    : blocks.length > 0
+      ? "A distração está fora do alcance. Bons estudos! 🎯"
+      : "Ótimo momento para iniciar um foco.";
 
-  const HeroIcon = panic || isClockLockdown ? Siren : pomo ? Timer : blocks.length > 0 ? ShieldCheck : Leaf;
+  const HeroIcon = pomo ? Timer : blocks.length > 0 ? ShieldCheck : Leaf;
 
   return (
     <Screen>
@@ -158,9 +87,6 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
           <>
             <Button onClick={() => onNavigate("bloquear")}>
               <Lock /> Bloquear site
-            </Button>
-            <Button variant="destructive" onClick={() => onNavigate("panico")}>
-              <Siren /> Modo pânico
             </Button>
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
@@ -204,46 +130,17 @@ export function Dashboard({ onNavigate }: { onNavigate: (s: ScreenId) => void })
 
       {daemonUp !== null && (
         <>
-          {clockLockdown && (
-            <Card
-              role="alert"
-              aria-label="Inconsistência de relógio detectada"
-              className="border-destructive/40 bg-destructive/5 ring-destructive/30"
-            >
-              <CardContent className="flex items-start gap-3 px-5 py-4">
-                <TriangleAlert className="mt-0.5 size-5 shrink-0 text-destructive" aria-hidden />
-                <div className="min-w-0 flex-1">
-                  <h3 className="font-heading text-sm font-semibold text-destructive">
-                    Inconsistência de relógio detectada
-                  </h3>
-                  <p className="mt-1 text-sm text-muted-foreground">
-                    O relógio do sistema está fora da hora real (confirmado por NTP). O FocusGuard
-                    ajustou as expirações dos bloqueios para a hora real e registrou a ocorrência —
-                    <strong> nenhum bloqueio foi aplicado</strong>. Verifique o relógio/RTC do
-                    sistema (ex.: dual boot com Windows/Linux).
-                  </p>
-                  {clockLockdown.detail && (
-                    <p className="mt-1 text-xs break-all text-muted-foreground/80">
-                      {clockLockdown.detail}
-                    </p>
-                  )}
-                </div>
-              </CardContent>
-            </Card>
-          )}
-
           <Card
             className={cn(
               "flex-row items-center justify-between gap-4",
               statusKind === "focus" && "ring-emerald-500/30",
-              statusKind === "panic" && "ring-destructive/40",
+              statusKind === "focus" && "ring-emerald-500/30",
             )}
           >
             <CardContent className="flex flex-1 flex-wrap items-center gap-4 px-5 py-4">
               <div
                 className={cn(
                   "grid size-12 shrink-0 place-items-center rounded-xl bg-muted ring-1 ring-border",
-                  statusKind === "panic" && "bg-destructive/10 text-destructive ring-destructive/30",
                   statusKind === "focus" && "text-emerald-500 ring-emerald-500/30",
                 )}
               >

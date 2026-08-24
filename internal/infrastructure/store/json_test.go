@@ -172,8 +172,7 @@ func TestLoad_ZeroByteFile_ReturnsCleanState(t *testing.T) {
 }
 
 // TestStoreSaveAndLoad_AdditiveFields verifies the additive schema fields
-// round-trip: DNSEnabled (the sinkhole switch) and the all-internet block's
-// Allowlist survive a save/load cycle.
+// round-trip: DNSEnabled (the sinkhole switch) survives a save/load cycle.
 func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "focusguard-test*")
 	if err != nil {
@@ -192,12 +191,11 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 		DNSEnabled:  true,
 		DNSUpstream: "9.9.9.9:53",
 		Blocks: map[string]policy.Block{
-			"*all-internet*": {
-				Domain:      "*all-internet*",
+			"example.com": {
+				Domain:      "example.com",
 				StartedAt:   now,
 				ExpiresAt:   now.Add(time.Hour),
 				ResolvedIPs: []string{"1.2.3.4"},
-				Allowlist:   []string{"docs.com"},
 			},
 		},
 	}
@@ -215,9 +213,9 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 	if loaded.DNSUpstream != "9.9.9.9:53" {
 		t.Errorf("DNSUpstream = %q, want 9.9.9.9:53", loaded.DNSUpstream)
 	}
-	sentinel := loaded.Blocks["*all-internet*"]
-	if len(sentinel.Allowlist) != 1 || sentinel.Allowlist[0] != "docs.com" {
-		t.Errorf("Allowlist = %v, want [docs.com]", sentinel.Allowlist)
+	blk := loaded.Blocks["example.com"]
+	if blk.Domain != "example.com" {
+		t.Errorf("Domain = %q, want example.com", blk.Domain)
 	}
 }
 

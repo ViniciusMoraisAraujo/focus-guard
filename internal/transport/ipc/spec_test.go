@@ -70,7 +70,6 @@ func TestSpec_Timeouts(t *testing.T) {
 		{action: "update-check", want: 150 * time.Second},
 		{action: "status", want: 15 * time.Second},
 		{action: "block", want: 30 * time.Second},
-		{action: "block-all", want: 30 * time.Second},
 		{action: "pomodoro", want: 30 * time.Second},
 		{action: "pomodoro-stop", want: 30 * time.Second},
 		{action: "presets", want: 5 * time.Second},
@@ -96,7 +95,7 @@ func TestSpec_Timeouts(t *testing.T) {
 func TestSpecActions_CoversProxyableActions(t *testing.T) {
 	got := SpecActions()
 	want := map[string]bool{
-		"block": true, "block-all": true, "status": true, "ping": true,
+		"block": true, "status": true, "ping": true,
 		"update": true, "update-check": true,
 		"presets": true, "preset-add": true, "preset-remove": true,
 		"tamper-log": true,

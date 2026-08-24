@@ -68,13 +68,6 @@ func (f *fakeBlocker) ExtendBlock(domain string, d time.Duration) (*policy.Block
 
 func (f *fakeBlocker) ActiveBlock(domain string) *policy.Block { return f.active }
 
-func (f *fakeBlocker) BlockAllInternet(allowlist []string, d time.Duration) (*policy.Block, error) {
-	if f.err != nil {
-		return nil, f.err
-	}
-	return f.block, nil
-}
-
 type fakeDNSController struct {
 	started  bool
 	upstream string
@@ -355,18 +348,6 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 				resp.Code = out.Code
 			}
 			return resp, nil
-		},
-	}.Handler())
-	hBlockAll := blocks.NewBlockAll(blk)
-	s.Register(ipc.DomainAction[blocks.BlockAllInput, blocks.BlockAllResult]{
-		Name: hBlockAll.Action(),
-		Decode: func(r *ipc.Request) (*blocks.BlockAllInput, error) {
-			return &blocks.BlockAllInput{Duration: r.Duration, Allowlist: r.Allowlist}, nil
-		},
-		Validate: hBlockAll.Validate,
-		Handle:   hBlockAll.Handle,
-		Encode: func(out *blocks.BlockAllResult) (*ipc.Response, error) {
-			return &ipc.Response{Success: true, Message: out.Message}, nil
 		},
 	}.Handler())
 	// presets/goal via ipc.DomainAction (mesmo padrão do composition root).
@@ -939,7 +920,7 @@ func TestDomainWiring_AllActionsDispatch(t *testing.T) {
 		wantOK bool
 	}{
 		{name: "block", req: ipc.Request{Action: "block", Domain: "x.com", Duration: "1h"}, wantOK: true},
-		{name: "block-all", req: ipc.Request{Action: "block-all", Duration: "1h"}, wantOK: true},
+
 		{name: "presets", req: ipc.Request{Action: "presets"}, wantOK: true},
 		{name: "preset-add", req: ipc.Request{Action: "preset-add", PresetName: "meu", PresetDomains: []string{"a.com"}}, wantOK: true},
 		{name: "preset-remove", req: ipc.Request{Action: "preset-remove", PresetName: "meu"}, wantOK: true},

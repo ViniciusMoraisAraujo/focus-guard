@@ -16,7 +16,7 @@ package ipcerr
 // internal/transport/ipc/codes.go).
 const (
 	// CodeDurationInvalid: malformed, zero or negative duration
-	// (block/block-all/pomodoro).
+	// (block/pomodoro).
 	CodeDurationInvalid = "ERR_DURATION_INVALID"
 
 	// CodeDomainRequired: a domain or preset to block is missing.

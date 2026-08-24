@@ -18,26 +18,15 @@ type Enforcer interface {
 	Sync(activeBlocks map[string][]string) error
 	BlockDoH() error
 	UnblockDoH() error
-	// BlockAll cuts off ALL outbound internet (panic mode). allowlistIPs, when
-	// non-empty, are the only destinations still reachable (deep-focus mode:
-	// block everything except the allowed sites). Idempotent.
-	BlockAll(allowlistIPs []string) error
-	// UnblockAll removes the all-internet block and every allowlist exception.
-	UnblockAll() error
 	Status() (EnforcerStatus, error)
 }
 
 type EnforcerStatus struct {
 	DoHActive     bool
 	FirewallRules int
-	AllBlocked    bool
 }
 
-// AllInternetDomain is the sentinel scheduler block key for the all-internet
-// block (panic/deep-focus mode). It never touches the hosts file; the enforcer
-// applies a catch-all firewall rule instead. Kept as a stable identifier used
-// by the scheduler, server and CLI.
-const AllInternetDomain = "*all-internet*"
+
 
 const (
 	HeaderMarker = "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
@@ -247,56 +236,15 @@ func groupIPsByFamily(ips []string) (v4, v6 []string) {
 // the cache immediately, so the TTL only delays reflecting external changes.
 const statusCacheTTL = 15 * time.Second
 
-// AllBlockMarker is the iptables comment tagging the catch-all REJECT rule
-// that implements the all-internet block. Removal sweeps by this marker.
-const AllBlockMarker = "FOCUSGUARD_ALL"
-
-// AllowMarker tags the per-IP ACCEPT exceptions of the deep-focus allowlist.
-const AllowMarker = "FOCUSGUARD_ALLOW"
-
 // icmpPortUnreachableType returns the --reject-with type of the
 // protocol-agnostic REJECT for the address family of mask: ICMPv4
 // icmp-port-unreachable on IPv4 (iptables) and ICMPv6 icmp6-port-unreachable
-// on IPv6 (ip6tables). O nome ICMPv4 é rejeitado pelo backend nft do
-// ip6tables ("unknown reject type") — usar o tipo v4 no v6 quebrava o
-// bloqueio de domínios com IPs IPv6 no Ubuntu moderno (achado da Etapa 6
-// real).
+// on IPv6 (ip6tables).
 func icmpPortUnreachableType(mask string) string {
 	if mask == "/128" {
 		return "icmp6-port-unreachable"
 	}
 	return "icmp-port-unreachable"
-}
-
-// buildBlockAllScript renders the iptables-restore payload for BlockAll: one
-// ACCEPT per allowlisted IP first (so exceptions are evaluated before the
-// catch-all) and then a catch-all REJECT for the family mask. The catch-all is
-// split in two: a TCP rule rejecting with tcp-reset (fast RST for TCP) and a
-// protocol-agnostic rule rejecting everything else (UDP/QUIC included) with
-// icmp-port-unreachable. tcp-reset is only valid on rules that match TCP, so a
-// bare catch-all would be rejected by iptables. The markers let UnblockAll
-// sweep both kinds of rule by comment.
-func buildBlockAllScript(allowlistIPs []string, mask string) string {
-	var b strings.Builder
-	b.WriteString("*filter\n")
-	for _, ip := range allowlistIPs {
-		b.WriteString("-A OUTPUT -d ")
-		b.WriteString(ip)
-		b.WriteString(mask)
-		b.WriteString(" -j ACCEPT -m comment --comment \"")
-		b.WriteString(AllowMarker)
-		b.WriteString("\"\n")
-	}
-	b.WriteString("-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \"")
-	b.WriteString(AllBlockMarker)
-	b.WriteString("\"\n")
-	b.WriteString("-A OUTPUT -j REJECT --reject-with ")
-	b.WriteString(icmpPortUnreachableType(mask))
-	b.WriteString(" -m comment --comment \"")
-	b.WriteString(AllBlockMarker)
-	b.WriteString("\"\n")
-	b.WriteString("COMMIT\n")
-	return b.String()
 }
 
 // buildRestoreScript renders the stdin payload for iptables-restore/ip6tables

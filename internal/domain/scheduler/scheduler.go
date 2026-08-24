@@ -45,7 +45,7 @@ type dnsEntry struct {
 }
 
 // dnsCache is a small TTL cache for resolved domain IPs. It has its own mutex
-// because BlockDomains/BlockAllInternet resolve in parallel goroutines.
+// because BlockDomains resolves in parallel goroutines.
 type dnsCache struct {
 	mu      sync.Mutex
 	entries map[string]dnsEntry
@@ -206,7 +206,7 @@ type Scheduler struct {
 	timers       map[string]*time.Timer
 	bootstrapped bool
 	// enforcePending marca um boot via Bootstrap(): o Reconcile seguinte deve
-	// rodar o passe completo do enforcer (Sync/BlockAll) mesmo sem divergência
+	// rodar o passe completo do enforcer (Sync) mesmo sem divergência
 	// disco×RAM, porque o processo recém-nascido ainda não tem regras no SO.
 	// Consumida uma única vez pelo primeiro Reconcile.
 	enforcePending bool
@@ -396,10 +396,10 @@ func statesEqual(a, b *store.State) bool {
 		if !ok {
 			return false
 		}
-		if ab.Domain != bb.Domain || !ab.StartedAt.Equal(bb.StartedAt) || !ab.ExpiresAt.Equal(bb.ExpiresAt) || ab.Source != bb.Source {
+		if ab.Domain != bb.Domain || !ab.StartedAt.Equal(bb.StartedAt) || !ab.ExpiresAt.Equal(bb.ExpiresAt) {
 			return false
 		}
-		if !slices.Equal(ab.ResolvedIPs, bb.ResolvedIPs) || !slices.Equal(ab.Allowlist, bb.Allowlist) {
+		if !slices.Equal(ab.ResolvedIPs, bb.ResolvedIPs) {
 			return false
 		}
 	}
@@ -521,20 +521,7 @@ func (s *Scheduler) Reconcile() error {
 	// limpeza das regras do SO (hosts + firewall).
 	var toUnblock []unblockEntry
 	activeIPs := make(map[string][]string, len(s.blocks))
-	sentinelActive := false
-	var sentinelIPs []string
-	sentinelExpired := false
 	for domain, block := range s.blocks {
-		if isAllInternetBlock(block) {
-			if block.CanUnblock() {
-				sentinelExpired = true
-			} else {
-				sentinelActive = true
-				sentinelIPs = block.ResolvedIPs
-				s.setupTimerLocked(block)
-			}
-			continue
-		}
 		if block.CanUnblock() {
 			toUnblock = append(toUnblock, unblockEntry{domain, block.ResolvedIPs})
 		} else {
@@ -542,7 +529,7 @@ func (s *Scheduler) Reconcile() error {
 			s.setupTimerLocked(block)
 		}
 	}
-	hasExpired := len(toUnblock) > 0 || sentinelExpired
+	hasExpired := len(toUnblock) > 0
 
 	if !changed && !hasExpired {
 		s.mu.Unlock()
@@ -561,30 +548,7 @@ func (s *Scheduler) Reconcile() error {
 			log.Printf("[Scheduler] Falha ao remover regras de %s (será re-tentado): %v", e.domain, err)
 		}
 	}
-	if sentinelExpired {
-		if err := s.enforcer.UnblockAll(); err != nil {
-			expiryClean = false
-			log.Printf("[Scheduler] Falha ao remover o bloqueio de internet (será re-tentado): %v", err)
-		}
-	}
-	if sentinelActive {
-		// Re-aplica o sentinela após restart (bootstrap) — o enforcer é
-		// idempotente e o allowlist precisa ser reestabelecido.
-		if err := s.enforcer.BlockAll(sentinelIPs); err != nil {
-			return err
-		}
-		// Domínios persistidos continuam precisando do Sync (hosts + regras
-		// por IP): o sentinela bloqueia tudo, mas ao expirar a proteção dos
-		// domínios precisa já estar no ar. Sem este Sync, um restart com
-		// pânico + domínios deixaria os domínios sem proteção após a
-		// expiração do sentinela.
-		if len(activeIPs) > 0 {
-			if err := s.enforcer.Sync(activeIPs); err != nil {
-				return err
-			}
-		}
-		_ = s.enforcer.BlockDoH()
-	} else if len(activeIPs) > 0 {
+	if len(activeIPs) > 0 {
 		if err := s.enforcer.Sync(activeIPs); err != nil {
 			return err
 		}
@@ -615,13 +579,6 @@ func (s *Scheduler) Reconcile() error {
 				delete(s.timers, e.domain)
 			}
 		}
-		if sentinelExpired {
-			delete(s.blocks, enforcer.AllInternetDomain)
-			if t, ok := s.timers[enforcer.AllInternetDomain]; ok {
-				t.Stop()
-				delete(s.timers, enforcer.AllInternetDomain)
-			}
-		}
 		s.invalidateSnapshot()
 		changed = true
 	}
@@ -637,11 +594,7 @@ func (s *Scheduler) Reconcile() error {
 				s.armExpiryRetryLocked(e.domain)
 			}
 		}
-		if sentinelExpired {
-			if _, exists := s.blocks[enforcer.AllInternetDomain]; exists {
-				s.armExpiryRetryLocked(enforcer.AllInternetDomain)
-			}
-		}
+
 	}
 	s.mu.Unlock()
 
@@ -674,9 +627,6 @@ func (s *Scheduler) startPeriodicIPRefresh(interval time.Duration) {
 
 		var entries []refreshEntry
 		for domain, block := range s.blocks {
-			if isAllInternetBlock(block) {
-				continue // sentinela não tem domínio para re-resolver
-			}
 			if block.IsActive() {
 				entries = append(entries, refreshEntry{domain: domain, ips: block.ResolvedIPs})
 			}
@@ -735,7 +685,7 @@ func (s *Scheduler) Block(domain string, duration time.Duration) (*policy.Block,
 	if err := s.store.Save(s.ramState()); err != nil {
 		// Reverte a RAM: sem o disco persistido, o domínio não pode ficar
 		// ativo sem timer e sem regra aplicada (estado zumbi) — o bloqueio
-		// é descartado, como BlockDomains/BlockAllInternet já fazem.
+		// é descartado, como BlockDomains já faz.
 		delete(s.blocks, domain)
 		s.invalidateSnapshot()
 		s.mu.Unlock()
@@ -923,158 +873,6 @@ func resolveEntries(domains []string) []refreshEntry {
 	return entries
 }
 
-// BlockAllInternet cuts off ALL outbound internet (panic mode) or blocks
-// everything except the allowlist domains (deep-focus mode), for the given
-// duration. The block is tracked under the enforcer.AllInternetDomain sentinel
-// key (never a real hostname, so no hosts-file entry and no per-domain IP
-// rules): it persists to the state mirror like any block and expires through
-// the same timer machinery, invoking enforcer.UnblockAll on expiry. The block
-// is tagged SourceUser, so the clock guard's release (ReleaseClockLockdown)
-// never removes it.
-func (s *Scheduler) BlockAllInternet(allowlistDomains []string, duration time.Duration) (*policy.Block, error) {
-	return s.blockAllInternet(allowlistDomains, duration, policy.SourceUser)
-}
-
-// blockAllInternet is the shared implementation of the all-internet sentinel
-// (user panic/deep-focus AND the clock guard's preventive lockdown), which
-// differ only in the block's Source tag — the tag is what lets
-// ReleaseClockLockdown remove the guard's lockdown without touching a
-// user-initiated block.
-func (s *Scheduler) blockAllInternet(allowlistDomains []string, duration time.Duration, source policy.BlockSource) (*policy.Block, error) {
-	// Resolve allowlist domains to IPs (best-effort per domain; failures are
-	// dropped so one bad domain never kills the whole panic block). Reuses the
-	// DNS cache like the single/batch block paths.
-	var allowlistIPs []string
-	if len(allowlistDomains) > 0 {
-		resolved := refreshResolvedIPs(resolveEntries(dedupeDomains(allowlistDomains)), dnsRefreshTimeout, s.resolveBlockIPsCachedCtx)
-		for _, d := range dedupeDomains(allowlistDomains) {
-			if ips, ok := resolved[d]; ok {
-				allowlistIPs = append(allowlistIPs, ips...)
-			}
-		}
-	}
-
-	now := time.Now()
-	block := policy.Block{
-		Domain:      enforcer.AllInternetDomain,
-		StartedAt:   now,
-		ExpiresAt:   now.Add(duration),
-		ResolvedIPs: dedupeIPs(allowlistIPs),
-		Allowlist:   dedupeDomains(allowlistDomains),
-		Source:      source,
-	}
-
-	s.mu.Lock()
-	wasEmpty := len(s.blocks) == 0
-	s.blocks[enforcer.AllInternetDomain] = block
-	s.invalidateSnapshot()
-	if err := s.store.Save(s.ramState()); err != nil {
-		delete(s.blocks, enforcer.AllInternetDomain)
-		s.invalidateSnapshot()
-		s.mu.Unlock()
-		return nil, fmt.Errorf("scheduler: erro ao salvar estado: %w", err)
-	}
-	s.mu.Unlock()
-
-	if err := s.enforcer.BlockAll(block.ResolvedIPs); err != nil {
-		// Reverte a RAM e o disco: um bloqueio que falhou não pode deixar o
-		// sentinela ativo sem timer (estado zumbi).
-		s.mu.Lock()
-		delete(s.blocks, enforcer.AllInternetDomain)
-		s.invalidateSnapshot()
-		_ = s.store.Save(s.ramState())
-		s.mu.Unlock()
-		return nil, fmt.Errorf("scheduler: erro ao aplicar bloqueio de internet: %w", err)
-	}
-
-	if wasEmpty {
-		_ = s.enforcer.BlockDoH()
-	}
-
-	s.mu.Lock()
-	s.setupTimerLocked(block)
-	s.mu.Unlock()
-
-	s.notifyChange()
-	return &block, nil
-}
-
-// ApplyClockLockdown applies the clock guard's preventive all-internet
-// lockdown (Fase 2 — Clock Tamper Protection): the same sentinel machinery as
-// BlockAllInternet, but the block is tagged with the clock-guard source so a
-// later NTP validation can release it (ReleaseClockLockdown) WITHOUT touching
-// a user-initiated panic/deep-focus block. When a user all-internet block is
-// already active, it is left untouched — everything is already blocked, and
-// replacing it would silently steal the user's block (the release after would
-// remove it).
-func (s *Scheduler) ApplyClockLockdown(duration time.Duration) (*policy.Block, error) {
-	s.mu.RLock()
-	existing, ok := s.blocks[enforcer.AllInternetDomain]
-	s.mu.RUnlock()
-	if ok && existing.IsActive() && existing.Source != policy.SourceClockGuard {
-		return &existing, nil
-	}
-	return s.blockAllInternet(nil, duration, policy.SourceClockGuard)
-}
-
-// ReleaseClockLockdown removes the clock guard's preventive all-internet
-// lockdown (Fase 2), invoked when NTP validates the local clock again (or the
-// gap normalizes). It only removes the sentinel when it is the guard's OWN
-// (SourceClockGuard): a user-initiated panic/deep-focus block — including one
-// applied AFTER the guard's lockdown replaced it — is never touched. The OS
-// rules are removed BEFORE the block leaves RAM/state (same order as
-// onExpire); on enforcer failure the lockdown stays and the guard retries on
-// its next Check.
-func (s *Scheduler) ReleaseClockLockdown() error {
-	s.mu.Lock()
-	block, ok := s.blocks[enforcer.AllInternetDomain]
-	if !ok || block.Source != policy.SourceClockGuard {
-		s.mu.Unlock()
-		return nil
-	}
-	s.mu.Unlock()
-
-	if err := s.enforcer.UnblockAll(); err != nil {
-		return fmt.Errorf("scheduler: erro ao liberar bloqueio preventivo: %w", err)
-	}
-
-	s.mu.Lock()
-	// Re-checa sob o lock: outro caminho (ex.: pânico do usuário) pode ter
-	// substituído o sentinela no meio — nesse caso não é mais nosso para
-	// remover.
-	block, ok = s.blocks[enforcer.AllInternetDomain]
-	if !ok || block.Source != policy.SourceClockGuard {
-		s.mu.Unlock()
-		return nil
-	}
-	delete(s.blocks, enforcer.AllInternetDomain)
-	s.invalidateSnapshot()
-	if t, ok := s.timers[enforcer.AllInternetDomain]; ok {
-		t.Stop()
-		delete(s.timers, enforcer.AllInternetDomain)
-	}
-	remaining := len(s.blocks)
-	_ = s.store.Save(s.ramState())
-	s.mu.Unlock()
-
-	if remaining == 0 {
-		// Varredura final (mesmo padrão do onExpire): remove regras de domínio
-		// órfãs e desliga o DoH quando nada mais está bloqueado.
-		_ = s.enforcer.Sync(nil)
-		_ = s.enforcer.UnblockDoH()
-	}
-	s.notifyChange()
-	return nil
-}
-
-// isAllInternetBlock reports whether a scheduler block entry is the sentinel
-// all-internet block (panic/deep-focus/clock-guard lockdown), which the
-// enforcer handles through BlockAll/UnblockAll instead of per-domain
-// hosts/firewall rules.
-func isAllInternetBlock(b policy.Block) bool {
-	return b.Domain == enforcer.AllInternetDomain
-}
-
 func (s *Scheduler) ListBlocks() ([]policy.Block, error) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1141,12 +939,7 @@ func (s *Scheduler) onExpire(domain string) {
 	// removemos e gravamos o estado limpo depois que a remoção no SO
 	// confirmou. Na falha, o bloqueio permanece e o timer de retry re-tenta.
 	unblockOK := true
-	if isAllInternetBlock(block) {
-		if err := s.enforcer.UnblockAll(); err != nil {
-			unblockOK = false
-			log.Printf("[Scheduler] Falha ao remover o bloqueio de internet (será re-tentado): %v", err)
-		}
-	} else if err := s.enforcer.UnblockDomain(domain, ips); err != nil {
+	if err := s.enforcer.UnblockDomain(domain, ips); err != nil {
 		unblockOK = false
 		log.Printf("[Scheduler] Falha ao remover regras de %s (será re-tentado): %v", domain, err)
 	}
@@ -1197,20 +990,15 @@ func (s *Scheduler) HasActiveBlocks() bool {
 
 // IsBlocked reports whether the DNS sinkhole server should answer a query for
 // domain with a dead address. It walks up the parent domains (a block on
-// example.com also covers www.example.com and a.b.example.com), ignores
-// expired blocks, and treats an active all-internet sentinel as "block
-// everything except the allowlisted domains". Matching is case-insensitive and
-// the trailing dot is tolerated, so callers (the DNS server) may pass either
-// the raw wire name or the already-normalized one.
+// example.com also covers www.example.com and a.b.example.com) and ignores
+// expired blocks. Matching is case-insensitive and the trailing dot is
+// tolerated, so callers (the DNS server) may pass either the raw wire name
+// or the already-normalized one.
 func (s *Scheduler) IsBlocked(domain string) bool {
 	domain = strings.ToLower(strings.TrimSuffix(domain, "."))
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	if sentinel, ok := s.blocks[enforcer.AllInternetDomain]; ok && sentinel.IsActive() {
-		return !domainAllowlisted(sentinel.Allowlist, domain)
-	}
 
 	for labels := domain; labels != ""; {
 		if b, ok := s.blocks[labels]; ok && b.IsActive() {
@@ -1234,10 +1022,6 @@ func (s *Scheduler) BlockRemaining(domain string) time.Duration {
 
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-
-	if sentinel, ok := s.blocks[enforcer.AllInternetDomain]; ok && sentinel.IsActive() && !domainAllowlisted(sentinel.Allowlist, domain) {
-		return sentinel.RemainingTime()
-	}
 
 	for labels := domain; labels != ""; {
 		if b, ok := s.blocks[labels]; ok && b.IsActive() {
@@ -1285,18 +1069,6 @@ func (s *Scheduler) IsBlockedFor(domain, clientIP string) bool {
 		}
 	}
 	return s.IsBlocked(domain)
-}
-
-// domainAllowlisted reports whether domain equals an allowlist entry or sits
-// under one (allowlist "example.com" covers "api.example.com").
-func domainAllowlisted(allowlist []string, domain string) bool {
-	for _, a := range allowlist {
-		a = strings.ToLower(a)
-		if domain == a || strings.HasSuffix(domain, "."+a) {
-			return true
-		}
-	}
-	return false
 }
 
 // SetDNSEnabled persists whether the DNS sinkhole server should run. It only

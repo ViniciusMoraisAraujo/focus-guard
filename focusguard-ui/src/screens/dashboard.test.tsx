@@ -1,20 +1,12 @@
-// Testes do alerta de Clock Guard (Fase 2 — só front-end) no Dashboard.
-// Congelam o filtro do tamper-log: um evento source="clock" + action
-// "lockdown" dentro da janela de 1h renderiza o alerta destrutivo; eventos
-// antigos, de outra fonte/ação ou ausentes não renderizam nada. O polling de
-// 30s do componente é isolado com timers falsos (o load do mount decide o
-// estado; o intervalo só re-consulta).
+// Testes do Dashboard. O polling do tamper-log do Clock Guard foi removido
+// junto com a funcionalidade de bloqueio total da internet.
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { act, cleanup, render } from "@testing-library/react";
-import type { ApiResponse, TamperEvent } from "@/api/types";
+import type { ApiResponse } from "@/api/types";
 import { Dashboard } from "./Dashboard";
 
 const now = new Date("2026-08-10T12:00:00Z");
 
-// O Dashboard (e o DnsCard interno) lê o estado pelo useData; o teste injeta
-// um daemon acessível sem bloqueios para isolar o alerta. O mock é um
-// vi.fn() para o teste do sentinela do clock guard poder sobrescrever o
-// status por teste; o beforeEach restaura o default.
 function defaultData() {
   return {
     daemonUp: true,
@@ -31,34 +23,15 @@ vi.mock("@/context", () => ({
 
 import { useData } from "@/context";
 
-// api.tamperLog é a única chamada do alerta — o restante do client é inerte
-// no teste (nenhuma outra ação roda com status vazio).
 vi.mock("@/api/client", () => ({
   api: { tamperLog: vi.fn() },
 }));
 
-import { api } from "@/api/client";
-
-const tamperLogMock = vi.mocked(api.tamperLog);
 const useDataMock = vi.mocked(useData);
-
-function evento(partial: Partial<TamperEvent>): TamperEvent {
-  return {
-    at: now.toISOString(),
-    source: "clock",
-    action: "lockdown",
-    ...partial,
-  };
-}
-
-function okTamper(events: TamperEvent[]) {
-  tamperLogMock.mockResolvedValue({ success: true, tamper_log: events });
-}
 
 beforeEach(() => {
   vi.useFakeTimers();
   vi.setSystemTime(now);
-  tamperLogMock.mockReset();
   useDataMock.mockReset();
   useDataMock.mockReturnValue(defaultData());
 });
@@ -68,91 +41,33 @@ afterEach(() => {
   vi.useRealTimers();
 });
 
-describe("Dashboard — alerta de Clock Guard (Fase 2)", () => {
-  it("renderiza o alerta destrutivo com divergência de relógio recente", async () => {
-    okTamper([
-      evento({
-        at: new Date(now.getTime() - 5 * 60 * 1000).toISOString(), // 5 min atrás
-        detail: "relógio local 3h0m0s à frente do real, confirmado por NTP; expirações ajustadas para a hora real (13:00:00)",
-      }),
-    ]);
-
+describe("Dashboard", () => {
+  it("renderiza sem bloqueios ativos", async () => {
     let container: HTMLElement | undefined;
     await act(async () => {
       const r = render(<Dashboard onNavigate={() => {}} />);
       container = r.container;
     });
 
-    expect(tamperLogMock).toHaveBeenCalledTimes(1);
-    expect(container?.querySelector('[role="alert"]')).not.toBeNull();
-    expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
-      "Inconsistência de relógio detectada",
-    );
-    // NTP confirmou → a hora real é conhecida: o FocusGuard ajusta as
-    // expirações, NÃO bloqueia a internet (dual boot continua funcionando).
-    expect(container?.querySelector('[role="alert"]')?.textContent).toContain(
-      "nenhum bloqueio foi aplicado",
-    );
-    expect(container?.querySelector('[role="alert"]')?.textContent).toContain("13:00:00");
+    expect(container?.textContent).toContain("Sem bloqueios ativos");
+    expect(container?.textContent).toContain("Ótimo momento para iniciar um foco");
   });
 
-  it("não renderiza o alerta sem eventos de clock/lockdown", async () => {
-    okTamper([evento({ source: "hosts", action: "restore" })]);
-
-    let container: HTMLElement | undefined;
-    await act(async () => {
-      const r = render(<Dashboard onNavigate={() => {}} />);
-      container = r.container;
-    });
-
-    expect(container?.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("ignora lockdown de relógio fora da janela de 1h", async () => {
-    okTamper([
-      evento({ at: new Date(now.getTime() - 2 * 60 * 60 * 1000).toISOString() }), // 2h atrás
-    ]);
-
-    let container: HTMLElement | undefined;
-    await act(async () => {
-      const r = render(<Dashboard onNavigate={() => {}} />);
-      container = r.container;
-    });
-
-    expect(container?.querySelector('[role="alert"]')).toBeNull();
-  });
-
-  it("trata falha do tamper-log como ausência de alerta", async () => {
-    tamperLogMock.mockRejectedValue(new Error("daemon fora"));
-
-    let container: HTMLElement | undefined;
-    await act(async () => {
-      const r = render(<Dashboard onNavigate={() => {}} />);
-      container = r.container;
-    });
-
-    expect(container?.querySelector('[role="alert"]')).toBeNull();
-  });
-});
-
-describe("Dashboard — sentinela all-internet do Clock Guard", () => {
-  it("rotula o lockdown do clock guard sem chamá-lo de modo pânico", async () => {
+  it("mostra foco ativo com bloqueios", async () => {
     useDataMock.mockReturnValue({
       ...defaultData(),
       status: {
         success: true,
         blocks: [
           {
-            domain: "*all-internet*",
-            source: "clock-guard",
-            started_at: new Date(now.getTime() - 60 * 1000).toISOString(),
-            expires_at: new Date(now.getTime() + 59 * 60 * 1000).toISOString(),
-            resolved_ips: [],
+            domain: "youtube.com",
+            started_at: new Date(now.getTime() - 10 * 60 * 1000).toISOString(),
+            expires_at: new Date(now.getTime() + 50 * 60 * 1000).toISOString(),
+            resolved_ips: ["1.2.3.4"],
           },
         ],
       } as ApiResponse,
     });
-    okTamper([]);
 
     let container: HTMLElement | undefined;
     await act(async () => {
@@ -160,7 +75,8 @@ describe("Dashboard — sentinela all-internet do Clock Guard", () => {
       container = r.container;
     });
 
-    expect(container?.textContent).toContain("Bloqueio preventivo do relógio");
-    expect(container?.textContent).not.toContain("Modo pânico ativo");
+    expect(container?.textContent).toContain("Foco ativo");
+    expect(container?.textContent).toContain("1 bloqueio");
+    expect(container?.textContent).toContain("youtube.com");
   });
 });

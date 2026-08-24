@@ -5,17 +5,16 @@ import (
 	"time"
 
 	"focusguard/internal/domain/policy"
-	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/store"
 )
 
 // seedBlock inserts a block directly into the RAM map (the established test
 // pattern) without touching the enforcer or the disk.
-func seedBlock(s *Scheduler, domain string, active bool, allowlist []string) {
+func seedBlock(s *Scheduler, domain string, active bool) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	now := time.Now()
-	b := policy.Block{Domain: domain, Allowlist: allowlist}
+	b := policy.Block{Domain: domain}
 	if active {
 		b.StartedAt = now.Add(-time.Minute)
 		b.ExpiresAt = now.Add(time.Hour)
@@ -28,7 +27,7 @@ func seedBlock(s *Scheduler, domain string, active bool, allowlist []string) {
 
 func TestScheduler_IsBlockedExactAndSubdomain(t *testing.T) {
 	sched, _, _ := setupTestScheduler(t)
-	seedBlock(sched, "youtube.com", true, nil)
+	seedBlock(sched, "youtube.com", true)
 
 	cases := []struct {
 		domain string
@@ -49,8 +48,8 @@ func TestScheduler_IsBlockedExactAndSubdomain(t *testing.T) {
 
 func TestScheduler_IsBlockedIgnoresExpired(t *testing.T) {
 	sched, _, _ := setupTestScheduler(t)
-	seedBlock(sched, "youtube.com", false, nil)
-	seedBlock(sched, "twitter.com", true, nil)
+	seedBlock(sched, "youtube.com", false)
+	seedBlock(sched, "twitter.com", true)
 
 	if sched.IsBlocked("youtube.com") {
 		t.Error("IsBlocked(youtube.com) = true para bloqueio expirado")
@@ -60,45 +59,9 @@ func TestScheduler_IsBlockedIgnoresExpired(t *testing.T) {
 	}
 }
 
-func TestScheduler_IsBlockedAllInternetRespectsAllowlist(t *testing.T) {
-	sched, _, _ := setupTestScheduler(t)
-	seedBlock(sched, enforcer.AllInternetDomain, true, []string{"docs.com", "mail.example.com"})
-
-	cases := []struct {
-		domain string
-		want   bool
-	}{
-		{"anywhere.com", true},
-		{"instagram.com", true},
-		{"docs.com", false},           // allowlist exato
-		{"sub.docs.com", false},       // subdomínio de allowlist
-		{"x.mail.example.com", false}, // subdomínio profundo de allowlist
-		{"example.com", true},         // pai não cobre o filho permitido
-		{"notdocs.com", true},         // prefixo não é sufixo
-	}
-	for _, c := range cases {
-		if got := sched.IsBlocked(c.domain); got != c.want {
-			t.Errorf("IsBlocked(%q) = %v, want %v", c.domain, got, c.want)
-		}
-	}
-}
-
-func TestScheduler_IsBlockedAllInternetExpiredFallsBackToDomainRules(t *testing.T) {
-	sched, _, _ := setupTestScheduler(t)
-	seedBlock(sched, enforcer.AllInternetDomain, false, []string{"docs.com"})
-	seedBlock(sched, "youtube.com", true, nil)
-
-	if !sched.IsBlocked("youtube.com") {
-		t.Error("IsBlocked(youtube.com) = false com sentinela expirado")
-	}
-	if sched.IsBlocked("anything.com") {
-		t.Error("IsBlocked(anything.com) = true com sentinela expirado")
-	}
-}
-
 func TestScheduler_IsBlockedCaseInsensitive(t *testing.T) {
 	sched, _, _ := setupTestScheduler(t)
-	seedBlock(sched, "youtube.com", true, nil)
+	seedBlock(sched, "youtube.com", true)
 
 	if !sched.IsBlocked("WWW.YouTube.Com") {
 		t.Error("IsBlocked(WWW.YouTube.Com) = false; matching deve ser case-insensitive")
@@ -268,27 +231,4 @@ func TestScheduler_ReconcileRestoresTamperedDNSSetting(t *testing.T) {
 	}
 }
 
-func TestScheduler_BlockAllInternetCarriesAllowlist(t *testing.T) {
-	sched, _, _ := setupTestScheduler(t)
-	stubResolveFuncCtx(t, map[string][]string{
-		"docs.com":     {"1.2.3.4"},
-		"www.docs.com": {"1.2.3.4"},
-	})
 
-	if _, err := sched.BlockAllInternet([]string{"docs.com"}, time.Hour); err != nil {
-		t.Fatalf("BlockAllInternet: %v", err)
-	}
-
-	sched.mu.RLock()
-	sentinel := sched.blocks[enforcer.AllInternetDomain]
-	sched.mu.RUnlock()
-	if len(sentinel.Allowlist) != 1 || sentinel.Allowlist[0] != "docs.com" {
-		t.Errorf("Allowlist = %v, want [docs.com]", sentinel.Allowlist)
-	}
-	if !sched.IsBlocked("instagram.com") {
-		t.Error("IsBlocked(instagram.com) = false em modo deep-focus")
-	}
-	if sched.IsBlocked("docs.com") {
-		t.Error("IsBlocked(docs.com) = true; allowlist do deep-focus deve furar o sinkhole")
-	}
-}

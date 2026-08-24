@@ -1,5 +1,5 @@
-// Package blocks implements the domain service for the block/block-all IPC
-// actions (Fase 4 do refactor-plan). It replaces the block switch cases of the
+// Package blocks implements the domain service for the block IPC
+// action (Fase 4 do refactor-plan). It replaces the block switch cases of the
 // ipc.Server with self-contained handlers that depend only on minimal
 // interfaces (DIP) — the *scheduler.Scheduler satisfies Blocker by structure,
 // without any change to it. Handlers use package-local types; the transport
@@ -9,7 +9,6 @@ package blocks
 import (
 	"context"
 	"fmt"
-	"strings"
 	"time"
 
 	"focusguard/internal/domain/ipcerr"
@@ -25,7 +24,6 @@ type Blocker interface {
 	BlockDomains(domains []string, duration time.Duration) ([]policy.Block, error)
 	ExtendBlock(domain string, duration time.Duration) (*policy.Block, error)
 	ActiveBlock(domain string) *policy.Block
-	BlockAllInternet(allowlist []string, duration time.Duration) (*policy.Block, error)
 }
 
 // Catalog resolves presets by name (same surface the ipc.PresetManager
@@ -53,12 +51,6 @@ type BlockResult struct {
 	Conflict      bool
 	ConflictBlock *policy.Block
 }
-type BlockAllInput struct {
-	Duration  string
-	Allowlist []string
-}
-type BlockAllResult struct{ Message string }
-
 // Handler executes the "block" action, preserving the switch behavior and
 // message order: duration is validated before the target; preset is a valid
 // target alone; --extend sums to the active block; the default ask-first
@@ -157,43 +149,4 @@ func (h *Handler) blockOrConflict(req *BlockInput, d time.Duration) (*BlockResul
 		block.ExpiresAt.Local().Format("15:04:05 02/01/2006"))}, nil
 }
 
-// BlockAllHandler executes the "block-all" action: the all-internet sentinel
-// with an optional allowlist (deep-focus mode).
-type BlockAllHandler struct {
-	blocks Blocker
-}
 
-// NewBlockAll builds the "block-all" handler.
-func NewBlockAll(blocks Blocker) *BlockAllHandler {
-	return &BlockAllHandler{blocks: blocks}
-}
-
-func (h *BlockAllHandler) Action() string { return "block-all" }
-
-func (h *BlockAllHandler) Validate(req *BlockAllInput) error {
-	d, err := time.ParseDuration(req.Duration)
-	if err != nil || d <= 0 {
-		return ipcerr.New(ipcerr.CodeDurationInvalid, "Duration invalid. Ex: --duration 4h, 30m")
-	}
-	return nil
-}
-
-func (h *BlockAllHandler) Handle(ctx context.Context, req *BlockAllInput) (*BlockAllResult, error) {
-	d, _ := time.ParseDuration(req.Duration)
-	block, err := h.blocks.BlockAllInternet(req.Allowlist, d)
-	if err != nil {
-		return nil, err
-	}
-	return &BlockAllResult{Message: fmt.Sprintf(
-		"Internet bloqueada até %s%s", block.ExpiresAt.Local().Format("15:04:05 02/01/2006"),
-		blockAllModeSuffix(req.Allowlist))}, nil
-}
-
-// blockAllModeSuffix describes the block-all flavor for the success message:
-// panic mode (all internet) vs deep-focus mode (only the allowlist reachable).
-func blockAllModeSuffix(allowlist []string) string {
-	if len(allowlist) == 0 {
-		return " (toda a internet)"
-	}
-	return fmt.Sprintf(" (apenas %s permitido)", strings.Join(allowlist, ", "))
-}

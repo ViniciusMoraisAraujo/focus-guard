@@ -22,8 +22,8 @@ type Event struct {
 	// Protection, Fase 2 do features-plan).
 	Source string `json:"source"`
 	// Action is what was done: "restore" (external edit reverted), "reconcile"
-	// (state re-synced) or "lockdown" (clock tamper confirmed by NTP — the
-	// preventive all-internet block was applied).
+	// (state re-synced) or "lockdown" (clock tamper confirmed by NTP —
+	// expirações ajustadas para a hora real).
 	Action string `json:"action"`
 	Detail string `json:"detail,omitempty"`
 }

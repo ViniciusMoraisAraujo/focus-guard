@@ -35,7 +35,7 @@ const DefaultAddr = "127.0.0.1:48902"
 // SendWithTimeout discipline: a hung daemon must never hang the UI.
 const proxyTimeout = 5 * time.Second
 
-// Os orçamentos por ação (status 15s, block/block-all/pomodoro 30s,
+// Os orçamentos por ação (status 15s, block/pomodoro 30s,
 // update/update-check 150s, demais 5s) vivem na tabela declarativa
 // ipc.SpecFor — a MESMA fonte que o daemon conhece (B7). O proxy só precisa
 // esperar a resposta; cada conexão IPC roda na própria goroutine do daemon,

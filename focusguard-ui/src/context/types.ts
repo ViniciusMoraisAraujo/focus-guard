@@ -2,7 +2,6 @@
 export type Screen =
   | "dashboard"
   | "bloquear"
-  | "panico"
   | "pomodoro"
   | "agenda"
   | "apps"

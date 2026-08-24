@@ -768,20 +768,8 @@ func TestFlushDNS_BestEffort(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// BlockAll / UnblockAll (modo pânico + allowlist deep-focus) — Windows
+// Domain rule name normalization — Windows
 // ---------------------------------------------------------------------------
-
-func TestAllBlockRuleName_Stable(t *testing.T) {
-	if allBlockRuleName() != "FocusGuard_AllInternet" {
-		t.Errorf("allBlockRuleName() = %q, want FocusGuard_AllInternet", allBlockRuleName())
-	}
-	if allowRuleName("1.1.1.1") != "FocusGuard_Allow_1.1.1.1" {
-		t.Errorf("allowRuleName(1.1.1.1) = %q", allowRuleName("1.1.1.1"))
-	}
-	if allowRuleName("2001:db8::1") != "FocusGuard_Allow_2001_db8__1" {
-		t.Errorf("allowRuleName(v6) = %q, want colons replaced", allowRuleName("2001:db8::1"))
-	}
-}
 
 func TestDomainRuleName_NormalizesIPv6(t *testing.T) {
 	if got := domainRuleName("1.1.1.1"); got != "FocusGuard_1.1.1.1" {
@@ -807,7 +795,6 @@ func TestDomainIPFromRuleName(t *testing.T) {
 		{"FocusGuard_DoH_8_8_8_8_tcp", "", false},
 		{"FocusGuard_DoT_TCP", "", false},
 		{"FocusGuard_Allow_2001_db8__1", "", false},
-		{"FocusGuard_AllInternet", "", false},
 		{"Other_1.1.1.1", "", false},
 	}
 	for _, tt := range cases {
@@ -815,162 +802,6 @@ func TestDomainIPFromRuleName(t *testing.T) {
 		if ok != tt.isIP || got != tt.want {
 			t.Errorf("domainIPFromRuleName(%q) = (%q, %v), want (%q, %v)", tt.name, got, ok, tt.want, tt.isIP)
 		}
-	}
-}
-
-// TestBlockAll_AddsCatchAllAndAllowRules verifies BlockAll adds the catch-all
-// block rule plus one allow rule per allowlisted IP (specific rules take
-// precedence over the broad block in Windows Firewall), after sweeping any
-// previous all/allow rules (idempotent re-application).
-func TestBlockAll_AddsCatchAllAndAllowRules(t *testing.T) {
-	b := &batchStubWin{showDumps: []string{"", ""}} // dump vazio: nada a limpar
-	stubBatchExecWin(t, b)
-
-	e := newTestEnforcer(t)
-	if err := e.BlockAll([]string{"1.1.1.1", "2001:db8::1"}); err != nil {
-		t.Fatalf("BlockAll: %v", err)
-	}
-
-	// Busca as invocações netsh add.
-	var adds [][]string
-	for _, c := range b.calls {
-		if c[0] == "netsh" && slices.Contains(c, "add") {
-			adds = append(adds, c)
-		}
-	}
-	if len(adds) != 3 {
-		t.Fatalf("esperava 3 netsh add (2 allow + 1 catch-all), got %d: %v", len(adds), b.calls)
-	}
-
-	var hasCatch, hasAllow4, hasAllow6 bool
-	for _, a := range adds {
-		joined := strings.Join(a, " ")
-		switch {
-		case strings.Contains(joined, "name=FocusGuard_AllInternet") && strings.Contains(joined, "action=block"):
-			hasCatch = true
-		case strings.Contains(joined, "name=FocusGuard_Allow_1.1.1.1") && strings.Contains(joined, "action=allow") && strings.Contains(joined, "remoteip=1.1.1.1"):
-			hasAllow4 = true
-		case strings.Contains(joined, "name=FocusGuard_Allow_2001_db8__1") && strings.Contains(joined, "action=allow"):
-			hasAllow6 = true
-		}
-	}
-	if !hasCatch {
-		t.Errorf("falta a regra catch-all FocusGuard_AllInternet")
-	}
-	if !hasAllow4 {
-		t.Errorf("falta a allow rule para 1.1.1.1")
-	}
-	if !hasAllow6 {
-		t.Errorf("falta a allow rule para 2001:db8::1")
-	}
-}
-
-// TestBlockAll_NoAllowlistOnlyCatchAll verifies panic mode without an
-// allowlist adds only the catch-all block rule.
-func TestBlockAll_NoAllowlistOnlyCatchAll(t *testing.T) {
-	b := &batchStubWin{showDumps: []string{"", ""}}
-	stubBatchExecWin(t, b)
-
-	e := newTestEnforcer(t)
-	if err := e.BlockAll(nil); err != nil {
-		t.Fatalf("BlockAll: %v", err)
-	}
-
-	var adds [][]string
-	for _, c := range b.calls {
-		if c[0] == "netsh" && slices.Contains(c, "add") {
-			adds = append(adds, c)
-		}
-	}
-	if len(adds) != 1 || !strings.Contains(strings.Join(adds[0], " "), "FocusGuard_AllInternet") {
-		t.Errorf("esperava apenas o catch-all, got %v", adds)
-	}
-}
-
-// TestUnblockAll_DeletesCatchAllAndAllowRules verifies UnblockAll removes the
-// catch-all and every FocusGuard_Allow_* rule, leaving other FocusGuard rules
-// (domain blocks, DoH) untouched.
-func TestUnblockAll_DeletesCatchAllAndAllowRules(t *testing.T) {
-	dump := "Regra:\n    Nome da regra:    FocusGuard_AllInternet\n\n" +
-		"Regra:\n    Nome da regra:    FocusGuard_Allow_1.1.1.1\n\n" +
-		"Regra:\n    Nome da regra:    FocusGuard_Allow_8_8_8_8\n\n" +
-		"Regra:\n    Nome da regra:    FocusGuard_9.9.9.9\n"
-	b := &batchStubWin{showDumps: []string{dump}}
-	stubBatchExecWin(t, b)
-
-	e := newTestEnforcer(t)
-	if err := e.UnblockAll(); err != nil {
-		t.Fatalf("UnblockAll: %v", err)
-	}
-
-	var dels [][]string
-	for _, c := range b.calls {
-		if c[0] == "netsh" && slices.Contains(c, "delete") {
-			dels = append(dels, c)
-		}
-	}
-
-	var deletedAll, deletedAllow1, deletedAllow8, deletedDomain bool
-	for _, d := range dels {
-		joined := strings.Join(d, " ")
-		switch {
-		case strings.Contains(joined, "name=FocusGuard_AllInternet"):
-			deletedAll = true
-		case strings.Contains(joined, "name=FocusGuard_Allow_1.1.1.1"):
-			deletedAllow1 = true
-		case strings.Contains(joined, "name=FocusGuard_Allow_8_8_8_8"):
-			deletedAllow8 = true
-		case strings.Contains(joined, "name=FocusGuard_9.9.9.9"):
-			deletedDomain = true
-		}
-	}
-	if !deletedAll {
-		t.Error("esperava deletar FocusGuard_AllInternet")
-	}
-	if !deletedAllow1 || !deletedAllow8 {
-		t.Error("esperava deletar as allow rules")
-	}
-	if deletedDomain {
-		t.Error("regra de domínio normal (FocusGuard_9.9.9.9) NÃO pode ser deletada")
-	}
-
-	// A enumeração das allow rules (show) deve acontecer ANTES de qualquer
-	// delete: se um crash ocorrer no meio, o catch-all já foi removido e a
-	// internet volta; regras allow sobram apenas como lixo inerte.
-	firstShow := -1
-	firstDelete := -1
-	for i, c := range b.calls {
-		if c[0] == "netsh" && slices.Contains(c, "name=all") && firstShow == -1 {
-			firstShow = i
-		}
-		if c[0] == "netsh" && slices.Contains(c, "delete") && firstDelete == -1 {
-			firstDelete = i
-		}
-	}
-	if firstShow == -1 {
-		t.Error("esperava consulta netsh show rule name=all para enumerar as allow rules")
-	}
-	if firstDelete != -1 && firstShow > firstDelete {
-		t.Errorf("show de enumeração (#%d) deve preceder os deletes (#%d)", firstShow, firstDelete)
-	}
-}
-
-func TestCountFocusGuardRules_DetectsAllBlocked(t *testing.T) {
-	output := "\nRegra:\n    Nome da regra:    FocusGuard_AllInternet\n\nRegra:\n    Nome da regra:    FocusGuard_DoT_TCP\n"
-	status := countFocusGuardRules([]byte(output))
-	if !status.AllBlocked {
-		t.Error("AllBlocked deve ser true quando FocusGuard_AllInternet existe")
-	}
-	if status.FirewallRules != 2 {
-		t.Errorf("FirewallRules = %d, want 2", status.FirewallRules)
-	}
-}
-
-func TestCountFocusGuardRules_AllBlockedFalse(t *testing.T) {
-	output := "\nRegra:\n    Nome da regra:    FocusGuard_1.1.1.1\n"
-	status := countFocusGuardRules([]byte(output))
-	if status.AllBlocked {
-		t.Error("AllBlocked deve ser false sem FocusGuard_AllInternet")
 	}
 }
 

@@ -54,10 +54,6 @@ func (f *fakeBlocker) ActiveBlock(domain string) *policy.Block {
 	return nil
 }
 
-func (f *fakeBlocker) BlockAllInternet(allowlist []string, d time.Duration) (*policy.Block, error) {
-	return &policy.Block{Domain: "0.0.0.0", StartedAt: time.Now(), ExpiresAt: time.Now().Add(d), Allowlist: allowlist}, nil
-}
-
 type fakeCatalog struct{ p preset.Preset }
 
 func (f fakeCatalog) Resolve(name string) (preset.Preset, error) {
@@ -145,19 +141,4 @@ func TestBlock_PresetBloqueiaLote(t *testing.T) {
 	}
 }
 
-func TestBlockAll_SucessoComAllowlist(t *testing.T) {
-	h := NewBlockAll(&fakeBlocker{})
-	resp, err := h.Handle(context.Background(), &BlockAllInput{Duration: "2h", Allowlist: []string{"gmail.com"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if resp.Message != "Internet bloqueada até "+time.Now().Add(2*time.Hour).Local().Format("15:04:05 02/01/2006")+" (apenas gmail.com permitido)" {
-		t.Fatalf("mensagem inesperada: %q", resp.Message)
-	}
-}
 
-func TestBlockAll_DuracaoInvalida(t *testing.T) {
-	h := NewBlockAll(&fakeBlocker{})
-	err := h.Validate(&BlockAllInput{Duration: "0s"})
-	assertActionError(t, err, ipcerr.CodeDurationInvalid)
-}

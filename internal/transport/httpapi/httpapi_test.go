@@ -253,10 +253,10 @@ func TestActionStatusUsesStatusTimeout(t *testing.T) {
 }
 
 // TestActionMutationUsesMutationTimeout cobre as ações que resolvem DNS e
-// aplicam hosts + firewall antes de responder (block/block-all/pomodoro):
+// aplicam hosts + firewall antes de responder (block/pomodoro):
 // o orçamento precisa acomodar o DNS (2-10s) e o batch do netsh.
 func TestActionMutationUsesMutationTimeout(t *testing.T) {
-	for _, action := range []string{"block", "block-all", "pomodoro", "pomodoro-stop"} {
+	for _, action := range []string{"block", "pomodoro", "pomodoro-stop"} {
 		t.Run(action, func(t *testing.T) {
 			sc := &stubClient{}
 			srv, h := newTestServer(sc, uiFS())

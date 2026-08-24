@@ -212,8 +212,6 @@ export const api = {
     extend?: boolean;
     replace?: boolean;
   }) => action({ action: "block", ...p }),
-  blockAll: (duration: string, allowlist: string[]) =>
-    action({ action: "block-all", duration, allowlist }),
   goalSet: (goalMinutes: number) => action({ action: "goal-set", goal_minutes: goalMinutes }),
 
   // Pomodoro

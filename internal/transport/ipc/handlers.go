@@ -9,7 +9,7 @@ import (
 
 // registerHandlers wires the server-level actions into the registry: transport
 // health (ping), server state (status), the tamper log, the event long-poll
-// and the latency snapshot. All the domain-backed actions (block, block-all,
+// and the latency snapshot. All the domain-backed actions (block,
 // apps-*, goal-*, presets, preset-*, user-*, dns-*, stats/missions/sessions,
 // schedule-*, pomodoro-*, update/update-check) are registered by the
 // composition root (cmd/focusguard-daemon) with the handlers from the domain

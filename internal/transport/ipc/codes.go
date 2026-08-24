@@ -18,7 +18,7 @@ import "focusguard/internal/domain/ipcerr"
 // re-exporta para o pacote ipc e para o wire.
 const (
 	// CodeDurationInvalid: duração mal formatada, zero ou negativa
-	// (block/block-all/pomodoro).
+	// (block/pomodoro).
 	CodeDurationInvalid = ipcerr.CodeDurationInvalid
 
 	// CodeDomainRequired: faltou informar um domínio ou preset para bloquear.

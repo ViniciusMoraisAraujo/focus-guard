@@ -24,8 +24,6 @@ type mockEnforcer struct {
 	unblockedDomains map[string][]string
 	syncedBlocks     map[string][]string
 	syncCalls        int
-	allBlockCalls    [][]string
-	unblockAllCalls  int
 	blockDoHCalls    int
 	unblockDoHCalls  int
 }
@@ -75,19 +73,6 @@ func (m *mockEnforcer) UnblockDoH() error {
 	m.unblockDoHCalls++
 	return nil
 }
-func (m *mockEnforcer) BlockAll(allowlist []string) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.allBlockCalls = append(m.allBlockCalls, append([]string(nil), allowlist...))
-	return nil
-}
-func (m *mockEnforcer) UnblockAll() error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	m.unblockAllCalls++
-	return nil
-}
-
 func (m *mockEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
@@ -368,10 +353,6 @@ type syncFailingEnforcer struct {
 
 func (e *syncFailingEnforcer) Sync(_ map[string][]string) error {
 	return errors.New("sync failed: permission denied")
-}
-
-func (e *syncFailingEnforcer) BlockAll(_ []string) error {
-	return errors.New("block-all failed: permission denied")
 }
 
 func TestScheduler_Start_SyncError(t *testing.T) {
@@ -1219,209 +1200,6 @@ func TestScheduler_QueriesDoNotReadDisk(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// BlockAllInternet (modo pânico / allowlist deep-focus)
-// ---------------------------------------------------------------------------
-
-func TestScheduler_BlockAllInternet_AppliesAndExpires(t *testing.T) {
-	sched, enf, st := setupTestScheduler(t)
-	stubResolveFuncCtx(t, map[string][]string{
-		"docs.com":     {"1.1.1.1"},
-		"www.docs.com": {"2.2.2.2"},
-	})
-
-	blk, err := sched.BlockAllInternet([]string{"docs.com"}, 2*time.Hour)
-	if err != nil {
-		t.Fatalf("BlockAllInternet: %v", err)
-	}
-	if blk.Domain != enforcer.AllInternetDomain {
-		t.Errorf("Domain = %q, want sentinel %q", blk.Domain, enforcer.AllInternetDomain)
-	}
-
-	// enforcer.BlockAll deve ter sido chamado com os IPs resolvidos da allowlist
-	if len(enf.allBlockCalls) != 1 {
-		t.Fatalf("BlockAll chamado %d vezes, want 1", len(enf.allBlockCalls))
-	}
-	if !reflect.DeepEqual(enf.allBlockCalls[0], []string{"1.1.1.1", "2.2.2.2"}) {
-		t.Errorf("BlockAll allowlist = %v, want [1.1.1.1 2.2.2.2]", enf.allBlockCalls[0])
-	}
-
-	// HasActiveBlocks reflete o sentinela
-	if !sched.HasActiveBlocks() {
-		t.Error("BlockAllInternet deve deixar HasActiveBlocks=true")
-	}
-
-	// persistido no state.json
-	state, err := st.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	if _, ok := state.Blocks[enforcer.AllInternetDomain]; !ok {
-		t.Error("sentinela deveria estar persistido no state.json")
-	}
-
-	// bootstrap (RAM = fonte da verdade; o primeiro Reconcile lê o disco)
-	if err := sched.Reconcile(); err != nil {
-		t.Fatalf("Reconcile (bootstrap): %v", err)
-	}
-	if !sched.HasActiveBlocks() {
-		t.Fatal("sentinela deveria estar ativo após bootstrap")
-	}
-
-	// expiração: encurta o ExpiresAt na RAM (fonte da verdade) e reconcilia
-	sched.mu.Lock()
-	b := sched.blocks[enforcer.AllInternetDomain]
-	b.ExpiresAt = time.Now().Add(-time.Second)
-	sched.blocks[enforcer.AllInternetDomain] = b
-	sched.mu.Unlock()
-
-	if err := sched.Reconcile(); err != nil {
-		t.Fatalf("Reconcile (expiração): %v", err)
-	}
-
-	if enf.unblockAllCalls != 1 {
-		t.Errorf("UnblockAll chamado %d vezes após expiração, want 1", enf.unblockAllCalls)
-	}
-	if sched.HasActiveBlocks() {
-		t.Error("após expiração não deve haver bloqueios ativos")
-	}
-}
-
-func TestScheduler_BlockAllInternet_NoAllowlist(t *testing.T) {
-	sched, enf, _ := setupTestScheduler(t)
-
-	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
-		t.Fatalf("BlockAllInternet: %v", err)
-	}
-	if len(enf.allBlockCalls) != 1 || len(enf.allBlockCalls[0]) != 0 {
-		t.Errorf("BlockAll sem allowlist deve chamar com lista vazia, got %v", enf.allBlockCalls)
-	}
-}
-
-func TestScheduler_Reconcile_ReappliesActiveSentinel(t *testing.T) {
-	sched, enf, _ := setupTestScheduler(t)
-	stubResolveFuncCtx(t, map[string][]string{})
-
-	// seed: sentinela ativo direto no store (como após um restart)
-	now := time.Now()
-	sched.mu.Lock()
-	sched.blocks[enforcer.AllInternetDomain] = policy.Block{
-		Domain:      enforcer.AllInternetDomain,
-		StartedAt:   now,
-		ExpiresAt:   now.Add(time.Hour),
-		ResolvedIPs: []string{"1.1.1.1"},
-	}
-	sched.mu.Unlock()
-
-	sched.Reconcile()
-
-	// Reconcile deve reaplicar o BlockAll no enforcer (bootstrap/re-aplicação)
-	if len(enf.allBlockCalls) != 1 {
-		t.Errorf("Reconcile deveria reaplicar BlockAll com o sentinela ativo, got %d chamadas", len(enf.allBlockCalls))
-	}
-	if !reflect.DeepEqual(enf.allBlockCalls[0], []string{"1.1.1.1"}) {
-		t.Errorf("BlockAll reaplicado com %v, want [1.1.1.1]", enf.allBlockCalls[0])
-	}
-}
-
-func TestScheduler_BlockAllInternet_SyncFailureRollsBack(t *testing.T) {
-	st, _ := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
-	enf := &syncFailingEnforcer{mockEnforcer: newMockEnforcer()}
-	sched := NewScheduler(st, enf)
-
-	if _, err := sched.BlockAllInternet(nil, time.Hour); err == nil {
-		t.Fatal("esperava erro quando o enforcer.BlockAll falha")
-	}
-	if sched.HasActiveBlocks() {
-		t.Error("após falha não deve haver bloqueio ativo")
-	}
-}
-
-// ---------------------------------------------------------------------------
-// Clock Guard lockdown (Fase 2): ApplyClockLockdown / ReleaseClockLockdown
-// ---------------------------------------------------------------------------
-
-func TestScheduler_ApplyClockLockdown_AppliesWithGuardSource(t *testing.T) {
-	sched, enf, st := setupTestScheduler(t)
-
-	blk, err := sched.ApplyClockLockdown(time.Hour)
-	if err != nil {
-		t.Fatalf("ApplyClockLockdown: %v", err)
-	}
-	if blk.Domain != enforcer.AllInternetDomain {
-		t.Errorf("Domain = %q, want sentinela %q", blk.Domain, enforcer.AllInternetDomain)
-	}
-	if blk.Source != policy.SourceClockGuard {
-		t.Errorf("Source = %q, want %q", blk.Source, policy.SourceClockGuard)
-	}
-	if len(enf.allBlockCalls) != 1 {
-		t.Fatalf("BlockAll chamado %d vezes, want 1", len(enf.allBlockCalls))
-	}
-	// Persistido no state.json com a origem (para o release pós-restart).
-	state, err := st.Load()
-	if err != nil {
-		t.Fatalf("Load: %v", err)
-	}
-	saved, ok := state.Blocks[enforcer.AllInternetDomain]
-	if !ok || saved.Source != policy.SourceClockGuard {
-		t.Errorf("sentinela deveria estar persistido com origem clock-guard, got %+v (ok=%v)", saved, ok)
-	}
-}
-
-func TestScheduler_ReleaseClockLockdown_RemovesGuardLockdown(t *testing.T) {
-	sched, enf, st := setupTestScheduler(t)
-	if _, err := sched.ApplyClockLockdown(time.Hour); err != nil {
-		t.Fatalf("ApplyClockLockdown: %v", err)
-	}
-	if err := sched.ReleaseClockLockdown(); err != nil {
-		t.Fatalf("ReleaseClockLockdown: %v", err)
-	}
-	if enf.unblockAllCalls != 1 {
-		t.Errorf("UnblockAll chamado %d vezes, want 1", enf.unblockAllCalls)
-	}
-	if sched.HasActiveBlocks() {
-		t.Error("após a liberação não deve haver bloqueio ativo")
-	}
-	blocks, _ := sched.ListBlocks()
-	if len(blocks) != 0 {
-		t.Errorf("esperava 0 blocos após a liberação, got %d", len(blocks))
-	}
-	state, _ := st.Load()
-	if _, ok := state.Blocks[enforcer.AllInternetDomain]; ok {
-		t.Error("sentinela deveria ter saído do state.json")
-	}
-}
-
-// TestScheduler_ReleaseClockLockdown_DoesNotTouchUserPanic é a garantia
-// crítica: o guard aplica o lockdown, o usuário ativa o modo pânico POR CIMA
-// (BlockAllInternet substitui o sentinela — agora é do usuário) e o NTP
-// valida em seguida. A liberação do guard NÃO pode remover o bloqueio
-// intencional do usuário.
-func TestScheduler_ReleaseClockLockdown_DoesNotTouchUserPanic(t *testing.T) {
-	sched, enf, _ := setupTestScheduler(t)
-	if _, err := sched.ApplyClockLockdown(time.Hour); err != nil {
-		t.Fatalf("ApplyClockLockdown: %v", err)
-	}
-	if _, err := sched.BlockAllInternet(nil, 2*time.Hour); err != nil {
-		t.Fatalf("BlockAllInternet (pânico do usuário): %v", err)
-	}
-	if err := sched.ReleaseClockLockdown(); err != nil {
-		t.Fatalf("ReleaseClockLockdown: %v", err)
-	}
-	if enf.unblockAllCalls != 0 {
-		t.Errorf("UnblockAll chamado %d vezes — não deveria tocar o pânico do usuário", enf.unblockAllCalls)
-	}
-	if !sched.HasActiveBlocks() {
-		t.Fatal("o bloqueio do usuário deveria continuar ativo após a liberação do guard")
-	}
-	sched.mu.RLock()
-	blk := sched.blocks[enforcer.AllInternetDomain]
-	sched.mu.RUnlock()
-	if blk.Source != policy.SourceUser {
-		t.Errorf("sentinela deveria continuar do usuário, got Source=%q", blk.Source)
-	}
-}
-
 // TestScheduler_ShiftExpirations desloca StartedAt/ExpiresAt de TODOS os
 // bloqueios pelo offset confirmado pelo NTP (Clock Tamper Protection): o
 // reconcile do boot compara ExpiresAt contra o relógio local (possivelmente
@@ -1435,8 +1213,8 @@ func TestScheduler_ShiftExpirations(t *testing.T) {
 	if _, err := sched.Block("docs.com", 2*time.Hour); err != nil {
 		t.Fatalf("Block: %v", err)
 	}
-	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
-		t.Fatalf("BlockAllInternet: %v", err)
+	if _, err := sched.Block("social.com", time.Hour); err != nil {
+		t.Fatalf("Block: %v", err)
 	}
 
 	before := make(map[string]policy.Block)
@@ -1558,102 +1336,6 @@ func TestScheduler_BootstrapThenReconcile(t *testing.T) {
 	}
 	if !statesEqual(disk, sched.ramState()) {
 		t.Error("disco e RAM divergiram após Bootstrap+Shift+Reconcile")
-	}
-}
-
-// TestScheduler_ApplyClockLockdown_SkipsActiveUserBlock: com um pânico do
-// usuário já ativo, o guard NÃO substitui o sentinela (tudo já está
-// bloqueado; tomar posse roubaria o bloqueio do usuário e o release depois
-// o removeria).
-func TestScheduler_ApplyClockLockdown_SkipsActiveUserBlock(t *testing.T) {
-	sched, enf, _ := setupTestScheduler(t)
-	if _, err := sched.BlockAllInternet(nil, 2*time.Hour); err != nil {
-		t.Fatalf("BlockAllInternet (pânico do usuário): %v", err)
-	}
-	if _, err := sched.ApplyClockLockdown(time.Hour); err != nil {
-		t.Fatalf("ApplyClockLockdown: %v", err)
-	}
-	if len(enf.allBlockCalls) != 1 {
-		t.Errorf("BlockAll chamado %d vezes, want 1 (sem substituição do pânico)", len(enf.allBlockCalls))
-	}
-	sched.mu.RLock()
-	blk := sched.blocks[enforcer.AllInternetDomain]
-	sched.mu.RUnlock()
-	if blk.Source != policy.SourceUser {
-		t.Errorf("sentinela deveria continuar do usuário, got Source=%q", blk.Source)
-	}
-}
-
-// TestScheduler_ReleaseClockLockdown_AfterBootstrap: o lockdown persiste no
-// state.json COM a origem (Source); após um restart (novo scheduler
-// reconciliando o mesmo estado), a liberação do guard continua funcionando.
-func TestScheduler_ReleaseClockLockdown_AfterBootstrap(t *testing.T) {
-	st, _ := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
-	enf1 := newMockEnforcer()
-	sched1 := NewScheduler(st, enf1)
-	if _, err := sched1.ApplyClockLockdown(time.Hour); err != nil {
-		t.Fatalf("ApplyClockLockdown: %v", err)
-	}
-
-	// "Restart": novo scheduler sobre o mesmo store (bootstrap via Reconcile).
-	enf2 := newMockEnforcer()
-	sched2 := NewScheduler(st, enf2)
-	if err := sched2.Reconcile(); err != nil {
-		t.Fatalf("Reconcile (bootstrap): %v", err)
-	}
-	if !sched2.HasActiveBlocks() {
-		t.Fatal("lockdown deveria estar ativo após o bootstrap")
-	}
-	if err := sched2.ReleaseClockLockdown(); err != nil {
-		t.Fatalf("ReleaseClockLockdown pós-bootstrap: %v", err)
-	}
-	if sched2.HasActiveBlocks() {
-		t.Error("lockdown deveria ter sido liberado após o bootstrap")
-	}
-	if enf2.unblockAllCalls != 1 {
-		t.Errorf("UnblockAll chamado %d vezes, want 1", enf2.unblockAllCalls)
-	}
-}
-
-func TestScheduler_ReleaseClockLockdown_WithoutSentinelIsNoop(t *testing.T) {
-	sched, enf, _ := setupTestScheduler(t)
-	if err := sched.ReleaseClockLockdown(); err != nil {
-		t.Fatalf("ReleaseClockLockdown sem sentinela deveria ser no-op, got %v", err)
-	}
-	if enf.unblockAllCalls != 0 {
-		t.Errorf("UnblockAll chamado %d vezes, want 0", enf.unblockAllCalls)
-	}
-}
-
-type unblockAllFailingEnforcer struct {
-	*mockEnforcer
-}
-
-func (e *unblockAllFailingEnforcer) UnblockAll() error {
-	return errors.New("netsh: falha ao remover o bloqueio de internet")
-}
-
-// TestScheduler_ReleaseClockLockdown_UnblockFailureKeepsBlock: se o enforcer
-// falhar ao remover as regras do SO, o lockdown permanece no RAM/estado
-// (nada de "estado limpo" com regras órfãs) e o próximo Check do guard
-// re-tenta a liberação.
-func TestScheduler_ReleaseClockLockdown_UnblockFailureKeepsBlock(t *testing.T) {
-	st, _ := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
-	enf := &unblockAllFailingEnforcer{mockEnforcer: newMockEnforcer()}
-	sched := NewScheduler(st, enf)
-
-	if _, err := sched.ApplyClockLockdown(time.Hour); err != nil {
-		t.Fatalf("ApplyClockLockdown: %v", err)
-	}
-	if err := sched.ReleaseClockLockdown(); err == nil {
-		t.Fatal("esperava erro quando o enforcer.UnblockAll falha")
-	}
-	if !sched.HasActiveBlocks() {
-		t.Error("lockdown deveria permanecer ativo após falha na liberação")
-	}
-	state, _ := st.Load()
-	if _, ok := state.Blocks[enforcer.AllInternetDomain]; !ok {
-		t.Error("sentinela deveria permanecer no state.json após falha na liberação")
 	}
 }
 
@@ -2014,7 +1696,7 @@ func TestScheduler_Reconcile_MatchNoOp(t *testing.T) {
 
 // TestScheduler_SetOnChange_NotifiesOnMutation verifica o hook de mudança
 // (Fase 7 — event hub): cada mutação de blocos (Block, ExtendBlock,
-// BlockDomains, BlockAllInternet) dispara o callback registrado.
+// BlockDomains) dispara o callback registrado.
 func TestScheduler_SetOnChange_NotifiesOnMutation(t *testing.T) {
 	sched, _, _ := setupTestScheduler(t)
 
@@ -2044,9 +1726,6 @@ func TestScheduler_SetOnChange_NotifiesOnMutation(t *testing.T) {
 	if _, err := sched.BlockDomains([]string{"a.com", "b.com"}, time.Hour); err != nil {
 		t.Fatalf("BlockDomains: %v", err)
 	}
-	if _, err := sched.BlockAllInternet(nil, time.Hour); err != nil {
-		t.Fatalf("BlockAllInternet: %v", err)
-	}
 	// Ajustes de configuração do DNS (visíveis no status) também avisam — o
 	// review da Fase 7 apontou o gap de staleness do status DNS.
 	if err := sched.SetDNSEnabled(true); err != nil {
@@ -2067,7 +1746,7 @@ func TestScheduler_SetOnChange_NotifiesOnMutation(t *testing.T) {
 	mu.Lock()
 	got := calls
 	mu.Unlock()
-	if got < 6 {
-		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 6 (Block/Extend/Batch/Panic/DNS)", got)
+	if got < 5 {
+		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 5 (Block/Extend/Batch/DNS)", got)
 	}
 }

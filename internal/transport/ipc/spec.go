@@ -49,7 +49,6 @@ type ActionSpec struct {
 // the login rate limit).
 var specs = map[string]ActionSpec{
 	"block":             {Action: "block", Permission: PermAuthenticated, Timeout: 30 * time.Second},
-	"block-all":         {Action: "block-all", Permission: PermAuthenticated, Timeout: 30 * time.Second},
 	"status":            {Action: "status", Permission: PermAuthenticated, Timeout: 15 * time.Second},
 	"ping":              {Action: "ping", Permission: PermAuthenticated, Timeout: 5 * time.Second},
 	"update":            {Action: "update", Permission: PermAuthenticated, Timeout: 150 * time.Second},

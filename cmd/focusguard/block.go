@@ -57,8 +57,7 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	durationFlag := blockCmd.String("duration", "", "Duração do bloqueio (ex: 4h, 30m, 1h30m)")
 	durationShortFlag := blockCmd.String("d", "", "Duração do bloqueio (shorthand)")
 	presetFlag := blockCmd.String("preset", "", "Bloquear uma categoria inteira (ex: social, video, news, games)")
-	internetFlag := blockCmd.Bool("internet", false, "Bloquear toda a internet (modo pânico) por um período")
-	allowFlag := blockCmd.String("allow", "", "No modo --internet: domínios permitidos (allowlist), separados por vírgula")
+
 	extendFlag := blockCmd.Bool("extend", false, "Somar à duração do bloqueio já ativo do domínio (em vez de perguntar)")
 	replaceFlag := blockCmd.Bool("replace", false, "Reiniciar o bloqueio do domínio a partir de agora, descartando o anterior")
 
@@ -71,12 +70,12 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 	replace := *replaceFlag || argReplace
 
 	domain := blockCmd.Arg(0)
-	if domain == "" && *presetFlag == "" && !*internetFlag {
-		fmt.Println("Erro: Informe um domínio, --preset ou --internet para bloquear.")
-		fmt.Println("Uso: focusguard block <dominio> --duration <tempo>  |  focusguard block --preset <categoria> --duration <tempo>  |  focusguard block --internet [--allow <dominios>] --duration <tempo>")
+	if domain == "" && *presetFlag == "" {
+		fmt.Println("Erro: Informe um domínio ou --preset para bloquear.")
+		fmt.Println("Uso: focusguard block <dominio> --duration <tempo>  |  focusguard block --preset <categoria> --duration <tempo>")
 		osExit(1)
 	}
-	if (extend || replace) && (domain == "" || *presetFlag != "" || *internetFlag) {
+	if (extend || replace) && (domain == "" || *presetFlag != "") {
 		fmt.Println("Erro: --extend e --replace só se aplicam a um domínio específico.")
 		osExit(1)
 	}
@@ -106,16 +105,7 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 		Extend:   extend,
 		Replace:  replace,
 	}
-	if *internetFlag {
-		req.Action = "block-all"
-		if *allowFlag != "" {
-			for _, d := range strings.Split(*allowFlag, ",") {
-				if d = strings.TrimSpace(d); d != "" {
-					req.Allowlist = append(req.Allowlist, d)
-				}
-			}
-		}
-	}
+
 
 	resp, err := client.Send(req)
 	if err != nil {

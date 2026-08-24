@@ -51,9 +51,7 @@ type Request struct {
 	// ICSContent/ICSPreset drive schedule-import (raw .ics file content).
 	ICSContent string `json:"ics_content,omitempty"`
 	ICSPreset  string `json:"ics_preset,omitempty"`
-	// Allowlist lists the domains still reachable under the block-all action
-	// (deep-focus mode); empty means block all internet (panic mode).
-	Allowlist []string `json:"allowlist,omitempty"`
+
 	// GoalMinutes drives the goal-set action (daily focus goal in minutes).
 	GoalMinutes int `json:"goal_minutes,omitempty"`
 	// AppName drives the apps-add/apps-remove actions (process denylist).

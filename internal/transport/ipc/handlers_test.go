@@ -47,7 +47,7 @@ func TestServer_RegistryDispatchesMigratedActions(t *testing.T) {
 		"schedule-list", "schedule-add", "schedule-import", "schedule-remove",
 		"pomodoro", "pomodoro-defaults", "pomodoro-stop",
 		"update", "update-check",
-		"block", "block-all", "status",
+		"block", "status",
 		"user-list", "user-verify", "user-add", "user-remove", "user-set-password",
 		"dns-start", "dns-stop", "dns-status", "dns-set-upstream",
 	}

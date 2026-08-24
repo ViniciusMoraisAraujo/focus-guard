@@ -234,23 +234,6 @@ func (a dnsCtrlAdapter) Status() ipc.DNSStatus {
 	}
 }
 
-// clockLockdownAdapter adapta o *scheduler.Scheduler ao clockguard.Lockdown
-// (Fase 2): o bloqueio preventivo do guard é aplicado via ApplyClockLockdown
-// (sentinela com origem clock-guard) e liberado via ReleaseClockLockdown — a
-// liberação só remove o sentinela do próprio guard, nunca um bloqueio
-// all-internet intencional do usuário (modo pânico). O composition root
-// conhece os dois lados.
-type clockLockdownAdapter struct{ s *scheduler.Scheduler }
-
-func (a clockLockdownAdapter) BlockAllInternet(_ []string, duration time.Duration) error {
-	_, err := a.s.ApplyClockLockdown(duration)
-	return err
-}
-
-func (a clockLockdownAdapter) UnblockAllInternet() error {
-	return a.s.ReleaseClockLockdown()
-}
-
 // clockLoggerAdapter adapta o *tamper.Recorder (Log(Event)) ao
 // clockguard.Logger (Log(source, action, detail)).
 type clockLoggerAdapter struct{ rec *tamper.Recorder }
@@ -425,10 +408,9 @@ func startWeeklyReportWorker(store *reports.Store, p reports.Provider, now func(
 // Protection — Fase 2): um Check imediato + um Check a cada
 // clockguard.CheckInterval, reusando o guard do check síncrono do boot (o
 // dedup do tamper-log e a re-ancoragem continuam entre ciclos). Quando o gap
-// do wall clock ultrapassa a tolerância (SUSPEITA) e o NTP não consegue
-// limpar a suspeita — offline ou falhou — o bloqueio preventivo all-internet
-// é aplicado (relógio adiantado + restart não expira os bloqueios sem
-// proteção). O NTP validando o relógio local OU confirmando a divergência
+// do wall clock ultrapassa a tolerância (SUSPEITA) e o NTP confirma a
+// divergência (hora real agora conhecida; expirações já ajustadas no boot),
+// a burla é registrada no tamper-log (dedup por offset). O NTP validando o relógio local OU confirmando a divergência
 // (hora real agora conhecida; expirações já ajustadas no boot) libera um
 // bloqueio pendente e re-ancora a referência; a burla confirmada é
 // registrada no tamper-log (dedup por offset). O NTP é best-effort e com
@@ -1052,7 +1034,6 @@ func runDaemon() bool {
 	// avaliá-las contra o relógio local — um relógio adulterado (ou dual
 	// boot com RTC fora) não expira bloqueios cedo nem os segura além do
 	// tempo real. Com NTP indisponível (offline/falha) a suspeita aplica o
-	// bloqueio preventivo (sentinela all-internet) — ver startClockGuardWorker.
 	// Boot saudável não consulta o NTP (gap ≤ tolerância), então o boot não
 	// ganha latência.
 	if err := sched.Bootstrap(); err != nil {
@@ -1065,10 +1046,9 @@ func runDaemon() bool {
 		return false
 	}
 	clockGuard := clockguard.New(clockguard.Deps{
-		State:    sched,
-		NTP:      ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
-		Lockdown: clockLockdownAdapter{s: sched},
-		Logger:   clockLoggerAdapter{rec: tamperRec},
+		State:  sched,
+		NTP:    ntp.New(ntp.DefaultServer, ntp.DefaultTimeout),
+		Logger: clockLoggerAdapter{rec: tamperRec},
 	})
 	if out := clockGuard.Check(); out.Confirmed {
 		if err := sched.ShiftExpirations(out.Offset); err != nil {
@@ -1303,7 +1283,7 @@ func runDaemon() bool {
 		components = append(components, daemon.StopOnly(stopReports))
 	}
 
-	// Composition root (Fase 5): as ações de domínio (block/block-all, apps-*,
+	// Composition root (Fase 5): as ações de domínio (block, apps-*,
 	// goal-*, presets, preset-*, user-*, dns-*) são atendidas pelos handlers
 	// dos pacotes de domínio (interfaces estreitas, DIP) — não pelos adapters
 	// do ipc. O ipc.Server registra só os handlers de nível servidor
@@ -1328,18 +1308,6 @@ func runDaemon() bool {
 				resp.Code = out.Code
 			}
 			return resp, nil
-		},
-	}.Handler())
-	hBlockAll := blocks.NewBlockAll(sched)
-	server.Register(ipc.DomainAction[blocks.BlockAllInput, blocks.BlockAllResult]{
-		Name: hBlockAll.Action(),
-		Decode: func(r *ipc.Request) (*blocks.BlockAllInput, error) {
-			return &blocks.BlockAllInput{Duration: r.Duration, Allowlist: r.Allowlist}, nil
-		},
-		Validate: hBlockAll.Validate,
-		Handle:   hBlockAll.Handle,
-		Encode: func(out *blocks.BlockAllResult) (*ipc.Response, error) {
-			return &ipc.Response{Success: true, Message: out.Message}, nil
 		},
 	}.Handler())
 

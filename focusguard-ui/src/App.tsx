@@ -13,7 +13,6 @@ import {
   Settings,
   Shield,
   ShieldCheck,
-  Siren,
   Timer,
   TriangleAlert,
   UserRound,
@@ -25,7 +24,6 @@ import { Configuracoes } from "./screens/Configuracoes";
 import { Dashboard } from "./screens/Dashboard";
 import { Estatisticas } from "./screens/Estatisticas";
 import { Guia } from "./screens/Guia";
-import { Panico } from "./screens/Panico";
 import { Pomodoro } from "./screens/Pomodoro";
 import { Presets } from "./screens/Presets";
 import { Rede } from "./screens/Rede";
@@ -49,7 +47,6 @@ import { cn } from "./lib/utils";
 const NAV: { id: Screen; label: string; icon: typeof Shield }[] = [
   { id: "dashboard", label: "Painel", icon: Shield },
   { id: "bloquear", label: "Bloquear", icon: Lock },
-  { id: "panico", label: "Modo pânico", icon: Siren },
   { id: "pomodoro", label: "Pomodoro", icon: Timer },
   { id: "agenda", label: "Agenda", icon: CalendarDays },
   { id: "apps", label: "Apps", icon: Ban },
@@ -132,7 +129,6 @@ function MainShell() {
         <div key={screen} className="animate-in fade-in duration-200">
           {screen === "dashboard" && <Dashboard onNavigate={setScreen} />}
           {screen === "bloquear" && <Bloquear />}
-          {screen === "panico" && <Panico />}
           {screen === "pomodoro" && <Pomodoro />}
           {screen === "agenda" && <Agenda />}
           {screen === "apps" && <Apps />}          { screen === "rede" && <Rede onNavigate={setScreen} /> }

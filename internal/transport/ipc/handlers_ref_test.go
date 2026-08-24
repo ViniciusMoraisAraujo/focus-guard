@@ -81,7 +81,6 @@ func registerDomainReferenceHandlers(s *Server, deps *refDeps) {
 	s.registry.Register(funcHandler{action: "goal-get", handle: s.handleGoalGet})
 	s.registry.Register(funcHandler{action: "goal-set", handle: s.handleGoalSet})
 	s.registry.Register(funcHandler{action: "block", handle: s.handleBlock})
-	s.registry.Register(funcHandler{action: "block-all", handle: s.handleBlockAll})
 	s.registry.Register(funcHandler{action: "user-list", handle: deps.handleUserList})
 	s.registry.Register(funcHandler{action: "user-verify", handle: deps.handleUserVerify})
 	s.registry.Register(funcHandler{action: "user-add", handle: deps.handleUserAdd})
@@ -289,32 +288,6 @@ func (s *Server) handleBlock(_ context.Context, req *Request) (*Response, error)
 		return nil, err
 	}
 	return &Response{Success: true, Message: fmt.Sprintf("Domain %s blocked  %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006"))}, nil
-}
-
-// handleBlockAll bloqueia toda a internet (panic mode) ou tudo exceto a
-// allowlist (deep-focus mode).
-func (s *Server) handleBlockAll(_ context.Context, req *Request) (*Response, error) {
-	d, err := time.ParseDuration(req.Duration)
-	if err != nil || d <= 0 {
-		return nil, Err(CodeDurationInvalid, "Duration invalid. Ex: --duration 4h, 30m")
-	}
-	block, err := s.scheduler.BlockAllInternet(req.Allowlist, d)
-	if err != nil {
-		return nil, err
-	}
-	return &Response{
-		Success: true,
-		Message: fmt.Sprintf("Internet bloqueada até %s%s", block.ExpiresAt.Local().Format("15:04:05 02/01/2006"), blockAllModeSuffix(req.Allowlist)),
-	}, nil
-}
-
-// blockAllModeSuffix descreve a variante do block-all na mensagem de sucesso:
-// modo pânico (internet toda) vs deep-focus (só a allowlist acessível).
-func blockAllModeSuffix(allowlist []string) string {
-	if len(allowlist) == 0 {
-		return " (toda a internet)"
-	}
-	return fmt.Sprintf(" (apenas %s permitido)", strings.Join(allowlist, ", "))
 }
 
 // ---------------------------------------------------------------------------
