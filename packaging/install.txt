@@ -168,3 +168,20 @@ Nos exemplos abaixo, troque X.Y.Z pela versão desta release.
    O estado (bloqueios e configuração) é preservado em
    /var/lib/focusguard (Linux) ou C:\ProgramData\FocusGuard
    (Windows) - remova manualmente se quiser apagar tudo.
+
+------------------------------------------------------------
+ 7. FALSOS POSITIVOS NO WINDOWS
+------------------------------------------------------------
+
+ Se o Windows Defender ou outro antivírus bloquear o FocusGuard,
+ consulte docs/windows-troubleshooting.md para soluções.
+
+ Resumo rápido:
+   - SmartScreen: clique em "Mais informações" → "Executar assim mesmo"
+   - Windows Defender: adicione exclusão para C:\Program Files\FocusGuard
+   - Outros antivírus: consulte o manual do antivírus para adicionar
+     exclusões
+
+ O FocusGuard é software open-source e seguro. O bloqueio é um falso
+ positivo causado pelo comportamento legítimo de modificar hosts e
+ firewall. Para mais detalhes, veja docs/windows-troubleshooting.md.
