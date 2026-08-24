@@ -123,3 +123,106 @@ jobs:
             "focusguard-server-${VERSION}-amd64.msi" \
             --clobber
           echo "::notice::MSIs anexados à release: focusguard-${VERSION}-amd64.msi e focusguard-server-${VERSION}-amd64.msi"
+
+  # ---------------------------------------------------------------- Code Signing
+  # Assina todos os binários Windows (.exe) e instaladores (.msi) com
+  # Authenticode. Roda DEPOIS do goreleaser (que publica os .exe) e do
+  # windows-msi (que publica os .msi), baixa tudo da release, assina e
+  # re-uploa — os binários finais são assinados e verificáveis.
+  #
+  # Requer os seguintes GitHub Secrets:
+  #   WINDOWS_SIGN_CERTIFICATE      — conteúdo base64 do arquivo .pfx
+  #   WINDOWS_SIGN_CERTIFICATE_PASSWORD — senha do .pfx
+  #
+  # Se os secrets não estiverem configurados, o job é pulado (signing
+  # é opcional nas primeiras releases enquanto o certificado não é obtido).
+  sign-windows:
+    runs-on: windows-latest
+    needs: [goreleaser, windows-msi]
+    if: ${{ secrets.WINDOWS_SIGN_CERTIFICATE != '' }}
+    steps:
+      - name: Checkout (scripts)
+        uses: actions/checkout@v4
+        with:
+          sparse-checkout: scripts/sign-windows.ps1
+          sparse-checkout-cone-mode: false
+
+      - name: Download release binaries
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ github.ref_name }}" -replace '^v', ''
+          $tag = "${{ github.ref_name }}"
+          $dir = "signing-staging"
+          New-Item -ItemType Directory -Path $dir -Force | Out-Null
+
+          Write-Host "==> Baixando binários da release $tag..."
+
+          # Baixar o zip da release (contém os .exe)
+          $zipName = "focusguard_${version}_windows_amd64.zip"
+          gh release download "$tag" --pattern "$zipName" --dir "$dir"
+          Expand-Archive -Path "$dir\$zipName" -DestinationPath "$dir\exe" -Force
+          Remove-Item "$dir\$zipName" -Force
+
+          # Baixar os .msi
+          gh release download "$tag" --pattern "focusguard-*-amd64.msi" --dir "$dir\msi"
+
+          # Listar arquivos para assinatura
+          Write-Host "==> Arquivos para assinatura:"
+          Get-ChildItem -Path $dir -Recurse -Include *.exe,*.msi | ForEach-Object {
+            Write-Host "  - $($_.FullName)"
+          }
+
+      - name: Decode certificate
+        shell: pwsh
+        run: |
+          $pfxBase64 = "${{ secrets.WINDOWS_SIGN_CERTIFICATE }}"
+          $pfxBytes = [Convert]::FromBase64String($pfxBase64)
+          [IO.File]::WriteAllBytes("${{ runner.temp }}\certificate.pfx", $pfxBytes)
+          Write-Host "==> Certificado decodificado: ${{ runner.temp }}\certificate.pfx"
+
+      - name: Sign binaries
+        shell: pwsh
+        run: |
+          $staging = Join-Path ${{ github.workspace }} "signing-staging"
+          $cert = Join-Path ${{ runner.temp }} "certificate.pfx"
+          $password = "${{ secrets.WINDOWS_SIGN_CERTIFICATE_PASSWORD }}"
+
+          & .\scripts\sign-windows.ps1 `
+            -CertificatePath $cert `
+            -CertificatePassword $password `
+            -SearchPath $staging `
+            -Description "FocusGuard — bloqueio focado de distrações"
+
+      - name: Re-upload signed binaries to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          DIR="signing-staging"
+
+          echo "==> Re-uploanding binários assinados..."
+
+          # Re-upload .exe files from the extracted zip
+          for exe in "$DIR"/exe/*.exe; do
+            [ -f "$exe" ] && gh release upload "$GITHUB_REF_NAME" "$exe" --clobber
+          done
+
+          # Re-upload .msi files
+          for msi in "$DIR"/msi/*.msi; do
+            [ -f "$msi" ] && gh release upload "$GITHUB_REF_NAME" "$msi" --clobber
+          done
+
+          echo "::notice::Binários assinados com Authenticode e re-uploandados à release"
+
+      - name: Cleanup certificate
+        if: always()
+        shell: pwsh
+        run: |
+          $cert = Join-Path ${{ runner.temp }} "certificate.pfx"
+          if (Test-Path $cert) {
+            Remove-Item $cert -Force
+            Write-Host "==> Certificado removido do runner."
+          }
