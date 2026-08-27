@@ -11,8 +11,6 @@ export interface Block {
   started_at: string; // RFC3339
   expires_at: string; // RFC3339
   resolved_ips: string[];
-  allowlist?: string[]; // Allowlist names the domains still reachable under the all-internet
-  source?: "user" | "clock-guard"; // Source tags the block's owner (user panic vs. the clock guard's
 }
 
 // Preset is a named group of domains blocked together by category.
@@ -172,7 +170,6 @@ export interface ApiRequest {
   schedule_id?: string;
   ics_content?: string; // ICSContent/ICSPreset drive schedule-import (raw .ics file content).
   ics_preset?: string;
-  allowlist?: string[]; // Allowlist lists the domains still reachable under the block-all action
   goal_minutes?: number; // GoalMinutes drives the goal-set action (daily focus goal in minutes).
   app_name?: string; // AppName drives the apps-add/apps-remove actions (process denylist).
   name?: string; // Name is the focus-session/mission label for the pomodoro action.
