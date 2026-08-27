@@ -78,6 +78,8 @@ AGENT.md §5).
 
 Ordem cronológica, o mais recente no topo:
 
+- [2026-08-27](2026-08-27.md) — Planejamento da validação Linux consolidado
+  (guia de ambiente VM para Etapas 7–10, status revisado).
 - [2026-08-17](2026-08-17.md) — Clock Guard compatível com dual boot
   (burla confirmada não bloqueia mais; expirações ajustadas via
   ShiftExpirations no boot) + release v0.20.1.

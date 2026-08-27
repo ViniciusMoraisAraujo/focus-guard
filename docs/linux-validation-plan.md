@@ -345,6 +345,10 @@ resolv.conf de outro dispositivo) fica para a máquina real com rede.
 
 ## Etapa 7 — Tray + notificações (sessão desktop)
 
+> **Guias de automação:** `scripts/setup-linux-vm.sh` (provisionamento da
+> VM) e `scripts/validate-etapa7.sh` (checklist interativo). Documentação
+> completa em `docs/vm-provisioning-guide.md`.
+
 - [ ] `focusguard-tray` (cgo, appindicator) sobe numa sessão desktop real:
   - [ ] ícone na bandeja, menu com Status / Bloco rápido / Categorias /
         Verificar atualização / Abrir painel / Sair;

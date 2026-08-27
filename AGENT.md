@@ -297,6 +297,16 @@ go test ./... -count=1 -timeout=60s   # make test
 - ⚠️ Windows: `go test ./cmd/focusguard-daemon/...` requires an **elevated**
   shell (manifest `requireAdministrator`). In a non-admin shell, only run
   the non-elevated packages.
+- ✅ **Linux CI**: the full test suite (`go test ./...`) runs on
+  `ubuntu-latest` in the `linux-full-suite` job — including
+  `cmd/focusguard-daemon` (no manifest on Linux). Tests that need root
+  (`requireRoot`) skip gracefully on the non-root runner. The `race` job
+  runs `-race ./...` (complete suite). See `docs/linux-validation-plan.md`
+  for the full validation status (Etapas 0–6 completed, 7–11 pending).
+- **Linux validation scripts**: `scripts/setup-linux-vm.sh` (automated
+  VM setup), `scripts/validate-etapa7.sh` (interactive tray validation),
+  `scripts/snapshot-vm.sh` (VirtualBox snapshot). See
+  `docs/vm-provisioning-guide.md`.
 - Command-line cross-checks on Windows: use POSIX bash (never `dir`/`copy`/
   `findstr`); use `/` in paths.
 
@@ -343,6 +353,9 @@ go test ./... -count=1 -timeout=60s   # make test
 └── scripts/
     ├── install-daemon.ps1      # Windows install (copies to Program Files, service, shortcut, tray, watchdog)
     ├── install-linux.sh        # Linux install (/opt/focusguard, systemd, XDG autostart, socket group)
+    ├── setup-linux-vm.sh       # Linux VM automated setup (deps + build + install)
+    ├── validate-etapa7.sh      # Interactive tray validation checklist (Etapa 7)
+    ├── snapshot-vm.sh          # VirtualBox VM snapshot before validation
     ├── focusguard.service      # systemd unit
     ├── focusguard-tray.desktop # tray shortcut template (Linux)
     ├── build-msi.sh            # .msi build via go-msi + WiX
@@ -503,6 +516,17 @@ confirm the version/tag with the person before pushing the tag
   window past midnight. The scheduler package has `fuzz_test.go` (3 targets)
   and the repo runs `-race` + the socket-chown test as root in CI
   (`.github/workflows/test.yml`).
+- **Linux validation done (Etapas 0–6)** — `docs/linux-validation-plan.md`
+  records the complete Linux validation: CI baseline (Etapa 0), install
+  (Etapa 2), enforcer real iptables/nft (Etapa 3), watchers + replicas
+  (Etapa 4), CA + interceptor HTTPS (Etapa 5), DNS sinkhole (Etapa 6).
+  14 bugs found and fixed with TDD (including a HIGH: ICMPv4 reject type
+  in IPv6/nft). Tray + notifications (Etapa 7) pending desktop validation.
+- **Daemon tests run on Linux CI** — on Windows the daemon tests require an
+  elevated shell (manifest `requireAdministrator`) and never ran in CI.
+  On Linux there is no manifest, so `go test ./cmd/focusguard-daemon/...`
+  runs normally in the `linux-full-suite` CI job. Tests needing root skip
+  gracefully (`requireRoot`).
 
 ---
 
