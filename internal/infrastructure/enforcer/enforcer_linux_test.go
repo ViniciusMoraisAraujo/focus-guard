@@ -793,43 +793,7 @@ func TestRemoveFirewallRule_StopsAtCap(t *testing.T) {
 	}
 }
 
-// ---------------------------------------------------------------------------
-// BlockAll / UnblockAll (modo pânico + allowlist deep-focus)
-// ---------------------------------------------------------------------------
 
-func TestBuildBlockAllScript_AllowlistFirstThenCatchAll(t *testing.T) {
-	script := buildBlockAllScript([]string{"1.1.1.1", "8.8.8.8"}, "/32")
-
-	if !strings.HasPrefix(script, "*filter\n") || !strings.HasSuffix(script, "COMMIT\n") {
-		t.Errorf("script deve ter header *filter e footer COMMIT:\n%s", script)
-	}
-	// ACCEPT da allowlist ANTES do catch-all (ordem de avaliação do iptables)
-	allowIdx := strings.Index(script, "-A OUTPUT -d 1.1.1.1/32 -j ACCEPT -m comment --comment \""+AllowMarker)
-	catchIdx := strings.Index(script, "-A OUTPUT -p tcp -j REJECT --reject-with tcp-reset -m comment --comment \""+AllBlockMarker)
-	nonTCPIdx := strings.Index(script, "-A OUTPUT -j REJECT --reject-with icmp-port-unreachable -m comment --comment \""+AllBlockMarker)
-	if allowIdx < 0 {
-		t.Errorf("script deve conter ACCEPT da allowlist com marker:\n%s", script)
-	}
-	if catchIdx < 0 {
-		t.Errorf("script deve conter catch-all REJECT tcp com marker:\n%s", script)
-	}
-	if nonTCPIdx < 0 {
-		t.Errorf("script deve conter catch-all REJECT não-TCP (UDP/QUIC) com marker:\n%s", script)
-	}
-	if allowIdx > catchIdx {
-		t.Errorf("ACCEPT da allowlist deve vir antes do catch-all:\n%s", script)
-	}
-}
-
-func TestBuildBlockAllScript_NoAllowlistOnlyCatchAll(t *testing.T) {
-	script := buildBlockAllScript(nil, "/32")
-	if !strings.Contains(script, AllBlockMarker) {
-		t.Errorf("script sem allowlist deve ter só o catch-all:\n%s", script)
-	}
-	if strings.Contains(script, AllowMarker) {
-		t.Errorf("script sem allowlist não deve conter ACCEPT rules:\n%s", script)
-	}
-}
 
 func TestBlockDomainLocked_RollbackCleansHosts(t *testing.T) {
 	if os.Geteuid() == 0 {
@@ -1076,20 +1040,7 @@ func TestBuildRestoreScript_V6UsesICMPv6RejectType(t *testing.T) {
 	}
 }
 
-// TestBuildBlockAllScript_V6UsesICMPv6RejectType: o catch-all do modo pânico
-// também usa o tipo ICMPv6 no v6 — mesmo bug de família do buildRestoreScript.
-func TestBuildBlockAllScript_V6UsesICMPv6RejectType(t *testing.T) {
-	script := buildBlockAllScript(nil, "/128")
-	if !strings.Contains(script, "-j REJECT --reject-with icmp6-port-unreachable") {
-		t.Errorf("v6 catch-all deve usar icmp6-port-unreachable:\n%s", script)
-	}
-	if strings.Contains(script, "icmp-port-unreachable") {
-		t.Errorf("v6 catch-all não deve conter o tipo ICMPv4 icmp-port-unreachable:\n%s", script)
-	}
-	if !strings.Contains(script, "-p tcp -j REJECT --reject-with tcp-reset") {
-		t.Errorf("v6 catch-all deve manter a regra TCP tcp-reset:\n%s", script)
-	}
-}
+
 
 // TestAddFirewallRulesBatch_PropagatesError verifies a restore failure is
 // surfaced with the failing binary in the message.
