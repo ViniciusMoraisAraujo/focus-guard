@@ -793,8 +793,6 @@ func TestRemoveFirewallRule_StopsAtCap(t *testing.T) {
 	}
 }
 
-
-
 func TestBlockDomainLocked_RollbackCleansHosts(t *testing.T) {
 	if os.Geteuid() == 0 {
 		t.Skip("Skipping: running as root, firewall rules may succeed")
@@ -1039,8 +1037,6 @@ func TestBuildRestoreScript_V6UsesICMPv6RejectType(t *testing.T) {
 		t.Errorf("v6 script deve manter a regra TCP tcp-reset:\n%s", script)
 	}
 }
-
-
 
 // TestAddFirewallRulesBatch_PropagatesError verifies a restore failure is
 // surfaced with the failing binary in the message.
