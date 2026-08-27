@@ -78,17 +78,23 @@ verde.
 
 ## Etapa 1 — Suíte do daemon no Linux (a maior lacuna histórica)
 
+> **EXECUTADA em 2026-08-27** — o job `linux-full-suite` do CI roda
+> `go test ./... -count=1 -timeout=120s` no ubuntu-latest, incluindo
+> `cmd/focusguard-daemon` (sem manifest no Linux). O `race` job roda
+> `-race ./...` (suíte completa). 3 bugs pré-existentes corrigidos:
+> orphaned BlockAll tests, gofmt, contract. AGENT.md atualizado.
+
 **Objetivo:** rodar os testes do `cmd/focusguard-daemon` — que no Windows só
 rodam em shell **elevado** (manifest `requireAdministrator`) e por isso nunca
 entraram no CI.
 
-- [ ] `go test ./cmd/focusguard-daemon/... -count=1 -v` no ubuntu (job novo ou
+- [x] `go test ./cmd/focusguard-daemon/... -count=1 -v` no ubuntu (job novo ou
       no job da Etapa 0) — inclui `interceptor_ipc_test.go` (TLS com CA real)
       e `ca_test.go`.
-- [ ] Registrar e tratar o que falhar: testes que dependem de elevação
+- [x] Registrar e tratar o que falhar: testes que dependem de elevação
       Windows (devem passar sem mudança no Linux), testes que tocam caminhos
       de sistema (tornar herméticos), etc.
-- [ ] Depois de verde, **documentar no AGENT.md** que a suíte do daemon roda
+- [x] Depois de verde, **documentar no AGENT.md** que a suíte do daemon roda
       no CI Linux (a nota "daemon tests só em shell elevado" passa a ser
       Windows-only).
 
@@ -493,7 +499,7 @@ atualizadas.
 ## ✅ Checklist final (Definition of Done do plano)
 
 - [x] **Etapa 0** — Suíte completa + `-race` completo + cross-compile Windows verdes no CI (run 31710267829, 4 jobs ✅ na primeira execução; achados 1–13 da tabela corrigidos).
-- [ ] **Etapa 1** — Pacote do daemon verde no CI Linux; AGENT.md atualizado.
+- [x] **Etapa 1** — Pacote do daemon verde no CI Linux; AGENT.md atualizado (run 33114407525, 4 jobs ✅, 3 bugs corrigidos: orphaned tests, gofmt, contract).
 - [x] **Etapa 2** — `install-linux.sh` install/uninstall/status limpos em máquina real (WSL2/Ubuntu, 2026-08-13); achado de filelog já resolvido (achado 2).
 - [x] **Etapa 3** — Enforcer real: hosts + iptables/ip6tables + pânico + allowlist + DoH + rollback verificados (WSL2/Ubuntu, 2026-08-13).
 - [x] **Etapa 4** — Watchers (hosts/state) + réplicas + self-write verificados (WSL2/Ubuntu, 2026-08-13; achado INFO 15: 1/5 flake de evento fsnotify no statewatch).
