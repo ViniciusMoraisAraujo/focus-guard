@@ -499,7 +499,6 @@ func (e *linuxEnforcer) Status() (EnforcerStatus, error) {
 		return EnforcerStatus{}, fmt.Errorf("falha ao consultar as regras de firewall (iptables/ip6tables)")
 	}
 
-
 	e.lastStatus = status
 	e.lastStatusTime = time.Now()
 	return status, nil
@@ -550,8 +549,6 @@ func availableDoTBins() []string {
 func doHRuleArgs(jump, ip string, port int, protocol string) []string {
 	return []string{jump, "OUTPUT", "-d", ip, "-p", protocol, "--dport", fmt.Sprintf("%d", port), "-j", "DROP"}
 }
-
-
 
 func (e *linuxEnforcer) BlockDoH() error {
 	e.mu.Lock()

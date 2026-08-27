@@ -26,8 +26,6 @@ type EnforcerStatus struct {
 	FirewallRules int
 }
 
-
-
 const (
 	HeaderMarker = "# FOCUS GUARD BLOCKS - DO NOT EDIT MANUALLY"
 )

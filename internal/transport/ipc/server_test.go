@@ -994,8 +994,6 @@ func (f *fakeScheduleManager) ImportICS(data []byte, preset string) ([]schedule.
 	return f.imported, f.importErr
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Meta diária (goal-get / goal-set)
 // ---------------------------------------------------------------------------

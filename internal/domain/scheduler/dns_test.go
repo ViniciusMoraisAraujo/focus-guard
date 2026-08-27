@@ -230,5 +230,3 @@ func TestScheduler_ReconcileRestoresTamperedDNSSetting(t *testing.T) {
 		t.Error("Reconcile derrubou o flag em RAM")
 	}
 }
-
-

@@ -51,6 +51,7 @@ type BlockResult struct {
 	Conflict      bool
 	ConflictBlock *policy.Block
 }
+
 // Handler executes the "block" action, preserving the switch behavior and
 // message order: duration is validated before the target; preset is a valid
 // target alone; --extend sums to the active block; the default ask-first
@@ -148,5 +149,3 @@ func (h *Handler) blockOrConflict(req *BlockInput, d time.Duration) (*BlockResul
 		"Domain %s blocked  %s", block.Domain,
 		block.ExpiresAt.Local().Format("15:04:05 02/01/2006"))}, nil
 }
-
-

@@ -106,7 +106,6 @@ func handleBlockCommand(client *ipc.Client, args []string) {
 		Replace:  replace,
 	}
 
-
 	resp, err := client.Send(req)
 	if err != nil {
 		fmt.Printf("Erro de comunicação: %v\n", err)

@@ -140,5 +140,3 @@ func TestBlock_PresetBloqueiaLote(t *testing.T) {
 		t.Fatalf("mensagem inesperada: %q", resp.Message)
 	}
 }
-
-
