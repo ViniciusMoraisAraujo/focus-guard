@@ -433,3 +433,60 @@ func TestQuoteForEmptyList(t *testing.T) {
 		t.Errorf("frase com lista vazia = %q, want \"\"", q)
 	}
 }
+
+func TestCustomMotivationalQuote(t *testing.T) {
+	s := New(&fakeChecker{blocked: map[string]bool{"youtube.com": true}, remain: time.Hour})
+	s.SetCustomQuote("Mantenha o foco em seus objetivos principais.")
+	if err := s.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	req, _ := http.NewRequest("GET", "http://"+s.Addr()+"/", nil)
+	req.Host = "youtube.com"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+
+	if !strings.Contains(text, "Mantenha o foco em seus objetivos principais.") {
+		t.Errorf("frase customizada não encontrada no HTML gerado: %s", text)
+	}
+}
+
+func TestLiveTimerAndBreathingWidgetRendered(t *testing.T) {
+	s := New(&fakeChecker{blocked: map[string]bool{"twitter.com": true}, remain: 30 * time.Minute})
+	if err := s.Start("127.0.0.1:0"); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
+
+	req, _ := http.NewRequest("GET", "http://"+s.Addr()+"/", nil)
+	req.Host = "twitter.com"
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	text := string(body)
+
+	// Valida timer ao vivo e data-sec
+	if !strings.Contains(text, "data-sec=\"1800\"") {
+		t.Errorf("data-sec com 1800 segundos não encontrado no HTML: %s", text)
+	}
+	if !strings.Contains(text, "id=\"live-timer\"") {
+		t.Errorf("elemento live-timer não encontrado no HTML")
+	}
+
+	// Valida widget de respiração guiada
+	if !strings.Contains(text, "Pausa Consciente (Exercício de Respiração)") {
+		t.Errorf("botão de respiração consciente não encontrado")
+	}
+	if !strings.Contains(text, "breath-circle") || !strings.Contains(text, "Inspire profundamente...") {
+		t.Errorf("elementos de animação de respiração não encontrados")
+	}
+}

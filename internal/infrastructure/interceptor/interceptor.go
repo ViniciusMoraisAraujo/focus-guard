@@ -67,13 +67,14 @@ type Checker interface {
 }
 
 // Page is the data injected into the template: the blocked domain, the
-// remaining time (pre-formatted in MINUTES — never the raw Duration, whose
-// String() would show "1h30m0s" with the seconds ticking on every reload)
+// remaining time (pre-formatted in MINUTES and raw seconds for live ticking)
 // and a motivational phrase.
 type Page struct {
-	Domain         string
-	RemainingLabel string
-	Quote          string
+	Domain           string
+	RemainingLabel   string
+	RemainingSeconds int64
+	ExpiresAtUnix    int64
+	Quote            string
 }
 
 // motivationalQuotes é a lista de frases motivacionais exibidas na página de
@@ -107,10 +108,11 @@ var motivationalQuotes = []string{
 type Server struct {
 	checker Checker
 
-	mu   sync.Mutex
-	ln   net.Listener
-	srv  *http.Server
-	addr string
+	mu          sync.Mutex
+	ln          net.Listener
+	srv         *http.Server
+	addr        string
+	customQuote string
 
 	// ca é a CA local que assina os certificados da página de bloqueio (via
 	// SetCA). Quando definida, o TLS listener serve leafs assinados por ela —
@@ -140,6 +142,13 @@ func (s *Server) SetCA(ca *tlsca.CA) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.ca = ca
+}
+
+// SetCustomQuote define uma frase personalizada para a página de bloqueio.
+func (s *Server) SetCustomQuote(quote string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.customQuote = strings.TrimSpace(quote)
 }
 
 // Start binds addr (default DefaultBindAddr) and begins serving plain HTTP.
@@ -332,10 +341,26 @@ func (s *Server) handleRequest(w http.ResponseWriter, r *http.Request) {
 		http.NotFound(w, r)
 		return
 	}
+	remaining := s.checker.BlockRemaining(host)
+	remainingSec := int64(remaining.Seconds())
+	if remainingSec < 0 {
+		remainingSec = 0
+	}
+	expiresUnix := time.Now().Add(remaining).Unix()
+
+	s.mu.Lock()
+	quote := s.customQuote
+	s.mu.Unlock()
+	if quote == "" {
+		quote = quoteFor(host)
+	}
+
 	page := Page{
-		Domain:         host,
-		RemainingLabel: formatRemaining(s.checker.BlockRemaining(host)),
-		Quote:          quoteFor(host),
+		Domain:           host,
+		RemainingLabel:   formatRemaining(remaining),
+		RemainingSeconds: remainingSec,
+		ExpiresAtUnix:    expiresUnix,
+		Quote:            quote,
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Header().Set("Cache-Control", "no-cache, no-store")
@@ -391,7 +416,7 @@ func quoteFor(domain string) string {
 	return motivationalQuotes[h%len(motivationalQuotes)]
 }
 
-// pageTemplate é o template da página de bloqueio — autossuficiente (CSS
+// pageTemplate é o template da página de bloqueio — autossuficiente (CSS/JS
 // inline), escapa todos os dados dinâmicos (html/template).
 var pageTemplate = template.Must(template.New("blocked").Parse(`<!DOCTYPE html>
 <html lang="pt-BR">
@@ -406,40 +431,71 @@ var pageTemplate = template.Must(template.New("blocked").Parse(`<!DOCTYPE html>
     font-family: system-ui, -apple-system, sans-serif;
     min-height: 100vh; display: grid; place-items: center;
     background: radial-gradient(1200px 600px at 50% -10%, #1d2b53, #0b1020);
-    color: #e6e9f5; padding: 1rem;
+    color: #e6e9f5; padding: 1.5rem 1rem;
   }
   .card {
-    max-width: 520px; width: 100%;
+    max-width: 540px; width: 100%;
     background: rgba(21, 29, 56, .85); border: 1px solid #232c4d;
-    border-radius: 18px; padding: 2.5rem 2rem; text-align: center;
+    border-radius: 20px; padding: 2.5rem 2rem; text-align: center;
     box-shadow: 0 24px 60px rgba(0,0,0,.45);
+    backdrop-filter: blur(12px);
   }
   .shield {
     width: 64px; height: 64px; margin: 0 auto 1.25rem;
     display: grid; place-items: center;
-    background: #ff7849; color: #fff; font-size: 2rem;
-    border-radius: 18px;
+    background: linear-gradient(135deg, #ff7849, #e05320); color: #fff; font-size: 2rem;
+    border-radius: 18px; box-shadow: 0 8px 20px rgba(255, 120, 73, 0.3);
   }
-  h1 { font-size: 1.35rem; margin-bottom: .5rem; }
+  h1 { font-size: 1.4rem; margin-bottom: .4rem; letter-spacing: -0.02em; }
   .domain {
     display: inline-block; margin: .5rem 0 1rem;
-    padding: .3rem .8rem; border-radius: 999px;
+    padding: .35rem .9rem; border-radius: 999px;
     background: rgba(255,255,255,.08); border: 1px solid rgba(255,255,255,.15);
     font-family: ui-monospace, monospace; font-size: .95rem; word-break: break-all;
   }
-  .reason { color: #aab2cf; font-size: .95rem; line-height: 1.55; margin-bottom: 1.5rem; }
+  .reason { color: #aab2cf; font-size: .95rem; line-height: 1.55; margin-bottom: 1.25rem; }
   .reason strong { color: #e6e9f5; }
+  .timer-box {
+    display: inline-flex; align-items: center; gap: .5rem;
+    background: rgba(255, 120, 73, 0.12); border: 1px solid rgba(255, 120, 73, 0.25);
+    color: #ff9b71; padding: .5rem 1rem; border-radius: 12px;
+    font-size: .95rem; font-weight: 600; margin-bottom: 1.25rem;
+  }
   .quote {
-    font-style: italic; color: #ffb48a; font-size: 1.02rem; line-height: 1.6;
-    padding: 1rem 0; border-top: 1px dashed rgba(255,255,255,.15);
+    font-style: italic; color: #ffb48a; font-size: 1rem; line-height: 1.6;
+    padding: 1rem; border-top: 1px dashed rgba(255,255,255,.15);
     border-bottom: 1px dashed rgba(255,255,255,.15); margin-bottom: 1.5rem;
+    background: rgba(255,255,255,.02); border-radius: 8px;
   }
+  .breathing-section {
+    margin-bottom: 1.5rem;
+    background: rgba(16, 22, 43, 0.6);
+    border: 1px solid rgba(255, 255, 255, 0.08);
+    border-radius: 14px; padding: 1rem;
+  }
+  .toggle-breath {
+    background: transparent; border: 1px solid rgba(255,255,255,.15);
+    color: #b0bbdb; padding: .5rem 1rem; border-radius: 8px; font-size: .85rem;
+    cursor: pointer; transition: all .2s;
+  }
+  .toggle-breath:hover { background: rgba(255,255,255,.06); color: #fff; }
+  .breath-widget { display: none; margin-top: 1rem; flex-direction: column; align-items: center; gap: .8rem; }
+  .breath-circle {
+    width: 90px; height: 90px; border-radius: 50%;
+    background: radial-gradient(circle, #38bdf8, #0284c7);
+    display: grid; place-items: center; color: #fff; font-size: .8rem; font-weight: 600;
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.4);
+    transition: transform 4s ease-in-out, box-shadow 4s ease-in-out;
+  }
+  .breath-circle.expand { transform: scale(1.35); box-shadow: 0 0 35px rgba(56, 189, 248, 0.8); }
+  .breath-circle.contract { transform: scale(0.85); box-shadow: 0 0 10px rgba(56, 189, 248, 0.2); }
+  .breath-phase { font-size: .9rem; font-weight: 500; color: #7dd3fc; min-height: 1.4rem; }
   .back {
-    display: inline-block; padding: .7rem 1.4rem; border-radius: 10px;
-    background: #2d5f9a; color: #fff; text-decoration: none; font-weight: 600;
-    transition: background .2s, transform .15s;
+    display: inline-block; padding: .75rem 1.6rem; border-radius: 10px;
+    background: #2563eb; color: #fff; text-decoration: none; font-weight: 600;
+    transition: background .2s, transform .15s; box-shadow: 0 4px 14px rgba(37, 99, 235, 0.3);
   }
-  .back:hover { background: #3a74b8; transform: translateY(-1px); }
+  .back:hover { background: #1d4ed8; transform: translateY(-1px); }
   .foot { margin-top: 1.25rem; font-size: .8rem; color: #6f7aa3; }
 </style>
 </head>
@@ -449,12 +505,113 @@ var pageTemplate = template.Must(template.New("blocked").Parse(`<!DOCTYPE html>
     <h1>Momento de foco</h1>
     <span class="domain">{{.Domain}}</span>
     <p class="reason">
-      Este site está <strong>bloqueado pelo FocusGuard</strong> até
-      <strong>{{.RemainingLabel}}</strong> de descanso da distração.
+      Este site está <strong>bloqueado pelo FocusGuard</strong> para proteger sua concentração.
     </p>
+
+    <div class="timer-box" id="timer-box">
+      <span>⏳ Restante:</span>
+      <span id="live-timer" data-sec="{{.RemainingSeconds}}">{{.RemainingLabel}}</span>
+    </div>
+
     <p class="quote">“{{.Quote}}”</p>
+
+    <div class="breathing-section">
+      <button class="toggle-breath" id="btn-breath" type="button">🌿 Pausa Consciente (Exercício de Respiração)</button>
+      <div class="breath-widget" id="breath-widget">
+        <div class="breath-circle" id="breath-circle">4s</div>
+        <div class="breath-phase" id="breath-phase">Prepare-se...</div>
+      </div>
+    </div>
+
     <a class="back" href="javascript:history.back()">← Voltar para o que importa</a>
     <p class="foot">Bloqueio ativo do FocusGuard · proteja seu foco</p>
   </div>
+
+  <script>
+    (function() {
+      // Countdown em tempo real
+      var timerEl = document.getElementById('live-timer');
+      var seconds = parseInt(timerEl.getAttribute('data-sec') || '0', 10);
+      if (seconds > 0) {
+        var interval = setInterval(function() {
+          seconds--;
+          if (seconds <= 0) {
+            clearInterval(interval);
+            timerEl.textContent = 'Tempo esgotado (atualize a página)';
+            return;
+          }
+          var h = Math.floor(seconds / 3600);
+          var m = Math.floor((seconds % 3600) / 60);
+          var s = seconds % 60;
+          if (h > 0) {
+            timerEl.textContent = h + 'h ' + (m < 10 ? '0' + m : m) + 'm ' + (s < 10 ? '0' + s : s) + 's';
+          } else {
+            timerEl.textContent = (m < 10 ? '0' + m : m) + ':' + (s < 10 ? '0' + s : s);
+          }
+        }, 1000);
+      }
+
+      // Widget de Respiração Consciente (Box Breathing 4-4-4-4)
+      var breathBtn = document.getElementById('btn-breath');
+      var breathWidget = document.getElementById('breath-widget');
+      var breathCircle = document.getElementById('breath-circle');
+      var breathPhase = document.getElementById('breath-phase');
+      var breathInterval = null;
+      var active = false;
+
+      var phases = [
+        { text: 'Inspire profundamente...', cls: 'expand', sec: 4 },
+        { text: 'Segure o ar...', cls: 'expand', sec: 4 },
+        { text: 'Expire suavemente...', cls: 'contract', sec: 4 },
+        { text: 'Segure vazio...', cls: 'contract', sec: 4 }
+      ];
+
+      breathBtn.addEventListener('click', function() {
+        active = !active;
+        if (active) {
+          breathWidget.style.display = 'flex';
+          breathBtn.textContent = '⏹ Encerrar Exercício';
+          startBreathing();
+        } else {
+          stopBreathing();
+          breathWidget.style.display = 'none';
+          breathBtn.textContent = '🌿 Pausa Consciente (Exercício de Respiração)';
+        }
+      });
+
+      function startBreathing() {
+        var step = 0;
+        function runStep() {
+          if (!active) return;
+          var cur = phases[step];
+          breathPhase.textContent = cur.text;
+          breathCircle.className = 'breath-circle ' + cur.cls;
+          var count = cur.sec;
+          breathCircle.textContent = count + 's';
+          var countTimer = setInterval(function() {
+            count--;
+            if (count > 0 && active) {
+              breathCircle.textContent = count + 's';
+            } else {
+              clearInterval(countTimer);
+            }
+          }, 1000);
+
+          setTimeout(function() {
+            if (!active) return;
+            step = (step + 1) % phases.length;
+            runStep();
+          }, cur.sec * 1000);
+        }
+        runStep();
+      }
+
+      function stopBreathing() {
+        breathCircle.className = 'breath-circle';
+        breathCircle.textContent = '4s';
+        breathPhase.textContent = 'Prepare-se...';
+      }
+    })();
+  </script>
 </body>
 </html>`))
