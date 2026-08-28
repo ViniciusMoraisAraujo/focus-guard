@@ -88,8 +88,8 @@ scheduling, daily goals + streaks, analytics with export, process guard
 |---|---|---|
 | Firewall | `iptables`/`ip6tables` | `netsh advfirewall` |
 | Hosts | `/etc/hosts` | `C:\Windows\System32\drivers\etc\hosts` |
-| IPC socket | `/run/focusguard.sock` (`root:focusguard` 0660 — membros do grupo `focusguard` usam sem sudo; F5 do ui-plan) | `%PROGRAMDATA%\FocusGuard\focusguard.sock` |
-| Service | systemd (unit + `NOTIFY_SOCKET` watchdog) | Native `svc` service (SCM), `sc.exe` |
+| IPC socket | `/run/focusguard/focusguard.sock` (`focusguard:focusguard` 0660 — membros do grupo `focusguard` usam sem sudo; fallback para `/run/focusguard.sock`) | `%PROGRAMDATA%\FocusGuard\focusguard.sock` |
+| Service | systemd (unit `User=focusguard` + capabilities + `NOTIFY_SOCKET` watchdog) | Native `svc` service (SCM), `sc.exe` |
 | Install path | `/opt/focusguard` (root:root) | `C:\Program Files\FocusGuard` (System / All Users) |
 | State | `/var/lib/focusguard/` | `C:\ProgramData\FocusGuard\` |
 | Tray autostart | `~/.config/autostart` (XDG) | HKCU `...\CurrentVersion\Run` |
@@ -172,7 +172,7 @@ implementation details belong in code comments, not here.Packages are grouped in
 | `infrastructure/autostart` | Installs/removes the service + tray autostart + desktop shortcut |
 | `domain/blocks` | Domain handlers for the `block`/`block-all` actions (`Blocker`/`Catalog`) |
 | `system/daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
-| `infrastructure/dns` | Domain handlers for the DNS sinkhole (`start`/`stop`/`status`/`set-upstream`) |
+| `domain/dns` | Domain handlers for the DNS sinkhole (`start`/`stop`/`status`/`set-upstream`) and network adapter orchestration |
 | `infrastructure/dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
 | `infrastructure/enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
 | `transport/eventhub` | In-process event pub/sub (ring buffer + long-poll `Wait`) — daemon state changes |
@@ -185,6 +185,7 @@ implementation details belong in code comments, not here.Packages are grouped in
 | `transport/ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
 | `transport/ipcerr` | Stable IPC error codes (`Error`) — mirror of `internal/transport/ipc/codes.go`, additive-only |
 | `transport/metrics` | Per-action latency registry (ring + percentiles) — daemon IPC and web proxy |
+| `infrastructure/netdns` | Configures and restores network adapters DNS (Wi-Fi/Ethernet) at OS level (`netsh`/`resolvectl`) |
 | `domain/policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
 | `domain/pomodoro` | Work/rest/cycle sessions |
 | `domain/preset` | Catalog of block categories (builtin + custom) |
@@ -299,10 +300,10 @@ go test ./... -count=1 -timeout=60s   # make test
   the non-elevated packages.
 - ✅ **Linux CI**: the full test suite (`go test ./...`) runs on
   `ubuntu-latest` in the `linux-full-suite` job — including
-  `cmd/focusguard-daemon` (no manifest on Linux). Tests that need root
-  (`requireRoot`) skip gracefully on the non-root runner. The `race` job
-  runs `-race ./...` (complete suite). See `docs/linux-validation-plan.md`
-  for the full validation status (Etapas 0–6 completed, 7–11 pending).
+  `cmd/focusguard-daemon` (no manifest on Linux). All daemon tests are
+  hermetic (`setupDaemonTestEnv`) and execute unprivileged in CI and local dev.
+  The `race` job runs `-race ./...` (complete suite). See
+  `docs/linux-validation-plan.md` for the full validation status.
 - **Linux validation scripts**: `scripts/setup-linux-vm.sh` (automated
   VM setup), `scripts/validate-etapa7.sh` (interactive tray validation),
   `scripts/snapshot-vm.sh` (VirtualBox snapshot). See
@@ -522,11 +523,11 @@ confirm the version/tag with the person before pushing the tag
   (Etapa 4), CA + interceptor HTTPS (Etapa 5), DNS sinkhole (Etapa 6).
   14 bugs found and fixed with TDD (including a HIGH: ICMPv4 reject type
   in IPv6/nft). Tray + notifications (Etapa 7) pending desktop validation.
-- **Daemon tests run on Linux CI** — on Windows the daemon tests require an
-  elevated shell (manifest `requireAdministrator`) and never ran in CI.
-  On Linux there is no manifest, so `go test ./cmd/focusguard-daemon/...`
-  runs normally in the `linux-full-suite` CI job. Tests needing root skip
-  gracefully (`requireRoot`).
+- **Daemon tests run hermetically on Linux and CI** — on Windows the daemon
+  tests require an elevated shell (manifest `requireAdministrator`). On Linux
+  there is no manifest, and all daemon tests use `setupDaemonTestEnv`
+  (isolated state/socket in `t.TempDir()`), executing completely unprivileged
+  in the `linux-full-suite` CI job and local dev without needing `sudo`.
 
 ---
 

@@ -78,6 +78,7 @@ AGENT.md §5).
 
 Ordem cronológica, o mais recente no topo:
 
+- [2026-08-28](2026-08-28.md) — Cache DNS LRU no dnsserver, testes E2E Vitest no frontend, página /blocked interativa com timer ao vivo e box breathing.
 - [2026-08-27](2026-08-27.md) — Planejamento da validação Linux consolidado
   (guia de ambiente VM para Etapas 7–10, status revisado).
 - [2026-08-17](2026-08-17.md) — Clock Guard compatível com dual boot
