@@ -48,3 +48,24 @@ func queryService(exec func(string, ...string) ([]byte, error), name string) (se
 	}
 	return serviceInstalled, nil
 }
+
+func platformCheckDefender(env doctorEnv) doctorResult {
+	if env.exec == nil {
+		return doctorResult{Name: "Windows Defender", Status: statusPass, Message: "não verificado"}
+	}
+	out, err := env.exec("powershell", "-NoProfile", "-NonInteractive", "-Command", "Get-MpPreference | Select-Object -ExpandProperty ExclusionPath")
+	if err != nil {
+		// Defender pode estar desativado ou outro antivírus ativo
+		return doctorResult{Name: "Windows Defender", Status: statusPass, Message: "Windows Defender não ativo ou gerenciado por terceiros"}
+	}
+	outStr := strings.ToLower(string(out))
+	if strings.Contains(outStr, "focusguard") {
+		return doctorResult{Name: "Windows Defender", Status: statusPass, Message: "FocusGuard está na lista de exclusões do Windows Defender"}
+	}
+	return doctorResult{
+		Name:    "Windows Defender",
+		Status:  statusWarn,
+		Message: "FocusGuard não está na lista de exclusões do Windows Defender (pode gerar falsos positivos)",
+		Fix:     "Execute no PowerShell como Administrador: Add-MpPreference -ExclusionPath 'C:\\Program Files\\FocusGuard', '$env:ProgramData\\FocusGuard' -ExclusionProcess 'focusguard-daemon.exe','focusguard.exe'",
+	}
+}

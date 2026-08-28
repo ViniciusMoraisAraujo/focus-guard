@@ -112,7 +112,13 @@ func runDoctor(env doctorEnv) []doctorResult {
 		checkDNS(env),
 		checkDNSInbound(env),
 		checkCA(env),
+		checkDefender(env),
 	}
+}
+
+// checkDefender verifica se o FocusGuard está na lista de exclusões do Windows Defender.
+func checkDefender(env doctorEnv) doctorResult {
+	return platformCheckDefender(env)
 }
 
 // checkCA diagnostica a CA local da página de bloqueio HTTPS: sem CA gerada é

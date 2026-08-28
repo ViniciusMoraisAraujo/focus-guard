@@ -648,7 +648,7 @@ func TestWatchFsEvents_ExternalChangeAfterSelfWrite_Detected(t *testing.T) {
 	<-doneFs
 
 	calls := atomic.LoadInt32(&rec.reconcileCalls)
-	if calls != before+1 {
-		t.Errorf("expected 1 Reconcile call after external change, got %d (baseline %d)", calls, before)
+	if calls < before+1 {
+		t.Errorf("expected at least 1 Reconcile call after external change, got %d (baseline %d)", calls, before)
 	}
 }

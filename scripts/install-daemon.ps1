@@ -159,6 +159,15 @@ function Install-Daemon {
             }
         }
 
+        # Configura exclusões no Windows Defender para evitar falsos positivos
+        try {
+            Add-MpPreference -ExclusionPath $InstallDir, $StateDir -ErrorAction SilentlyContinue
+            Add-MpPreference -ExclusionProcess "focusguard-daemon.exe", "focusguard.exe", "focusguard-tray.exe", "focusguard-watchdog.exe", "focusguard-web.exe" -ErrorAction SilentlyContinue
+            Write-Host "[FocusGuard] ✔ Exclusões do Windows Defender configuradas." -ForegroundColor Green
+        } catch {
+            Write-Host "[FocusGuard] ⚠ Não foi possível configurar exclusões do Windows Defender (ignorado)." -ForegroundColor Gray
+        }
+
         Install-Watchdog
     } else {
         Write-Host "[FocusGuard] ✘ Falha ao criar serviço Windows. Execute como Administrador." -ForegroundColor Red
@@ -211,6 +220,11 @@ function Uninstall-Daemon {
         Remove-Item $InstallDir -Recurse -Force -ErrorAction SilentlyContinue
         Write-Host "[FocusGuard] ✔ Pasta de instalação removida: $InstallDir" -ForegroundColor Green
     }
+
+    try {
+        Remove-MpPreference -ExclusionPath $InstallDir, $StateDir -ErrorAction SilentlyContinue
+        Remove-MpPreference -ExclusionProcess "focusguard-daemon.exe", "focusguard.exe", "focusguard-tray.exe", "focusguard-watchdog.exe", "focusguard-web.exe" -ErrorAction SilentlyContinue
+    } catch {}
 }
 
 # Extrai o ícone embutido do executável (via ExtractAssociatedIcon, wrapper

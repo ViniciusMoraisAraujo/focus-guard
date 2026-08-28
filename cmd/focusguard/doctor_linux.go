@@ -48,3 +48,7 @@ func queryService(exec func(string, ...string) ([]byte, error), name string) (se
 	}
 	return serviceInstalled, err
 }
+
+func platformCheckDefender(env doctorEnv) doctorResult {
+	return doctorResult{Name: "Windows Defender", Status: statusPass, Message: "não aplicável no Linux"}
+}

@@ -79,10 +79,13 @@ func healthyEnv(t *testing.T) doctorEnv {
 }
 
 // fakeServiceRunning faz toda consulta de serviço devolver "rodando".
-// Também responde ao netsh (checkDNSInbound) como se as regras existissem.
+// Também responde ao netsh (checkDNSInbound) e powershell (checkDefender).
 func fakeServiceRunning(name string, args ...string) ([]byte, error) {
 	if name == "netsh" {
 		return []byte("Rule Name: FocusGuard_DNS_Inbound_UDP\nEnabled: Yes"), nil
+	}
+	if name == "powershell" {
+		return []byte("C:\\Program Files\\FocusGuard\nC:\\ProgramData\\FocusGuard"), nil
 	}
 	return []byte("running"), nil
 }
@@ -314,8 +317,8 @@ func TestDoctor_JSONOutput(t *testing.T) {
 	for _, r := range results {
 		out.Checks = append(out.Checks, doctorCheckJSON{Name: r.Name, Status: string(r.Status), Message: r.Message})
 	}
-	if len(out.Checks) != 10 {
-		t.Errorf("JSON com %d checagens, want 10", len(out.Checks))
+	if len(out.Checks) != 11 {
+		t.Errorf("JSON com %d checagens, want 11", len(out.Checks))
 	}
 	for _, c := range out.Checks {
 		if c.Status != "pass" {
@@ -516,4 +519,39 @@ func summarizeResults(results []doctorResult) string {
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+func TestDoctor_CheckDefender(t *testing.T) {
+	env := healthyEnv(t)
+	results := runDoctor(env)
+
+	def := findResult(results, "Windows Defender")
+	if def == nil {
+		t.Fatal("checagem Windows Defender ausente no doctor")
+	}
+	if def.Status != statusPass {
+		t.Errorf("status = %v, want pass em ambiente saudável", def.Status)
+	}
+
+	// Simula ausência de exclusão no Windows Defender (retorno vazio)
+	env.exec = func(name string, args ...string) ([]byte, error) {
+		if name == "powershell" {
+			return []byte(""), nil
+		}
+		return fakeServiceRunning(name, args...)
+	}
+
+	resultsMissing := runDoctor(env)
+	defMissing := findResult(resultsMissing, "Windows Defender")
+	if defMissing == nil {
+		t.Fatal("checagem Windows Defender ausente")
+	}
+	if runtime.GOOS == "windows" {
+		if defMissing.Status != statusWarn {
+			t.Errorf("status = %v, want warn quando exclusão não configurada", defMissing.Status)
+		}
+		if !strings.Contains(defMissing.Fix, "Add-MpPreference") {
+			t.Errorf("fix = %q, want mencionando Add-MpPreference", defMissing.Fix)
+		}
+	}
 }

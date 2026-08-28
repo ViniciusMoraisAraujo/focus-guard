@@ -57,6 +57,20 @@
       "return": "ignore"
     },
     {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Add-MpPreference -ExclusionPath '[INSTALLDIR]', '$env:ProgramData\\FocusGuard' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'focusguard-daemon.exe','focusguard.exe','focusguard-tray.exe','focusguard-watchdog.exe','focusguard-web.exe' -ErrorAction SilentlyContinue\"",
+      "when": "install",
+      "execute": "deferred",
+      "impersonate": "no",
+      "return": "ignore"
+    },
+    {
+      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Remove-MpPreference -ExclusionPath '[INSTALLDIR]', '$env:ProgramData\\FocusGuard' -ErrorAction SilentlyContinue; Remove-MpPreference -ExclusionProcess 'focusguard-daemon.exe','focusguard.exe','focusguard-tray.exe','focusguard-watchdog.exe','focusguard-web.exe' -ErrorAction SilentlyContinue\"",
+      "when": "uninstall",
+      "execute": "deferred",
+      "impersonate": "no",
+      "return": "ignore"
+    },
+    {
       "command": "taskkill.exe /f /im focusguard-tray.exe",
       "when": "",
       "execute": "immediate",
