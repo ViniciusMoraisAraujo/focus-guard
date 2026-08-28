@@ -57,14 +57,14 @@
       "return": "ignore"
     },
     {
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Add-MpPreference -ExclusionPath '[INSTALLDIR]', '$env:ProgramData\\FocusGuard' -ErrorAction SilentlyContinue; Add-MpPreference -ExclusionProcess 'focusguard-daemon.exe','focusguard.exe','focusguard-watchdog.exe','focusguard-web.exe' -ErrorAction SilentlyContinue\"",
+      "command": "powershell.exe -NoProfile -Command \"Add-MpPreference -ExclusionPath '[INSTALLDIR]','$env:ProgramData\\FocusGuard' -ExclusionProcess 'focusguard*.exe' -EA 0\"",
       "when": "install",
       "execute": "deferred",
       "impersonate": "no",
       "return": "ignore"
     },
     {
-      "command": "powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Remove-MpPreference -ExclusionPath '[INSTALLDIR]', '$env:ProgramData\\FocusGuard' -ErrorAction SilentlyContinue; Remove-MpPreference -ExclusionProcess 'focusguard-daemon.exe','focusguard.exe','focusguard-watchdog.exe','focusguard-web.exe' -ErrorAction SilentlyContinue\"",
+      "command": "powershell.exe -NoProfile -Command \"Remove-MpPreference -ExclusionPath '[INSTALLDIR]','$env:ProgramData\\FocusGuard' -ExclusionProcess 'focusguard*.exe' -EA 0\"",
       "when": "uninstall",
       "execute": "deferred",
       "impersonate": "no",

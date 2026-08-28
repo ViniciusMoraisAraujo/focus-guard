@@ -61,6 +61,14 @@ ROOT_WIN="$(pwd -W 2>/dev/null || echo "$ROOT")"
 
 # ---------------------------------------------------------------- validações
 command -v go >/dev/null 2>&1 || { echo "ERRO: go não encontrado." >&2; exit 1; }
+if [ -n "$(command -v go)" ]; then
+  GOPATH_BIN="$(go env GOPATH 2>/dev/null)/bin"
+  [ -d "$GOPATH_BIN" ] && export PATH="$PATH:$GOPATH_BIN"
+fi
+for ugo in /c/Users/*/go/bin; do
+  [ -d "$ugo" ] && export PATH="$PATH:$ugo"
+done
+[ -d "$HOME/go/bin" ] && export PATH="$PATH:$HOME/go/bin"
 command -v go-msi >/dev/null 2>&1 || { echo "ERRO: go-msi não encontrado (go install github.com/mat007/go-msi@4783d3eea8eb18a7819d1d1ffac877c3edd50527)." >&2; exit 1; }
 
 WIX_DIRS=(

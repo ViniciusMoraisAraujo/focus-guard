@@ -89,6 +89,8 @@ fabric.properties
 *.dll
 *.so
 *.dylib
+*.msi
+*.msi~
 
 # Test binary, built with `go test -c`
 *.test
