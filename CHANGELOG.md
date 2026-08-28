@@ -7,6 +7,44 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
+## [0.21.0] - 2026-08-28
+
+### 🚀 Funcionalidades e Melhorias
+
+- **DNS Sinkhole em Clean Architecture e Automação de Adaptadores de Rede** —
+  migração completa do módulo DNS Sinkhole para `internal/domain/dns` seguindo
+  DIP (Dependency Inversion Principle) e criação do pacote `internal/infrastructure/netdns`.
+  Ao iniciar o DNS sinkhole ou inicializar o daemon com DNS ativo, os adaptadores
+  de rede ativos (Wi-Fi e Ethernet) são automaticamente apontados para `127.0.0.1` / `::1`,
+  e restaurados para DHCP no `dns-stop` e shutdown ordenado.
+- **Página de Bloqueio Interativa (/blocked) com Timer ao Vivo e Box Breathing** —
+  a página de interceptação local foi modernizada com contagem regressiva em
+  tempo real (`live-timer`) e widget interativo de respiração consciente (Box Breathing 4-4-4-4)
+  para pausas conscientes durante momentos de distração bloqueados.
+- **Hardening do Daemon no Linux (Least Privilege)** —
+  a unit do systemd agora executa o daemon sob usuário de sistema dedicado `User=focusguard`
+  com Linux Ambient Capabilities (`CAP_NET_ADMIN`, `CAP_NET_BIND_SERVICE`, `CAP_KILL`, `CAP_DAC_OVERRIDE`)
+  em vez de root total, com isolamento de diretórios `/run/focusguard` e `/var/lib/focusguard`.
+- **Suíte de Testes Hermética para o Daemon** —
+  ambiente de testes do daemon (`setupDaemonTestEnv`) isolado em `t.TempDir()`,
+  permitindo execução completa e desprivilegiada no CI Linux e desenvolvimento local sem necessidade de `sudo`.
+- **Configuração Automática de Exclusões do Windows Defender** —
+  scripts de instalação do Windows (`install-daemon.ps1` e instaladores MSI desktop/server)
+  configuram exclusões para as pastas e executáveis do FocusGuard, e o comando `focusguard doctor`
+  inclui verificação de diagnóstico para evitar falsos positivos.
+- **Assinatura de Código Windows Authenticode no CI** —
+  pipeline de release do GitHub Actions assina todos os binários `.exe` e `.msi`
+  com certificado Authenticode quando configurado.
+- **Suíte de Testes E2E de Integração no Frontend** —
+  cobertura completa de testes no frontend (`focusguard-ui/src/screens/integration.test.tsx`)
+  validando o fluxo de bloqueio, eventos SSE em tempo real, expiração de timers e sessões Pomodoro.
+
+### 🔄 Refatorações e Quebras Controladas
+
+- **Remoção do Modo Pânico / Block-All Internet** —
+  o bloqueio total da internet foi removido em favor do sinkhole DNS refinado por domínio,
+  simplificando o enforcer, IPC e eliminando comportamentos de bloqueio indevido em caso de NTP indisponível.
+
 ## [0.20.2] - 2026-08-23
 
 ### 🐛 Correções
