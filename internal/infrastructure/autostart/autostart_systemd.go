@@ -14,12 +14,27 @@ After=network.target
 
 [Service]
 Type=simple
+User=focusguard
+Group=focusguard
 ExecStart=%s
 Restart=always
 # DNS da rede: ressuscitar o processo em ~1s se fechar (spec §5). O
 # WatchdogSec=30 cobre freeze (o daemon alimenta via sd_notify a cada 15s).
 RestartSec=1
 WatchdogSec=30
+
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_KILL CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_KILL CAP_DAC_OVERRIDE
+
+RuntimeDirectory=focusguard
+RuntimeDirectoryMode=0755
+StateDirectory=focusguard
+StateDirectoryMode=0750
+
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/hosts /var/lib/focusguard /run/focusguard /usr/local/share/ca-certificates /etc/ssl/certs
 
 [Install]
 WantedBy=multi-user.target

@@ -5,6 +5,8 @@ After=network.target
 
 [Service]
 Type=simple
+User=focusguard
+Group=focusguard
 # Binário na pasta protegida (/opt/focusguard) — fora do alcance do usuário
 # comum, evitando exclusão acidental. O install-linux.sh reescreve este
 # ExecStart com o INSTALL_DIR configurado no script.
@@ -15,6 +17,22 @@ Restart=always
 RestartSec=1
 WatchdogSec=30
 NotifyAccess=main
+
+# Least privilege: Linux Capabilities ao invés de root total
+AmbientCapabilities=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_KILL CAP_DAC_OVERRIDE
+CapabilityBoundingSet=CAP_NET_ADMIN CAP_NET_BIND_SERVICE CAP_KILL CAP_DAC_OVERRIDE
+
+# Diretórios gerenciados pelo systemd com dono focusguard:focusguard
+RuntimeDirectory=focusguard
+RuntimeDirectoryMode=0755
+StateDirectory=focusguard
+StateDirectoryMode=0750
+
+# Hardening do sistema de arquivos
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/etc/hosts /var/lib/focusguard /run/focusguard /usr/local/share/ca-certificates /etc/ssl/certs
 
 [Install]
 WantedBy=multi-user.target

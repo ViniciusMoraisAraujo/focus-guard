@@ -260,7 +260,7 @@ func TestStartStatewatch_StopIsIdempotent(t *testing.T) {
 }
 
 func TestRunDaemon_StatewatchIntegration(t *testing.T) {
-	requireRoot(t)
+	setupDaemonTestEnv(t)
 	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
@@ -317,7 +317,7 @@ func TestRunDaemon_StatewatchIntegration(t *testing.T) {
 }
 
 func TestRunDaemon_StatewatchReconcilerIsScheduler(t *testing.T) {
-	requireRoot(t)
+	setupDaemonTestEnv(t)
 	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
@@ -538,7 +538,7 @@ func TestGetStateFilePath_Windows_ForwardSlash(t *testing.T) {
 }
 
 func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
-	requireRoot(t)
+	setupDaemonTestEnv(t)
 	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
@@ -589,7 +589,7 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 }
 
 func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
-	requireRoot(t)
+	setupDaemonTestEnv(t)
 	stubProbeDaemonAlive(t, false)
 
 	origGoos := goos
@@ -597,7 +597,7 @@ func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 	goos = "linux"
 	defer func() { goos = origGoos }()
 
-	statePath := "/var/lib/focusguard/state.json"
+	statePath := testStateFilePath
 	stateDir := filepath.Dir(statePath)
 	if err := os.MkdirAll(stateDir, 0755); err != nil {
 		t.Fatalf("failed to create state dir: %v", err)
@@ -662,6 +662,7 @@ func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
 }
 
 func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
+	setupDaemonTestEnv(t)
 	origGoos := goos
 	stubProbeDaemonAlive(t, false)
 	goos = "linux"
@@ -719,6 +720,7 @@ func TestRunDaemon_RestartOnFalseReturn(t *testing.T) {
 }
 
 func TestDaemonDoneCh_NotClosedInRunDaemon(t *testing.T) {
+	setupDaemonTestEnv(t)
 	origGoos := goos
 	stubProbeDaemonAlive(t, false)
 	goos = "linux"
@@ -1771,13 +1773,20 @@ func waitForCalls(t *testing.T, counter *int32, want int, timeout time.Duration)
 	t.Fatalf("timed out waiting for counter to reach %d (got %d)", want, atomic.LoadInt32(counter))
 }
 
-// requireRoot skips the test unless running as root: runDaemon-based tests
-// write the state file to the real /var/lib/focusguard path.
-func requireRoot(t *testing.T) {
+// setupDaemonTestEnv configura um ambiente de testes hermético com caminhos
+// de estado e socket isolados em t.TempDir(), permitindo que a suíte execute
+// sem privilégios de root.
+func setupDaemonTestEnv(t *testing.T) {
 	t.Helper()
-	if os.Geteuid() != 0 {
-		t.Skip("requires root: runDaemon writes state to /var/lib/focusguard")
-	}
+	dir := t.TempDir()
+	origState := testStateFilePath
+	testStateFilePath = filepath.Join(dir, "state.json")
+	origSock := ipc.TestSocketPath
+	ipc.TestSocketPath = filepath.Join(dir, "daemon.sock")
+	t.Cleanup(func() {
+		testStateFilePath = origState
+		ipc.TestSocketPath = origSock
+	})
 }
 
 // stubProbeDaemonAlive desativa o ping de singleton (probeDaemonAlive) durante

@@ -24,12 +24,9 @@ jobs:
       - name: Session-log structure check
         run: bash scripts/check-session-log.sh
 
-  # Etapa 0/1 do docs/linux-validation-plan.md: a suíte COMPLETA nunca rodou
-  # no Linux — o CI só rodava build/vet e -race em 15 pacotes. Este job roda
-  # tudo (go test ./...), incluindo o cmd/focusguard-daemon: no Windows ele
-  # exige shell elevado (manifest requireAdministrator) e por isso nunca
-  # entrou no CI; aqui no Linux não há manifest, então a suíte do daemon roda
-  # normal (os testes que precisam de root fazem Skip via requireRoot).
+  # Etapa 0/1 do docs/linux-validation-plan.md: a suíte COMPLETA no Linux —
+  # roda tudo (go test ./...), incluindo cmd/focusguard-daemon de forma hermética
+  # e desprivilegiada (setupDaemonTestEnv em t.TempDir()).
   linux-full-suite:
     runs-on: ubuntu-latest
     steps:
@@ -69,9 +66,7 @@ jobs:
       - name: Check Go→TS contract is up to date
         run: make contract-check
 
-      # A suíte completa, incluindo cmd/focusguard-daemon (que no Windows só
-      # roda em shell elevado). Testes que exigem root (requireRoot) fazem
-      # Skip — o runner roda como usuário não-root.
+      # A suíte completa roda de forma hermética e sem exigência de privilégios root.
       - name: Full test suite
         run: go test ./... -count=1 -timeout=120s
 

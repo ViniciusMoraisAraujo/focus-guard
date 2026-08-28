@@ -256,25 +256,39 @@ install_service() {
 }
 
 # setup_socket_group habilita o acesso ao daemon sem sudo (F5 do ui-plan): o
-# daemon roda como root e chowna /run/focusguard.sock para root:focusguard
-# 0660. Sem o grupo, só o root (sudo) usa o CLI/tray/web. O grupo é criado se
-# faltar e o usuário que invocou o sudo é adicionado a ele — o re-login (ou
-# newgrp) é necessário para a sessão atual pegar a nova associação.
+# daemon roda como usuário de sistema 'focusguard' (com ambient capabilities)
+# e cria o socket no diretório runtime /run/focusguard pertencente ao grupo
+# focusguard (0660). O usuário que invocou o sudo é adicionado ao grupo para
+# poder operar o CLI/tray/web sem sudo.
 setup_socket_group() {
   local user
   user="$(tray_user)"
 
   if ! getent group focusguard >/dev/null 2>&1; then
-    echo "[FocusGuard] Criando grupo focusguard (acesso ao socket sem sudo)..."
+    echo "[FocusGuard] Criando grupo focusguard..."
     groupadd --system focusguard 2>/dev/null \
       || groupadd focusguard 2>/dev/null \
       || { echo "[FocusGuard] Aviso: não foi possível criar o grupo focusguard. CLI/tray/web exigirão sudo." >&2; return 0; }
   fi
+
+  if ! id -u focusguard >/dev/null 2>&1; then
+    echo "[FocusGuard] Criando usuário de sistema focusguard..."
+    useradd --system --no-create-home --shell /usr/sbin/nologin -g focusguard focusguard 2>/dev/null \
+      || useradd --system --no-create-home --shell /bin/false -g focusguard focusguard 2>/dev/null \
+      || useradd --system --no-create-home -g focusguard focusguard 2>/dev/null \
+      || true
+  fi
+
+  # Cria e configura a pasta de estado persistente com posse focusguard:focusguard
+  install -d -m 0770 -o focusguard -g focusguard "${STATE_DIR}" 2>/dev/null || true
+  # Cria e configura o diretório de runtime do socket
+  install -d -m 0775 -o focusguard -g focusguard "/run/focusguard" 2>/dev/null || true
+
   if [[ -n "${user}" && "${user}" != "root" ]]; then
     usermod -aG focusguard "${user}" 2>/dev/null \
       || echo "[FocusGuard] Aviso: não foi possível adicionar ${user} ao grupo focusguard. Use: sudo usermod -aG focusguard ${user}" >&2
   fi
-  echo "[FocusGuard] ✔ Grupo focusguard pronto. Faça logout/login (ou 'newgrp focusguard') para o CLI acessar o daemon sem sudo."
+  echo "[FocusGuard] ✔ Usuário/Grupo focusguard configurados. Faça logout/login (ou 'newgrp focusguard') para o CLI acessar o daemon sem sudo."
 }
 
 do_install() {

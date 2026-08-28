@@ -10,19 +10,18 @@ import (
 	"time"
 )
 
-const SocketPath = "/run/focusguard.sock"
+const (
+	SocketPath       = "/run/focusguard/focusguard.sock"
+	LegacySocketPath = "/run/focusguard.sock"
+)
 
 // socketGroupName é o grupo cujos membros usam o CLI/tray/web sem sudo (F5 do
-// ui-plan): o daemon roda como root e criaria o socket root:root 0660, o que
-// bloquearia o usuário comum. O install-linux.sh cria o grupo e adiciona o
-// usuário; sem o grupo, o daemon segue com root:root 0660 (apenas root).
+// ui-plan): o daemon roda sob o usuário/grupo focusguard e cria o socket com
+// permissão 0660 no RuntimeDirectory (/run/focusguard).
 const socketGroupName = "focusguard"
 
 // lookupSocketGroup resolve o GID do grupo do socket. Best-effort e stubbable
 // nos testes (não depende de o grupo existir na máquina que roda os testes).
-// Com CGO_ENABLED=0 (build do GoReleaser) o user.LookupGroup puro-Go lê
-// apenas /etc/group — sem NSS/LDAP; o install-linux.sh cria o grupo localmente
-// via groupadd, então funciona na prática.
 var lookupSocketGroup = func() (int, bool) {
 	g, err := user.LookupGroup(socketGroupName)
 	if err != nil {
@@ -36,15 +35,35 @@ func Listen() (net.Listener, error) {
 	path := SocketPath
 	if TestSocketPath != "" {
 		path = TestSocketPath
+	} else {
+		// Garante que o diretório pai existe (caso não esteja sob systemd RuntimeDirectory)
+		dir := "/run/focusguard"
+		if err := os.MkdirAll(dir, 0775); err != nil {
+			// Fallback para o caminho raiz se o subdiretório não puder ser criado
+			path = LegacySocketPath
+		}
 	}
+
 	_ = os.Remove(path)
 	l, err := net.Listen("unix", path)
+	if err != nil && path != LegacySocketPath && TestSocketPath == "" {
+		// Fallback para caminho legado se falhar no subdiretório
+		path = LegacySocketPath
+		_ = os.Remove(path)
+		l, err = net.Listen("unix", path)
+	}
 	if err != nil {
 		return nil, err
 	}
 	_ = os.Chmod(path, 0660)
-	// Acesso por grupo (F5): membros do grupo focusguard falam com o daemon
-	// sem sudo. Best-effort — chown falhou (sem root/grupo), fica root:root.
+
+	// Se criamos em /run/focusguard/focusguard.sock, tentamos criar um symlink em /run/focusguard.sock (best-effort)
+	if path == SocketPath && TestSocketPath == "" {
+		_ = os.Remove(LegacySocketPath)
+		_ = os.Symlink(SocketPath, LegacySocketPath)
+	}
+
+	// Acesso por grupo: membros do grupo focusguard falam com o daemon sem sudo.
 	if gid, ok := lookupSocketGroup(); ok {
 		_ = os.Chown(path, -1, gid)
 	}
@@ -52,17 +71,25 @@ func Listen() (net.Listener, error) {
 }
 
 func Dial() (net.Conn, error) {
-	path := SocketPath
 	if TestSocketPath != "" {
-		path = TestSocketPath
+		return net.Dial("unix", TestSocketPath)
 	}
-	return net.Dial("unix", path)
+	conn, err := net.Dial("unix", SocketPath)
+	if err == nil {
+		return conn, nil
+	}
+	// Fallback para o socket legado se o novo não responder
+	return net.Dial("unix", LegacySocketPath)
 }
 
 func DialTimeout(timeout time.Duration) (net.Conn, error) {
-	path := SocketPath
 	if TestSocketPath != "" {
-		path = TestSocketPath
+		return net.DialTimeout("unix", TestSocketPath, timeout)
 	}
-	return net.DialTimeout("unix", path, timeout)
+	conn, err := net.DialTimeout("unix", SocketPath, timeout)
+	if err == nil {
+		return conn, nil
+	}
+	// Fallback para o socket legado se o novo não responder
+	return net.DialTimeout("unix", LegacySocketPath, timeout)
 }
