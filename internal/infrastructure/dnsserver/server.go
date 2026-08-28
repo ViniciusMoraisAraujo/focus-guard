@@ -17,6 +17,7 @@ import (
 	"syscall"
 	"time"
 
+	"focusguard/internal/infrastructure/lru"
 	"github.com/miekg/dns"
 )
 
@@ -62,6 +63,15 @@ type ClientAwareChecker interface {
 	IsBlockedFor(domain, clientIP string) bool
 }
 
+// DefaultCacheCapacity é a capacidade padrão do cache LRU de consultas DNS.
+const DefaultCacheCapacity = 2048
+
+// cachedDNSMsg armazena a mensagem DNS clonada e o momento exato de expiração.
+type cachedDNSMsg struct {
+	msg       *dns.Msg
+	expiresAt time.Time
+}
+
 // Server is the DNS sinkhole + forwarder. Zero-value is not usable; construct
 // with New.
 type Server struct {
@@ -76,8 +86,12 @@ type Server struct {
 	addr      string
 	statsStop chan struct{} // fechado pelo Stop para encerrar o loop de contadores
 
-	queries atomic.Uint64
-	blocked atomic.Uint64
+	queries   atomic.Uint64
+	blocked   atomic.Uint64
+	cacheHits atomic.Uint64
+
+	cacheMu sync.Mutex
+	cache   *lru.Cache[*cachedDNSMsg]
 
 	// onBlocked is the telemetry hook (Fase 1.2 do features-plan): called once
 	// per sinkholed query with the domain and the client IP, outside any lock.
@@ -106,6 +120,7 @@ func New(checker PolicyChecker, upstream string) *Server {
 		upstream:  upstream,
 		udpClient: &dns.Client{Net: "udp", Timeout: upstreamTimeout},
 		tcpClient: &dns.Client{Net: "tcp", Timeout: upstreamTimeout},
+		cache:     lru.New[*cachedDNSMsg](DefaultCacheCapacity),
 	}
 }
 
@@ -125,6 +140,16 @@ func (s *Server) Queries() uint64 { return s.queries.Load() }
 
 // Blocked returns how many of those queries were sinkholed.
 func (s *Server) Blocked() uint64 { return s.blocked.Load() }
+
+// CacheHits returns how many allowed queries were served directly from memory.
+func (s *Server) CacheHits() uint64 { return s.cacheHits.Load() }
+
+// FlushCache limpa o cache de consultas DNS em memória.
+func (s *Server) FlushCache() {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	s.cache = lru.New[*cachedDNSMsg](DefaultCacheCapacity)
+}
 
 // statsLoop logs the sinkhole activity every statsInterval: queries and
 // blocked deltas since the last tick plus the cumulative totals. Only fires
@@ -469,6 +494,15 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 
+	// Cache DNS em memória: se tivermos a resposta válida, devolve direto sem round-trip de rede
+	cacheKey := dnsCacheKey(q)
+	if cached := s.getFromCache(cacheKey); cached != nil {
+		s.cacheHits.Add(1)
+		cached.Id = r.Id
+		s.writeReply(w, r, cached)
+		return
+	}
+
 	resp, err := s.forward(w, r)
 	if err != nil {
 		// SERVFAIL only for allowed domains: clients then fall back to the
@@ -484,6 +518,7 @@ func (s *Server) handleDNSRequest(w dns.ResponseWriter, r *dns.Msg) {
 		return
 	}
 	clampTTL(resp)
+	s.putInCache(cacheKey, resp)
 	s.writeReply(w, r, resp)
 }
 
@@ -600,4 +635,75 @@ func bindHint(addr string) string {
 		return ""
 	}
 	return platformBindHint()
+}
+
+func dnsCacheKey(q dns.Question) string {
+	return fmt.Sprintf("%s:%d:%d", normalizeDomain(q.Name), q.Qtype, q.Qclass)
+}
+
+func (s *Server) getFromCache(key string) *dns.Msg {
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.cache == nil {
+		return nil
+	}
+	entry, ok := s.cache.Get(key)
+	if !ok {
+		return nil
+	}
+	now := time.Now()
+	if now.After(entry.expiresAt) {
+		return nil
+	}
+	remaining := uint32(entry.expiresAt.Sub(now).Seconds())
+	if remaining < 1 {
+		remaining = 1
+	}
+
+	reply := entry.msg.Copy()
+	adjustMsgTTL(reply, remaining)
+	return reply
+}
+
+func adjustMsgTTL(m *dns.Msg, ttl uint32) {
+	for _, section := range [][]dns.RR{m.Answer, m.Ns, m.Extra} {
+		for _, rr := range section {
+			if rr.Header().Rrtype == dns.TypeOPT {
+				continue
+			}
+			rr.Header().Ttl = ttl
+		}
+	}
+}
+
+func (s *Server) putInCache(key string, resp *dns.Msg) {
+	if resp == nil || len(resp.Answer) == 0 || resp.Rcode != dns.RcodeSuccess {
+		return
+	}
+
+	var minTTL uint32 = sinkholeTTL
+	for _, rr := range resp.Answer {
+		if rr.Header().Rrtype == dns.TypeOPT {
+			continue
+		}
+		if rr.Header().Ttl < minTTL {
+			minTTL = rr.Header().Ttl
+		}
+	}
+	if minTTL < 5 {
+		minTTL = 5
+	}
+	if minTTL > sinkholeTTL {
+		minTTL = sinkholeTTL
+	}
+
+	s.cacheMu.Lock()
+	defer s.cacheMu.Unlock()
+	if s.cache == nil {
+		return
+	}
+	s.cache.Set(key, &cachedDNSMsg{
+		msg:       resp.Copy(),
+		expiresAt: time.Now().Add(time.Duration(minTTL) * time.Second),
+	})
 }

@@ -20,6 +20,7 @@ import (
 	"focusguard/internal/domain/blocks"
 	"focusguard/internal/domain/clockguard"
 	"focusguard/internal/domain/devices"
+	"focusguard/internal/domain/dns"
 	"focusguard/internal/domain/goal"
 	interceptordomain "focusguard/internal/domain/interceptor"
 	"focusguard/internal/domain/ipcerr"
@@ -32,11 +33,11 @@ import (
 	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/domain/user"
 	"focusguard/internal/domain/users"
-	"focusguard/internal/infrastructure/dns"
 	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/hostswatch"
 	"focusguard/internal/infrastructure/interceptor"
+	"focusguard/internal/infrastructure/netdns"
 	"focusguard/internal/infrastructure/ntp"
 	"focusguard/internal/infrastructure/processguard"
 	"focusguard/internal/infrastructure/statewatch"
@@ -667,7 +668,12 @@ func isFatalBootError(err error) bool {
 	return errors.Is(err, os.ErrPermission)
 }
 
+var testStateFilePath string
+
 func getStateFilePath() string {
+	if testStateFilePath != "" {
+		return testStateFilePath
+	}
 	if goos == "windows" {
 		return filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard", "state.json")
 	}
@@ -1153,6 +1159,7 @@ func runDaemon() bool {
 		telRec.Record(telemetry.BlockedQuery{Domain: domain, ClientIP: clientIP, Timestamp: time.Now()})
 	})
 	server.SetDNS(dnsCtrlAdapter{c: dnsSrv})
+	netDNS := netdns.NewConfigurator()
 	// Hook DoH do dns-start: fechado pela porta 853 (browsers com DoH embutido
 	// ignorariam o sinkhole). Idempotente — o scheduler também o aplica
 	// enquanto houver blocos ativos. Passado ao handler de domínio (dns.Start)
@@ -1172,9 +1179,19 @@ func runDaemon() bool {
 			// alcançarem o servidor e a máquina resolver pelo sinkhole
 			// (best-effort).
 			setupDNSHostMachine(enf)
+			if configured, err := netDNS.SetLocalDNS(); err != nil {
+				log.Printf("[FocusGuard Daemon] aviso: falha ao conectar adaptadores de rede ao DNS local: %v", err)
+			} else if len(configured) > 0 {
+				log.Printf("[FocusGuard Daemon] adaptadores de rede conectados ao DNS local: %v", configured)
+			}
 		}
 	}
-	components = append(components, daemon.StopOnly(func() { _ = dnsSrv.Stop() }))
+	components = append(components, daemon.StopOnly(func() {
+		if restored, err := netDNS.RestoreDNS(); err == nil && len(restored) > 0 {
+			log.Printf("[FocusGuard Daemon] adaptadores de rede restaurados para DHCP no shutdown: %v", restored)
+		}
+		_ = dnsSrv.Stop()
+	}))
 
 	// Focus Interceptor Page (Fase 3): listener HTTP :80 + HTTPS :443
 	// best-effort que serve a página de bloqueio (com frase motivacional)
@@ -1364,9 +1381,9 @@ func runDaemon() bool {
 	}.Handler())
 	// dns via ipc.DomainAction (DIP — pós-reorg item 2).
 	// dns-start também prepara a máquina hospedeira (porta 53 inbound no
-	// firewall + flush do cache DNS) para os dispositivos da rede alcançarem o
-	// sinkhole — além do hook DoH existente.
-	hDNSStart := dns.NewStart(dnsSrv, sched, func() {
+	// firewall + flush do cache DNS + conexão de adaptadores Wi-Fi/Ethernet)
+	// para os dispositivos da rede e a máquina local resolverem pelo sinkhole.
+	hDNSStart := dns.NewStart(dnsSrv, sched, netDNS, func() {
 		dohHook()
 		setupDNSHostMachine(enf)
 	})
@@ -1380,7 +1397,7 @@ func runDaemon() bool {
 			return resp, nil
 		},
 	}.Handler())
-	hDNSStop := dns.NewStop(dnsSrv, sched)
+	hDNSStop := dns.NewStop(dnsSrv, sched, netDNS)
 	server.Register(ipc.DomainAction[dns.NoInput, dns.StopResult]{
 		Name:   hDNSStop.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),
@@ -1391,7 +1408,7 @@ func runDaemon() bool {
 			return resp, nil
 		},
 	}.Handler())
-	hDNSStatus := dns.NewStatus(dnsSrv, sched)
+	hDNSStatus := dns.NewStatus(dnsSrv, sched, netDNS)
 	server.Register(ipc.DomainAction[dns.NoInput, dns.StatusResult]{
 		Name:   hDNSStatus.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),
@@ -1402,7 +1419,7 @@ func runDaemon() bool {
 			return resp, nil
 		},
 	}.Handler())
-	hDNSSetUpstream := dns.NewSetUpstream(dnsSrv, sched)
+	hDNSSetUpstream := dns.NewSetUpstream(dnsSrv, sched, netDNS)
 	server.Register(ipc.DomainAction[dns.SetUpstreamInput, dns.SetUpstreamResult]{
 		Name: hDNSSetUpstream.Action(),
 		Decode: func(r *ipc.Request) (*dns.SetUpstreamInput, error) {

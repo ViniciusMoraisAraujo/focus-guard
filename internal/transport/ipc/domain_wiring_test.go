@@ -21,6 +21,7 @@ import (
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
 	"focusguard/internal/domain/devices"
+	"focusguard/internal/domain/dns"
 	"focusguard/internal/domain/goal"
 	interceptordomain "focusguard/internal/domain/interceptor"
 	"focusguard/internal/domain/policy"
@@ -32,7 +33,6 @@ import (
 	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/domain/user"
 	"focusguard/internal/domain/users"
-	"focusguard/internal/infrastructure/dns"
 	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/infrastructure/update"
 	"focusguard/internal/transport/ipc"
@@ -401,7 +401,7 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 		},
 	}.Handler())
 	// dns via ipc.DomainAction (mesmo padrão do composition root).
-	hDNSStart := dns.NewStart(dc, dp, nil)
+	hDNSStart := dns.NewStart(dc, dp, nil, nil)
 	s.Register(ipc.DomainAction[dns.NoInput, dns.StartResult]{
 		Name:   hDNSStart.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),
@@ -412,7 +412,7 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 			return resp, nil
 		},
 	}.Handler())
-	hDNSStop := dns.NewStop(dc, dp)
+	hDNSStop := dns.NewStop(dc, dp, nil)
 	s.Register(ipc.DomainAction[dns.NoInput, dns.StopResult]{
 		Name:   hDNSStop.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),
@@ -423,7 +423,7 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 			return resp, nil
 		},
 	}.Handler())
-	hDNSStatus := dns.NewStatus(dc, dp)
+	hDNSStatus := dns.NewStatus(dc, dp, nil)
 	s.Register(ipc.DomainAction[dns.NoInput, dns.StatusResult]{
 		Name:   hDNSStatus.Action(),
 		Decode: ipc.NoInputDecode[dns.NoInput](),
@@ -434,7 +434,7 @@ func composeTestServer(t *testing.T) (*ipc.Server, *fakeBlocker, *fakeDNSPersist
 			return resp, nil
 		},
 	}.Handler())
-	hDNSSetUpstream := dns.NewSetUpstream(dc, dp)
+	hDNSSetUpstream := dns.NewSetUpstream(dc, dp, nil)
 	s.Register(ipc.DomainAction[dns.SetUpstreamInput, dns.SetUpstreamResult]{
 		Name: hDNSSetUpstream.Action(),
 		Decode: func(r *ipc.Request) (*dns.SetUpstreamInput, error) {

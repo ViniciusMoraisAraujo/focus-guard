@@ -605,3 +605,90 @@ func TestStart_BothFamiliesFail(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = s.Stop() })
 }
+
+func TestDNSCache_HitAndTTL(t *testing.T) {
+	upstreamAddr, _ := startFakeUpstream(t, 30)
+	checker := newFakeChecker("blocked.com")
+	s := startSUT(t, checker, upstreamAddr)
+
+	// 1ª consulta: miss no cache, busca no upstream
+	r1 := doQuery(t, s.Addr(), "udp", "example.com", dns.TypeA)
+	if len(r1.Answer) == 0 {
+		t.Fatalf("r1 sem respostas")
+	}
+	if s.CacheHits() != 0 {
+		t.Errorf("cacheHits = %d, want 0", s.CacheHits())
+	}
+
+	// 2ª consulta: hit no cache, sem forward de rede
+	r2 := doQuery(t, s.Addr(), "udp", "example.com", dns.TypeA)
+	if len(r2.Answer) == 0 {
+		t.Fatalf("r2 sem respostas")
+	}
+	if s.CacheHits() != 1 {
+		t.Errorf("cacheHits = %d, want 1", s.CacheHits())
+	}
+
+	// Verifica se o IP retornado é o mesmo
+	a1 := r1.Answer[0].(*dns.A).A.String()
+	a2 := r2.Answer[0].(*dns.A).A.String()
+	if a1 != a2 {
+		t.Errorf("resposta em cache diverge: %s != %s", a1, a2)
+	}
+
+	// Bloqueado não usa nem polui o cache
+	rBlocked := doQuery(t, s.Addr(), "udp", "blocked.com", dns.TypeA)
+	if rBlocked.Answer[0].(*dns.A).A.String() != "0.0.0.0" {
+		t.Errorf("domínio bloqueado não retornou 0.0.0.0")
+	}
+}
+
+func TestDNSCache_Flush(t *testing.T) {
+	upstreamAddr, _ := startFakeUpstream(t, 60)
+	s := startSUT(t, newFakeChecker(), upstreamAddr)
+
+	_ = doQuery(t, s.Addr(), "udp", "flush-test.org", dns.TypeA)
+	_ = doQuery(t, s.Addr(), "udp", "flush-test.org", dns.TypeA)
+	if s.CacheHits() != 1 {
+		t.Fatalf("cacheHits antes do flush = %d, want 1", s.CacheHits())
+	}
+
+	s.FlushCache()
+
+	// Após o flush, a próxima consulta busca no upstream novamente
+	_ = doQuery(t, s.Addr(), "udp", "flush-test.org", dns.TypeA)
+	if s.CacheHits() != 1 {
+		t.Errorf("cacheHits após flush deveria ser 1 (não incrementou), got %d", s.CacheHits())
+	}
+
+	_ = doQuery(t, s.Addr(), "udp", "flush-test.org", dns.TypeA)
+	if s.CacheHits() != 2 {
+		t.Errorf("cacheHits = %d, want 2", s.CacheHits())
+	}
+}
+
+func TestDNSCache_Concurrent(t *testing.T) {
+	upstreamAddr, _ := startFakeUpstream(t, 60)
+	s := startSUT(t, newFakeChecker(), upstreamAddr)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 20; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			domain := "concurrent.com"
+			if id%2 == 0 {
+				domain = "other.org"
+			}
+			r := doQuery(t, s.Addr(), "udp", domain, dns.TypeA)
+			if len(r.Answer) == 0 {
+				t.Errorf("resposta concorrente vazia para %s", domain)
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	if s.CacheHits() == 0 {
+		t.Errorf("esperava ao menos alguns cacheHits sob carga concorrente")
+	}
+}
