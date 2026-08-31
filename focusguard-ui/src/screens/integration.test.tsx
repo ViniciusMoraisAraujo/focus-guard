@@ -19,7 +19,7 @@ vi.mock("@/api/client", () => ({
     presets: vi.fn(),
     stats: vi.fn(),
     block: vi.fn(),
-    pomodoroStart: vi.fn(),
+    pomodoro: vi.fn(),
     pomodoroStop: vi.fn(),
     pomodoroDefaults: vi.fn().mockResolvedValue({ success: true, work_min: 25, rest_min: 5 }),
     tamperLog: vi.fn(),
@@ -82,7 +82,6 @@ describe("E2E Integration: Fluxo de Bloqueio, SSE e Timers", () => {
     mockPingDaemon.mockResolvedValue(true);
     mockAuthStatus.mockResolvedValue({
       authenticated: true,
-      has_users: true,
     });
     mockApi.presets.mockResolvedValue({
       success: true,
@@ -273,7 +272,7 @@ describe("E2E Integration: Fluxo de Bloqueio, SSE e Timers", () => {
       },
     } as unknown as ApiResponse);
 
-    mockApi.pomodoroStart.mockResolvedValue({
+    mockApi.pomodoro.mockResolvedValue({
       success: true,
       message: "Pomodoro iniciado!",
     } as ApiResponse);

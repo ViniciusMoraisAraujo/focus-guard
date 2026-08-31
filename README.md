@@ -3,10 +3,9 @@
 **Bloqueie sites e apps que roubam sua atenção — na raiz, no nível do sistema.**
 
 O FocusGuard bloqueia no **sistema inteiro** (arquivo `hosts` + firewall), não
-só no navegador: o site não abre em nenhum browser nem app da máquina — e, na
-edição **Server**, em qualquer dispositivo da rede. Os bloqueios **expiriam
-sozinhos** e **não podem ser desfeitos antes da hora** — nada de "só mais
-cinco minutos".
+só no navegador: o site não abre em nenhum browser nem app da máquina. Os
+bloqueios **expiram sozinhos** e **não podem ser desfeitos antes da hora** —
+nada de "só mais cinco minutos".
 
 Você controla tudo pelo **painel web** e pela **bandeja do sistema** — sem
 abrir terminal.
@@ -23,7 +22,6 @@ abrir terminal.
 - ⏰ **Agenda recorrente** — bloqueia em dias e horários fixos, com importação de calendário (.ics)
 - 🎯 **Metas, estatísticas e conquistas** — streak diário, gráficos, relatórios e badges
 - 🛡️ **À prova de burla** — edições no `hosts`/estado são detectadas (SHA-256) e revertidas automaticamente; mexer no relógio do sistema também é pego
-- 🌍 **DNS sinkhole (edição Server)** — bloqueia para a rede inteira: celular, TV, console
 
 ---
 
@@ -95,10 +93,8 @@ Linux: `sudo ./install-linux.sh uninstall`.
 | **Apps** | Escolhe quais apps são encerrados durante o foco (ex: Spotify, Steam) |
 | **Presets** | Cria categorias personalizadas de sites |
 | **Estatísticas** | Gráficos de foco, streak, missões e exportação de relatórios |
-| **Rede** | DNS sinkhole e página de bloqueio (edição Server) |
-| **Guia** | Manual de configuração e tutoriais passo a passo por fabricante |
 | **Segurança** | Histórico de tentativas de burla e eventos de relógio |
-| **Configurações** | Meta diária, senha/usuários, canal de atualizações |
+| **Configurações** | Meta diária, senha/usuários, canal de atualizações, página de bloqueio |
 
 ---
 
@@ -154,38 +150,8 @@ Feche e reabra pelo atalho do Desktop ou bandeja. O log do servidor web
 (`focusguard-web.log`) fica ao lado do executável, ou em
 `C:\ProgramData\FocusGuard\` / `/var/lib/focusguard/`.
 
-**"Porta 53 em uso" ao ligar o DNS sinkhole (Windows)**
-O culpado quase sempre é o ICS: `sc config SharedAccess start= disabled` +
-`net stop SharedAccess` (como Administrador).
-
 **Preciso de Administrador para tudo?**
 Não — só para instalar/gerenciar o serviço e aplicar regras de sistema.
-
-<details>
-<summary><b>🌍 Edição Server — DNS sinkhole ("Rei da Rede")</b></summary>
-
-Na edição **Server** (instalador `focusguard-server-*.msi`), o daemon vira um
-servidor DNS na porta 53: responde `0.0.0.0` para sites bloqueados e
-encaminha o resto ao upstream Cloudflare Security (`1.1.1.2`, com filtro de
-malware). **Todos os dispositivos da rede** que usarem o DNS desta máquina
-ficam protegidos — celular, TV, console. Ative pela tela **Rede** do painel.
-
-**No roteador:** ① reserve um IP fixo para o PC do FocusGuard; ② aponte o DNS
-primário do DHCP para esse IP; ③ deixe um DNS público (ex: `1.1.1.1`) como
-secundário, para a rede seguir navegando se o PC cair; ④ **desligue o anúncio
-de DNS IPv6 (RDNSS/DHCPv6) ou aponte-o para a máquina** — senão celulares e
-TVs preferem o roteador (`fe80::1`) via IPv6 e burlam o sinkhole.
-
-**Firewall e rede:** o daemon escuta a porta 53 em IPv4 **e** IPv6
-(`0.0.0.0:53` + `[::]:53`) e abre as regras de entrada no firewall do Windows
-(`FocusGuard_DNS_Inbound_UDP/TCP`) automaticamente ao ligar o sinkhole — mas
-o perfil da rede precisa ser **Privada** para o tráfego de entrada fluir
-normalmente.
-
-Recursos extras da edição Server: **políticas por dispositivo** (regras
-diferentes por IP na rede, pela tela *Rede*) e **página de bloqueio** nos
-sites (HTTP :80 e HTTPS :443), para o usuário ver *por que* o site não abre.
-</details>
 
 ---
 

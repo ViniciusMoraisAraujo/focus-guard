@@ -172,7 +172,7 @@ func TestLoad_ZeroByteFile_ReturnsCleanState(t *testing.T) {
 }
 
 // TestStoreSaveAndLoad_AdditiveFields verifies the additive schema fields
-// round-trip: DNSEnabled (the sinkhole switch) survives a save/load cycle.
+// round-trip: InterceptorEnabled survives a save/load cycle.
 func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "focusguard-test*")
 	if err != nil {
@@ -185,11 +185,11 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 		t.Fatalf("failed to create store: %v", err)
 	}
 
-	now := time.Now()
+	now := time.Now().Truncate(time.Second)
 	state := &State{
-		Version:     1,
-		DNSEnabled:  true,
-		DNSUpstream: "9.9.9.9:53",
+		Version:            1,
+		InterceptorEnabled: true,
+		LastKnownTime:      now,
 		Blocks: map[string]policy.Block{
 			"example.com": {
 				Domain:      "example.com",
@@ -207,11 +207,11 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if !loaded.DNSEnabled {
-		t.Error("DNSEnabled não sobreviveu ao round-trip")
+	if !loaded.InterceptorEnabled {
+		t.Error("InterceptorEnabled não sobreviveu ao round-trip")
 	}
-	if loaded.DNSUpstream != "9.9.9.9:53" {
-		t.Errorf("DNSUpstream = %q, want 9.9.9.9:53", loaded.DNSUpstream)
+	if !loaded.LastKnownTime.Equal(now) {
+		t.Errorf("LastKnownTime = %v, want %v", loaded.LastKnownTime, now)
 	}
 	blk := loaded.Blocks["example.com"]
 	if blk.Domain != "example.com" {
@@ -219,10 +219,9 @@ func TestStoreSaveAndLoad_AdditiveFields(t *testing.T) {
 	}
 }
 
-// TestLoad_LegacyStateFile_DefaultsDNSOff verifies that a state file written
-// before the DNS field existed loads with DNSEnabled=false — no migration
-// required for the additive field.
-func TestLoad_LegacyStateFile_DefaultsDNSOff(t *testing.T) {
+// TestLoad_LegacyStateFile_DefaultsInterceptorOff verifies that a state file written
+// before the interceptor field existed loads with InterceptorEnabled=false.
+func TestLoad_LegacyStateFile_DefaultsInterceptorOff(t *testing.T) {
 	tempDir, err := os.MkdirTemp("", "focusguard-test*")
 	if err != nil {
 		t.Fatalf("failed to make temp dir: %v", err)
@@ -242,11 +241,8 @@ func TestLoad_LegacyStateFile_DefaultsDNSOff(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to load state: %v", err)
 	}
-	if state.DNSEnabled {
-		t.Error("legacy state should load with DNSEnabled=false")
-	}
-	if state.DNSUpstream != "" {
-		t.Errorf("legacy state should load with DNSUpstream empty, got %q", state.DNSUpstream)
+	if state.InterceptorEnabled {
+		t.Error("legacy state should load with InterceptorEnabled=false")
 	}
 }
 

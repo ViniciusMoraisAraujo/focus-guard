@@ -19,8 +19,8 @@ das ações IPC para o daemon). O `dist` compilado é copiado para
 | `src/api/types.ts` | **Espelha o contrato IPC Go** (`ipc.Request/Response`, `policy.Block`, `preset.Preset`, `pomodoro.State`, `analytics.Stats`, `schedule.Rule`, `tamper.Event`) — manter em sincronia com `internal/transport/ipc` (gerado via `make contract`) |
 | `src/api/client.ts` | `action()` (fetch POST `/api/action`), `pingDaemon()`, `execAction()` + `api.*` helpers (+ `client.test.ts`) |
 | `src/context/` | Providers de estado: `auth-context.tsx` (login/sessão), `data-context.tsx` (status 10s, stats 60s, `daemonUp`), `index.tsx`, `types.ts` (+ `context.test.tsx`) |
-| `src/App.tsx` | Shell: sidebar desktop + Sheet mobile, navegação entre as 12 telas |
-| `src/screens/` | 12 telas: Dashboard, Bloquear, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca, Configuracoes, Login, Rede, Guia |
+| `src/App.tsx` | Shell: sidebar desktop + Sheet mobile, navegação entre as 10 telas |
+| `src/screens/` | 10 telas: Dashboard, Bloquear, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca, Configuracoes, Login |
 | `src/components/` | `circular-timer.tsx`, `weekly-grid.tsx` (+ `weekly-grid.test.tsx`), `screen.tsx`, `theme-provider.tsx`, `theme-toggle.tsx` |
 | `src/components/ui/` | Componentes shadcn-style (button, card, dialog, sheet, tabs, tooltip, sonner, etc.) |
 | `src/hooks/useCountdown.ts` | Countdown client-side |

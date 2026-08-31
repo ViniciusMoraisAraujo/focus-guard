@@ -7,8 +7,6 @@ export type Screen =
   | "apps"
   | "presets"
   | "stats"
-  | "rede"
-  | "guia"
   | "seguranca"
   | "config";
 

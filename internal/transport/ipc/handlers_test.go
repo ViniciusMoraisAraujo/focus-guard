@@ -49,7 +49,6 @@ func TestServer_RegistryDispatchesMigratedActions(t *testing.T) {
 		"update", "update-check",
 		"block", "status",
 		"user-list", "user-verify", "user-add", "user-remove", "user-set-password",
-		"dns-start", "dns-stop", "dns-status", "dns-set-upstream",
 	}
 	for _, action := range migrated {
 		if _, ok := s.registry.Get(action); !ok {

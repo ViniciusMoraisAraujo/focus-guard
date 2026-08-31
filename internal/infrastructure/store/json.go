@@ -15,14 +15,6 @@ import (
 type State struct {
 	Version int                     `json:"version"`
 	Blocks  map[string]policy.Block `json:"blocks"`
-	// DNSEnabled persists whether the DNS sinkhole server should be running
-	// (network-wide blocking). Additive field: old state files load with
-	// false, so no migration is needed.
-	DNSEnabled bool `json:"dns_enabled,omitempty"`
-	// DNSUpstream persists the upstream resolver (host:port) the sinkhole
-	// forwards allowed queries to. Additive field: empty loads fall back to
-	// dnsserver.DefaultUpstream, so no migration is needed.
-	DNSUpstream string `json:"dns_upstream,omitempty"`
 	// LastKnownTime persists the wall clock the daemon last trusted (Clock
 	// Tamper Protection — Fase 2). Written on every save; on boot (and
 	// periodically) the clock guard compares it with the current wall clock

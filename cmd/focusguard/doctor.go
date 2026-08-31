@@ -109,8 +109,6 @@ func runDoctor(env doctorEnv) []doctorResult {
 		checkHosts(env),
 		checkFirewall(env),
 		checkVersions(env),
-		checkDNS(env),
-		checkDNSInbound(env),
 		checkCA(env),
 		checkDefender(env),
 	}
@@ -436,90 +434,7 @@ func checkVersions(env doctorEnv) doctorResult {
 	return doctorResult{Name: "Versões", Status: statusPass, Message: msg + " e binários irmãos presentes"}
 }
 
-// checkDNS verifica o estado do sinkhole: habilitado mas parado (bind error)
-// é problema; desligado é ok (configuração). Quando ativo, valida o bind
-// dual-stack (IPv4 + IPv6) e reporta familiares ausentes como warn.
-func checkDNS(env doctorEnv) doctorResult {
-	if env.client == nil {
-		return doctorResult{Name: "DNS", Status: statusWarn, Message: "cliente IPC ausente", Fix: ""}
-	}
-	resp, err := env.client.Send(ipc.Request{Action: "dns-status"})
-	if err != nil {
-		return doctorResult{Name: "DNS", Status: statusWarn, Message: "não foi possível obter o status do DNS: " + err.Error(), Fix: ""}
-	}
-	if !resp.Success {
-		return doctorResult{Name: "DNS", Status: statusWarn, Message: resp.Message, Fix: ""}
-	}
-	switch {
-	case !resp.DNSEnabled:
-		return doctorResult{Name: "DNS", Status: statusPass, Message: "sinkhole desativado (configuração)"}
-	case resp.DNSListening:
-		// Validar dual-stack: o endereço deve conter ambas famílias
-		// (0.0.0.0:53 e [::]:53) para servir clientes IPv4 e IPv6.
-		addr := resp.DNSAddr
-		hasV4 := strings.Contains(addr, "0.0.0.0")
-		hasV6 := strings.Contains(addr, "[") // [::]:53
-		if hasV4 && hasV6 {
-			return doctorResult{
-				Name: "DNS", Status: statusPass,
-				Message: fmt.Sprintf("sinkhole ativo em %s (upstream %s, dual-stack)", addr, resp.DNSUpstream),
-			}
-		}
-		if hasV4 {
-			return doctorResult{
-				Name: "DNS", Status: statusWarn,
-				Message: fmt.Sprintf("sinkhole ativo em %s (só IPv4 — clientes IPv6 não alcançam o sinkhole)", addr),
-				Fix:     "Habilite IPv6 na máquina ou verifique se o binário suporta dual-stack.",
-			}
-		}
-		return doctorResult{
-			Name: "DNS", Status: statusPass,
-			Message: fmt.Sprintf("sinkhole ativo em %s (upstream %s)", addr, resp.DNSUpstream),
-		}
-	default:
-		return doctorResult{
-			Name: "DNS", Status: statusFail,
-			Message: "sinkhole habilitado, mas não está ouvindo: " + resp.DNSBindError,
-			Fix:     "Porta 53 em uso? Desative o ICS (Windows) ou libere a porta e reinicie o daemon.",
-		}
-	}
-}
 
-// checkDNSInbound verifica se as regras de firewall inbound para a porta 53
-// existem no Windows (FocusGuard_DNS_Inbound_UDP e _TCP). Sem essas regras,
-// dispositivos na rede não conseguem consultar o sinkhole — o daemon escuta,
-// mas o firewall bloqueia as conexões de entrada. No Linux é no-op (iptables
-// típico aceita INPUT por padrão).
-func checkDNSInbound(env doctorEnv) doctorResult {
-	if runtime.GOOS != "windows" {
-		return doctorResult{Name: "DNS inbound", Status: statusPass, Message: "firewall inbound gerenciado pelo SO (Linux)"}
-	}
-	if env.client == nil {
-		return doctorResult{Name: "DNS inbound", Status: statusWarn, Message: "cliente IPC ausente", Fix: ""}
-	}
-	resp, err := env.client.Send(ipc.Request{Action: "dns-status"})
-	if err != nil || !resp.Success || !resp.DNSEnabled || !resp.DNSListening {
-		return doctorResult{Name: "DNS inbound", Status: statusPass, Message: "sinkhole desligado — regras inbound não necessárias"}
-	}
-	if env.exec == nil {
-		return doctorResult{Name: "DNS inbound", Status: statusWarn, Message: "não foi possível verificar regras (executor ausente)", Fix: ""}
-	}
-	var missing []string
-	for _, rule := range []string{"FocusGuard_DNS_Inbound_UDP", "FocusGuard_DNS_Inbound_TCP"} {
-		out, err := env.exec("netsh", "advfirewall", "firewall", "show", "rule", "name="+rule)
-		if err != nil || !strings.Contains(strings.ToLower(string(out)), "rule name") {
-			missing = append(missing, rule)
-		}
-	}
-	if len(missing) > 0 {
-		return doctorResult{
-			Name: "DNS inbound", Status: statusFail,
-			Message: "regras inbound ausentes: " + strings.Join(missing, ", "),
-			Fix:     "Reinicie o daemon ou rode 'focusguard dns start' para recriar as regras.",
-		}
-	}
-	return doctorResult{Name: "DNS inbound", Status: statusPass, Message: "regras FocusGuard_DNS_Inbound_{UDP,TCP} presentes"}
-}
 
 // ---------------------------------------------------------------------------
 // Saída

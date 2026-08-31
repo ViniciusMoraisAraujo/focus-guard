@@ -7,6 +7,19 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
+## [0.22.0] - 2026-08-31
+
+### 🧹 Remoção e Simplificação de Arquitetura
+
+- **Remoção Completa do Módulo de DNS Sinkhole ("Rei da Rede")** —
+  eliminação integral do servidor DNS embutido (porta 53 UDP/TCP), do configurador de adaptadores de rede OS-level (`netdns`), da telemetria de consultas bloqueadas e do suporte a políticas por dispositivo/IP da rede local.
+- **Limpeza de Domínio, IPC e CLI** —
+  exclusão dos pacotes `internal/domain/dns`, `internal/domain/devices`, `internal/domain/telemetry`, `internal/infrastructure/dnsserver`, `internal/infrastructure/netdns`, remoção dos comandos CLI `focusguard dns` e `focusguard devices`, diagnósticos de DNS no `focusguard doctor` e das ações wire associadas no IPC.
+- **Refatoração da Interface Web (UI)** —
+  remoção das telas *Rede* e *Guia*, do card de status DNS no Dashboard e dos endpoints correspondentes no cliente de API TypeScript.
+- **Descontinuação da Edição Server e Remoção de Dependência** —
+  unificação no instalador MSI padrão desktop e remoção da biblioteca `github.com/miekg/dns` do `go.mod`.
+
 ## [0.21.1] - 2026-08-31
 
 ### 🧹 Limpeza e Consistência

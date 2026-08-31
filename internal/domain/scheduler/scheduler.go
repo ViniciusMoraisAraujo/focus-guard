@@ -215,29 +215,15 @@ type Scheduler struct {
 	// panicaria — o teardown do daemon pode chamá-lo mais de uma vez.
 	stopOnce sync.Once
 	dns      *dnsCache
-	// dnsEnabled persists whether the DNS sinkhole server should run. It is a
-	// setting, not a live state: starting/stopping the actual listener is the
-	// daemon's job, which reads this after the bootstrap Reconcile.
-	dnsEnabled bool
-	// dnsUpstream persists the upstream resolver (host:port) the sinkhole
-	// forwards allowed queries to. Empty means the daemon default
-	// (dnsserver.DefaultUpstream). Like dnsEnabled, it is a setting mirrored
-	// to disk, not live state.
-	dnsUpstream string
 	// lastKnownTime é a leitura do wall clock que o daemon confiou por último
 	// (Clock Tamper Protection — Fase 2). O guard a lê para detectar saltos do
 	// relógio entre restarts; persiste no state.json junto com os blocos.
 	lastKnownTime time.Time
 	// interceptorEnabled persiste se a Focus Interceptor Page está ativa
-	// (Fase 3): quando ligada, o hosts/DNS apontam o bloqueado para o próprio
+	// (Fase 3): quando ligada, o hosts aponta o bloqueado para o próprio
 	// host e o daemon serve uma página explicando o bloqueio em vez de
-	// "conexão recusada". Desligada por default (muda a resposta do DNS).
+	// "conexão recusada". Desligada por default.
 	interceptorEnabled bool
-	// deviceRules é o catálogo de políticas por dispositivo (Fase 4 — edição
-	// Server): IsBlockedFor o consulta ANTES da regra global; um device com
-	// block_all/allow_list decide sozinho, inherit/IP desconhecido cai na
-	// regra global. Nil = feature desligada (comportamento clássico).
-	deviceRules DeviceRuleStore
 	// snapshot is the immutable read cache for ListBlocks, rebuilt on demand so
 	// query paths never iterate the source-of-truth map. Writers only mark it
 	// stale (invalidateSnapshot); the first reader after a mutation rebuilds it
@@ -381,11 +367,10 @@ func refreshResolvedIPs(entries []refreshEntry, timeout time.Duration, resolve f
 }
 
 // statesEqual reports whether two states are semantically identical. Any
-// difference (missing/extra domain, altered timestamps or IPs, a flipped
-// DNS-enabled flag) means the disk copy no longer mirrors the in-memory state
-// and must be restored.
+// difference (missing/extra domain, altered timestamps or IPs) means the disk copy
+// no longer mirrors the in-memory state and must be restored.
 func statesEqual(a, b *store.State) bool {
-	if a.DNSEnabled != b.DNSEnabled || a.DNSUpstream != b.DNSUpstream || a.InterceptorEnabled != b.InterceptorEnabled {
+	if a.InterceptorEnabled != b.InterceptorEnabled {
 		return false
 	}
 	if len(a.Blocks) != len(b.Blocks) {
@@ -414,8 +399,6 @@ func (s *Scheduler) ramState() *store.State {
 	return &store.State{
 		Version:            1,
 		Blocks:             blocks,
-		DNSEnabled:         s.dnsEnabled,
-		DNSUpstream:        s.dnsUpstream,
 		LastKnownTime:      s.lastKnownTime,
 		InterceptorEnabled: s.interceptorEnabled,
 	}
@@ -467,8 +450,6 @@ func (s *Scheduler) bootstrapLocked() error {
 	for domain, block := range state.Blocks {
 		s.blocks[domain] = block
 	}
-	s.dnsEnabled = state.DNSEnabled
-	s.dnsUpstream = state.DNSUpstream
 	s.lastKnownTime = state.LastKnownTime
 	s.interceptorEnabled = state.InterceptorEnabled
 	s.invalidateSnapshot()
@@ -1034,107 +1015,6 @@ func (s *Scheduler) BlockRemaining(domain string) time.Duration {
 		labels = labels[i+1:]
 	}
 	return 0
-}
-
-// DeviceRuleStore is the per-device policy catalog consulted by
-// IsBlockedFor (Fase 4 — edição Server). Satisfied by *devices.Store; the
-// scheduler keeps it as an interface so the ipc package never imports the
-// devices domain (DIP — mesmo padrão das demais dependências de domínio).
-type DeviceRuleStore interface {
-	IsBlocked(domain, clientIP string) (blocked bool, decided bool)
-}
-
-// SetDeviceRules wires the per-device policy catalog (Fase 4). Nil disables
-// the feature — IsBlockedFor falls back to the global rule. The scheduler
-// only reads the store (never mutates it); the devices IPC handlers own the
-// catalog's lifecycle.
-func (s *Scheduler) SetDeviceRules(r DeviceRuleStore) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.deviceRules = r
-}
-
-// IsBlockedFor reports whether the sinkhole should answer a query for domain
-// coming from clientIP (Fase 4 — edição Server): a device-specific rule
-// (block_all/allow_list) decides first; inherit/unknown IPs fall through to
-// the global IsBlocked. The DNS server passes the query's source address;
-// the desktop daemon (no devices store wired) behaves exactly like IsBlocked.
-func (s *Scheduler) IsBlockedFor(domain, clientIP string) bool {
-	s.mu.RLock()
-	rules := s.deviceRules
-	s.mu.RUnlock()
-	if rules != nil {
-		if blocked, decided := rules.IsBlocked(domain, clientIP); decided {
-			return blocked
-		}
-	}
-	return s.IsBlocked(domain)
-}
-
-// SetDNSEnabled persists whether the DNS sinkhole server should run. It only
-// touches the state mirror — starting/stopping the actual listener is the
-// daemon's job. Setting the same value is a no-op.
-func (s *Scheduler) SetDNSEnabled(enabled bool) error {
-	s.mu.Lock()
-	if s.dnsEnabled == enabled {
-		s.mu.Unlock()
-		return nil
-	}
-	original := s.dnsEnabled
-	s.dnsEnabled = enabled
-	if err := s.store.Save(s.ramState()); err != nil {
-		// Reverte a RAM: sem o disco persistido, o setting não pode ficar
-		// divergente até o próximo boot (mesmo padrão de Block/ExtendBlock).
-		s.dnsEnabled = original
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-	// Ajuste de configuração visível no status (DNSEnabled) — avisa o hub
-	// (Fase 7) para a UI refrescar sem polling.
-	s.notifyChange()
-	return nil
-}
-
-// DNSEnabled reports whether the DNS sinkhole server should be running
-// (persisted setting, not the live listener state).
-func (s *Scheduler) DNSEnabled() bool {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.dnsEnabled
-}
-
-// SetDNSUpstream persists the upstream resolver (host:port) the DNS sinkhole
-// forwards allowed queries to. It only touches the state mirror — applying the
-// change to the live listener is the daemon's job (Controller.SetUpstream).
-// Setting the same value is a no-op.
-func (s *Scheduler) SetDNSUpstream(upstream string) error {
-	s.mu.Lock()
-	if s.dnsUpstream == upstream {
-		s.mu.Unlock()
-		return nil
-	}
-	original := s.dnsUpstream
-	s.dnsUpstream = upstream
-	if err := s.store.Save(s.ramState()); err != nil {
-		// Reverte a RAM: sem o disco persistido, o setting não pode ficar
-		// divergente até o próximo boot (mesmo padrão de Block/ExtendBlock).
-		s.dnsUpstream = original
-		s.mu.Unlock()
-		return err
-	}
-	s.mu.Unlock()
-	// Ajuste de configuração visível no status (DNSUpstream) — avisa o hub
-	// (Fase 7) para a UI refrescar sem polling.
-	s.notifyChange()
-	return nil
-}
-
-// DNSUpstream reports the persisted upstream resolver ("" = daemon default).
-func (s *Scheduler) DNSUpstream() string {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.dnsUpstream
 }
 
 // SetInterceptorEnabled persists the Focus Interceptor Page flag (Fase 3).

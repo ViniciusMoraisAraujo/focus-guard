@@ -1,7 +1,6 @@
 import type {
   ApiRequest,
   ApiResponse,
-  Device,
   ReportConfig,
   ScheduleRule,
 } from "./types";
@@ -251,24 +250,10 @@ export const api = {
   // Histórico de burla
   tamperLog: () => action({ action: "tamper-log" }),
 
-  // Servidor DNS sinkhole ("Rei da Rede")
-  dnsStart: () => action({ action: "dns-start" }),
-  dnsStop: () => action({ action: "dns-stop" }),
-  dnsStatus: () => action({ action: "dns-status" }),
-  dnsSetUpstream: (upstream: string) =>
-    action({ action: "dns-set-upstream", upstream }),
-  dnsTelemetry: (limit?: number) =>
-    action({ action: "dns-telemetry", telemetry_limit: limit }),
-
   // Focus Interceptor Page (Fase 3)
   interceptorSet: (enabled: boolean) =>
     action({ action: "interceptor-set", interceptor_enabled: enabled }),
   interceptorStatus: () => action({ action: "interceptor-status" }),
-
-  // Dispositivos (Fase 4 — edição Server)
-  devicesList: () => action({ action: "devices-list" }),
-  devicesUpsert: (device: Device) => action({ action: "devices-upsert", device }),
-  devicesRemove: (ip: string) => action({ action: "devices-remove", device_ip: ip }),
 
   // Conquistas (Fase 5.2)
   achievements: () => action({ action: "achievements-get" }),

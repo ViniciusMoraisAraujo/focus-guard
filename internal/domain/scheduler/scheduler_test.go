@@ -1726,27 +1726,23 @@ func TestScheduler_SetOnChange_NotifiesOnMutation(t *testing.T) {
 	if _, err := sched.BlockDomains([]string{"a.com", "b.com"}, time.Hour); err != nil {
 		t.Fatalf("BlockDomains: %v", err)
 	}
-	// Ajustes de configuração do DNS (visíveis no status) também avisam — o
-	// review da Fase 7 apontou o gap de staleness do status DNS.
-	if err := sched.SetDNSEnabled(true); err != nil {
-		t.Fatalf("SetDNSEnabled: %v", err)
-	}
-	if err := sched.SetDNSUpstream("1.1.1.1"); err != nil {
-		t.Fatalf("SetDNSUpstream: %v", err)
+	// Ajuste de configuração do interceptor (visível no status) também avisa.
+	if err := sched.SetInterceptorEnabled(true); err != nil {
+		t.Fatalf("SetInterceptorEnabled: %v", err)
 	}
 	// Repetir o mesmo valor é no-op — não notifica (sem evento espúrio).
 	before := calls
-	if err := sched.SetDNSEnabled(true); err != nil {
-		t.Fatalf("SetDNSEnabled repetido: %v", err)
+	if err := sched.SetInterceptorEnabled(true); err != nil {
+		t.Fatalf("SetInterceptorEnabled repetido: %v", err)
 	}
 	if before != calls {
-		t.Errorf("SetDNSEnabled com o mesmo valor notificou (esperava no-op)")
+		t.Errorf("SetInterceptorEnabled com o mesmo valor notificou (esperava no-op)")
 	}
 
 	mu.Lock()
 	got := calls
 	mu.Unlock()
-	if got < 5 {
-		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 5 (Block/Extend/Batch/DNS)", got)
+	if got < 4 {
+		t.Fatalf("SetOnChange chamado %d vezes, esperava >= 4 (Block/Extend/Batch/Interceptor)", got)
 	}
 }

@@ -6,13 +6,11 @@ import (
 
 	"focusguard/internal/domain/achievements"
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/domain/devices"
 	"focusguard/internal/domain/policy"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
-	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/infrastructure/tamper"
 	"focusguard/internal/transport/metrics"
 )
@@ -63,9 +61,6 @@ type Request struct {
 	// hashed (bcrypt) by the daemon before anything reaches disk.
 	UserName     string `json:"user_name,omitempty"`
 	UserPassword string `json:"user_password,omitempty"`
-	// Upstream drives the dns-set-upstream action: the resolver (host[:port])
-	// the DNS sinkhole forwards allowed queries to.
-	Upstream string `json:"upstream,omitempty"`
 	// Extend/Replace resolve the conflict of the user-driven block action:
 	// by default a block on an already-active domain returns Conflict=true so
 	// the CLI/Web can ask the user; --extend sums the duration to the current
@@ -81,22 +76,11 @@ type Request struct {
 	// Reset clears the daemon's latency metrics before snapshotting (Fase 8 —
 	// "focusguard metrics --reset" marks the start of a measurement window).
 	Reset bool `json:"reset,omitempty"`
-	// TelemetryLimit bounds the dns-telemetry entries (0 = daemon default 50).
-	TelemetryLimit int `json:"telemetry_limit,omitempty"`
 	// InterceptorEnabled drives the interceptor-set action (Fase 3): whether
 	// the Focus Interceptor Page should serve blocked domains.
 	InterceptorEnabled bool `json:"interceptor_enabled,omitempty"`
-	// Device drives the devices-upsert action (Fase 4 — edição Server): the
-	// per-device policy override for a network client. devices-remove uses
-	// DeviceIP only. Ponteiro de propósito: omitempty não omite structs no
-	// encoding/json, e um device vazio não pode vazar em TODA requisição.
-	Device *devices.Device `json:"device,omitempty"`
-	// DeviceIP drives devices-remove: the IP of the device whose rule is
-	// being deleted.
-	DeviceIP string `json:"device_ip,omitempty"`
 	// ReportConfig drives reports-config-set (Fase 5.1): the weekly report
-	// schedule (enabled, day, hour, minute, export path). Ponteiro pelo mesmo
-	// motivo de Device (omitempty em struct não omite).
+	// schedule (enabled, day, hour, minute, export path).
 	ReportConfig *reports.Config `json:"report_config,omitempty"`
 	// ReportExportPath drives reports-generate: an optional path override
 	// (empty = the configured export folder).
@@ -191,38 +175,10 @@ type Response struct {
 	// the next system boot (MoveFileEx + MOVEFILE_DELAY_UNTIL_REBOOT). The
 	// daemon keeps running the old version until then.
 	UpdatePendingReboot bool `json:"update_pending_reboot,omitempty"`
-	// DNSEnabled reports whether the DNS sinkhole server should be running
-	// (persisted setting). DNSListening/DNSAddr/DNSUpstream/DNSQueries/
-	// DNSBlocked describe its live state and counters (dns-status/status);
-	// DNSBindError surfaces a port-53 bind failure so the UI/CLI can guide the
-	// user to disable ICS/dnscache.
-	DNSEnabled   bool   `json:"dns_enabled,omitempty"`
-	DNSListening bool   `json:"dns_listening,omitempty"`
-	DNSAddr      string `json:"dns_addr,omitempty"`
-	DNSUpstream  string `json:"dns_upstream,omitempty"`
-	DNSQueries   uint64 `json:"dns_queries,omitempty"`
-	DNSBlocked   uint64 `json:"dns_blocked,omitempty"`
-	DNSBindError string `json:"dns_bind_error,omitempty"`
-	// LanIP/LanMAC report the machine's own IPv4 and MAC on the LAN
-	// (status) — the values the user enters in the router's DHCP reservation
-	// for the sinkhole. Best-effort: empty without a default route.
-	LanIP  string `json:"lan_ip,omitempty"`
-	LanMAC string `json:"lan_mac,omitempty"`
-	// Telemetry reports the DNS sinkhole's blocked-query activity
-	// (dns-telemetry): recent entries, the aggregate summary per domain and
-	// the total count. Additive — old clients ignore it.
-	TelemetryEntries []telemetry.BlockedQuery `json:"telemetry_entries,omitempty"`
-	TelemetrySummary []telemetry.Summary      `json:"telemetry_summary,omitempty"`
-	TelemetryTotal   int                      `json:"telemetry_total,omitempty"`
-	// TelemetryLimit echoes the requested limit so the UI can paginate (0 =
-	// daemon default applied).
-	TelemetryLimit int `json:"telemetry_limit,omitempty"`
 	// InterceptorEnabled reports the persisted Focus Interceptor Page flag
 	// (Fase 3) — additive, old clients ignore it.
 	InterceptorEnabled bool `json:"interceptor_enabled,omitempty"`
-	// Devices lists the per-device policies (devices-list, Fase 4 — edição
-	// Server) — additive, old clients ignore it.
-	Devices []devices.Device `json:"devices,omitempty"` // ReportConfig carries the weekly report schedule (reports-config-get,
+	// ReportConfig carries the weekly report schedule (reports-config-get,
 	// Fase 5.1) and ReportPath the generated files (reports-generate).
 	// Ponteiro de propósito (omitempty em struct não omite — mesmo padrão de
 	// Pomodoro/Stats).

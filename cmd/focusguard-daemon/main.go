@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log"
-	"net"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -19,8 +18,6 @@ import (
 	"focusguard/internal/domain/apps"
 	"focusguard/internal/domain/blocks"
 	"focusguard/internal/domain/clockguard"
-	"focusguard/internal/domain/devices"
-	"focusguard/internal/domain/dns"
 	"focusguard/internal/domain/goal"
 	interceptordomain "focusguard/internal/domain/interceptor"
 	"focusguard/internal/domain/ipcerr"
@@ -30,14 +27,11 @@ import (
 	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
 	"focusguard/internal/domain/scheduler"
-	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/domain/user"
 	"focusguard/internal/domain/users"
-	"focusguard/internal/infrastructure/dnsserver"
 	"focusguard/internal/infrastructure/enforcer"
 	"focusguard/internal/infrastructure/hostswatch"
 	"focusguard/internal/infrastructure/interceptor"
-	"focusguard/internal/infrastructure/netdns"
 	"focusguard/internal/infrastructure/ntp"
 	"focusguard/internal/infrastructure/processguard"
 	"focusguard/internal/infrastructure/statewatch"
@@ -201,39 +195,7 @@ func startProcessGuard(sched processguard.ActivityChecker, denylist []string) pr
 	return pg
 }
 
-// mergeDNSWire projeta o Status de domínio do DNS (dns.Status) no wire
-// (ipc.Response.DNS*). Vive no composition root porque conhece os dois lados
-// — o pacote dns usa tipos próprios (DIP, pós-reorg item 2).
-func mergeDNSWire(resp *ipc.Response, st dns.Status) {
-	resp.DNSEnabled = st.Enabled
-	resp.DNSListening = st.Listening
-	resp.DNSAddr = st.Addr
-	resp.DNSUpstream = st.Upstream
-	resp.DNSQueries = st.Queries
-	resp.DNSBlocked = st.Blocked
-	resp.DNSBindError = st.BindError
-}
 
-// dnsCtrlAdapter projeta o *dnsserver.Controller real no ipc.DNSController: o
-// ipc usa tipo próprio de status (DNSStatus — pós-reorg item 1) e o pacote
-// dns (domínio) usa dnsserver.Status; este adapter fica no composition root
-// porque conhece os dois lados.
-type dnsCtrlAdapter struct{ c *dnsserver.Controller }
-
-func (a dnsCtrlAdapter) Start() error                      { return a.c.Start() }
-func (a dnsCtrlAdapter) Stop() error                       { return a.c.Stop() }
-func (a dnsCtrlAdapter) SetUpstream(upstream string) error { return a.c.SetUpstream(upstream) }
-func (a dnsCtrlAdapter) Status() ipc.DNSStatus {
-	st := a.c.Status()
-	return ipc.DNSStatus{
-		Listening: st.Listening,
-		Addr:      st.Addr,
-		Upstream:  st.Upstream,
-		Queries:   st.Queries,
-		Blocked:   st.Blocked,
-		BindError: st.BindError,
-	}
-}
 
 // clockLoggerAdapter adapta o *tamper.Recorder (Log(Event)) ao
 // clockguard.Logger (Log(source, action, detail)).
@@ -445,57 +407,10 @@ func startClockGuardWorker(guard *clockguard.Guard, interval time.Duration) func
 	return func() { once.Do(func() { close(stop) }) }
 }
 
-// localIP4 devolve o IP IPv4 da interface de saída (a rota default), usado
-// pela Interceptor Page no modo Server: o sinkhole responde os bloqueados com
-// este endereço para o navegador da rede conectar no listener :80. Best-effort:
-// vazio sem interface de saída.
-func localIP4() string {
-	conn, err := net.Dial("udp", "8.8.8.8:80")
-	if err != nil {
-		return ""
-	}
-	defer conn.Close()
-	return strings.Split(conn.LocalAddr().String(), ":")[0]
-}
-
-// dnsPortOpener é a capacidade opcional do enforcer de abrir a porta 53
-// (inbound) no firewall — implementada pelo enforcer Windows; no Linux é no-op
-// e plataformas sem a capacidade simplesmente não abrem nada. O type-assert
-// local evita adicionar o método à interface Enforcer (e quebrar os fakes de
-// teste do scheduler/ipc/hostswatch).
-type dnsPortOpener interface {
-	AllowDNSInbound() error
-}
-
-// dnsCacheFlusher é a capacidade opcional do enforcer de limpar o cache DNS do
-// SO (ipconfig /flushdns no Windows; no-op no Linux).
-type dnsCacheFlusher interface {
-	FlushDNSCache() error
-}
-
-// setupDNSHostMachine prepara a máquina hospedeira para ser o servidor DNS da
-// rede ("Plug & Play" — o usuário só configura o IP no roteador): abre a porta
-// 53 para conexões de ENTRADA (UDP/TCP) e limpa o cache DNS local para a
-// máquina começar a resolver pelo sinkhole. Best-effort: falha loga e não
-// derruba o daemon. Idempotente.
-func setupDNSHostMachine(enf enforcer.Enforcer) {
-	if opener, ok := enf.(dnsPortOpener); ok {
-		if err := opener.AllowDNSInbound(); err != nil {
-			log.Printf("[FocusGuard Daemon] Falha ao abrir a porta 53 no firewall (inbound): %v", err)
-		}
-	}
-	if flusher, ok := enf.(dnsCacheFlusher); ok {
-		if err := flusher.FlushDNSCache(); err != nil {
-			log.Printf("[FocusGuard Daemon] Falha ao limpar o cache DNS: %v", err)
-		}
-	}
-}
-
 // interceptorLifecycle é o estado do listener HTTP(S) da Interceptor Page
 // (Fase 3): os servers (best-effort — porta 80/443 ocupada não derruba o
-// daemon) e o IP respondido pelo DNS quando ativo. O daemon os sobe no boot
-// quando o flag persistido está ligado e os troca quando interceptor-set muda
-// o flag.
+// daemon). O daemon os sobe no boot quando o flag persistido está ligado e os
+// troca quando interceptor-set muda o flag.
 //
 // No Desktop os listeners são DUAL-STACK loopback (127.0.0.1 + [::1]): o
 // hosts do enforcer escreve as duas entradas (IPv4 e IPv6) e navegadores
@@ -513,10 +428,8 @@ type interceptorLifecycle struct {
 	mu        sync.Mutex
 	checker   *scheduler.Scheduler
 	servers   []*interceptor.Server
-	dns       *dnsserver.Controller
 	bindAddrs []string // HTTP (:80)
 	tlsAddrs  []string // HTTPS (:443)
-	dnsAnswer string
 	// caDir é onde a CA local vive (ao lado do state.json). Vazio = sem CA
 	// (fallback auto-assinado).
 	caDir string
@@ -562,9 +475,9 @@ func (il *interceptorLifecycle) ensureCA() {
 	log.Printf("[FocusGuard Interceptor] CA local no trust store — página de bloqueio HTTPS abre sem aviso de certificado")
 }
 
-// set aplica o novo estado do flag: sobe/derruba os listeners e ajusta a
-// resposta do DNS (IP local vs endereço morto). Idempotente — cada bind é
-// best-effort (porta 80 ocupada só desativa aquele listener, nunca o daemon).
+// set aplica o novo estado do flag: sobe/derruba os listeners. Idempotente —
+// cada bind é best-effort (porta 80 ocupada só desativa aquele listener,
+// nunca o daemon).
 func (il *interceptorLifecycle) set(enabled bool) {
 	il.mu.Lock()
 	defer il.mu.Unlock()
@@ -597,18 +510,12 @@ func (il *interceptorLifecycle) set(enabled bool) {
 				log.Printf("[FocusGuard Interceptor] página de bloqueio ativa em %s (HTTPS)", srv.Addr())
 			}
 		}
-		if il.dns != nil {
-			il.dns.SetInterceptIP(ipOrNil(il.dnsAnswer))
-		}
 		return
 	}
 	for _, srv := range il.servers {
 		_ = srv.Stop()
 	}
 	il.servers = nil
-	if il.dns != nil {
-		il.dns.SetInterceptIP(nil)
-	}
 }
 
 // stop derruba os listeners (shutdown do daemon).
@@ -646,14 +553,6 @@ func registerInterceptorSet(srv *ipc.Server, sched *scheduler.Scheduler, onChang
 	}.Handler())
 }
 
-// ipOrNil converte um endereço IPv4 textual em net.IP (nil quando vazio).
-func ipOrNil(s string) net.IP {
-	if s == "" {
-		return nil
-	}
-	return net.ParseIP(s)
-}
-
 var serviceStopCh = make(chan struct{})
 var daemonDoneCh = make(chan struct{})
 
@@ -678,29 +577,6 @@ func getStateFilePath() string {
 		return filepath.Join(os.Getenv("PROGRAMDATA"), "FocusGuard", "state.json")
 	}
 	return "/var/lib/focusguard/state.json"
-}
-
-// serverRoleFileName is the empty marker the server MSI drops next to the
-// daemon to flag the headless "Server" edition. The desktop edition never
-// ships it.
-const serverRoleFileName = "server.role"
-
-// isServerEdition reports whether the daemon runs in the headless "Server"
-// edition (network-wide DNS sinkhole machine). It is the pure check on a
-// directory, exposed for tests via isServerEditionFor.
-func isServerEdition() bool {
-	exe, err := osExecutable()
-	if err != nil {
-		return false
-	}
-	return isServerEditionFor(filepath.Dir(exe))
-}
-
-// isServerEditionFor is the pure, testable directory check behind
-// isServerEdition.
-func isServerEditionFor(dir string) bool {
-	_, err := os.Stat(filepath.Join(dir, serverRoleFileName))
-	return err == nil
 }
 
 func startHostswatch(enf hostswatch.Enforcer, sched hostswatch.Scheduler) *hostswatch.HostsWatcher {
@@ -986,15 +862,7 @@ func runDaemon() bool {
 
 	statePath := getStateFilePath()
 
-	// Edição Server: o MSI server instala um marcador vazio "server.role" ao
-	// lado do daemon. No PRIMEIRO boot (sem state.json ainda) o DNS sinkhole
-	// nasce habilitado — a máquina é o "Rei da Rede" desde a instalação.
-	// Depois disso o flag persistido manda; a edição desktop nunca tem o
-	// marcador e segue com o DNS desligado por padrão.
-	firstBoot := false
-	if _, err := os.Stat(statePath); os.IsNotExist(err) {
-		firstBoot = true
-	}
+
 
 	st, err := store.NewStore(statePath)
 	if err != nil {
@@ -1078,14 +946,6 @@ func runDaemon() bool {
 	// goroutine vazava (bug-hunt Etapa 4).
 	components = append(components, daemon.StopOnly(sched.Stop))
 
-	if firstBoot && isServerEdition() {
-		if err := sched.SetDNSEnabled(true); err != nil {
-			log.Printf("[FocusGuard Daemon] Edição Server: falha ao habilitar DNS no primeiro boot: %v", err)
-		} else {
-			log.Println("[FocusGuard Daemon] Edição Server detectada — DNS habilitado no primeiro boot.")
-		}
-	}
-
 	watchdogSec := getWatchdogSec()
 	wd := watchdog.New(sched, watchdogSec)
 	go wd.Start()
@@ -1135,87 +995,19 @@ func runDaemon() bool {
 	// (CLI) ou GET /api/metrics (web).
 	server.SetMetrics(metrics.New(256))
 
-	// DNS Sinkhole ("Rei da Rede"): servidor DNS local (porta 53) que responde
-	// 0.0.0.0 para domínios bloqueados e encaminha o resto ao upstream
-	// (Cloudflare Security 1.1.1.2). Não depende de sessão de foco nem do
-	// arquivo hosts — cobre a rede inteira. Se o flag persistido estiver ativo,
-	// o servidor sobe junto com o daemon. Bind é best-effort: porta 53 ocupada
-	// não derruba o daemon (fica reportado no dns-status).
-	// Upstream persistido via dns-set-upstream (web/CLI) ou o padrão
-	// Cloudflare Security 1.1.1.2 — o daemon constrói o controller com o
-	// valor em disco para o boot usar o upstream que o usuário escolheu.
-	dnsUpstream := sched.DNSUpstream()
-	if dnsUpstream == "" {
-		dnsUpstream = dnsserver.DefaultUpstream
-	}
-	dnsSrv := dnsserver.NewController(sched, dnsserver.DefaultBindAddr, dnsUpstream)
-	// Telemetria do sinkhole (Fase 1.2 do features-plan): log JSONL das
-	// queries bloqueadas (domínio + IP de origem) exposto no painel via
-	// dns-telemetry. O hook é não-bloqueante e best-effort — uma falha de
-	// escrita nunca afeta o caminho do DNS.
-	telRec := telemetry.NewRecorder(filepath.Join(filepath.Dir(statePath), "telemetry.jsonl"))
-	telRec.PurgeOld()
-	dnsSrv.SetOnBlocked(func(domain, clientIP string) {
-		telRec.Record(telemetry.BlockedQuery{Domain: domain, ClientIP: clientIP, Timestamp: time.Now()})
-	})
-	server.SetDNS(dnsCtrlAdapter{c: dnsSrv})
-	netDNS := netdns.NewConfigurator()
-	// Hook DoH do dns-start: fechado pela porta 853 (browsers com DoH embutido
-	// ignorariam o sinkhole). Idempotente — o scheduler também o aplica
-	// enquanto houver blocos ativos. Passado ao handler de domínio (dns.Start)
-	// no composition root abaixo; o ipc não o consome mais.
-	dohHook := func() {
-		if err := enf.BlockDoH(); err != nil {
-			log.Printf("[FocusGuard Daemon] Falha ao bloquear DoH (porta 853): %v", err)
-		}
-	}
-	if sched.DNSEnabled() {
-		if err := dnsSrv.Start(); err != nil {
-			log.Printf("[FocusGuard Daemon] DNS habilitado, mas não subiu: %v", err)
-		} else {
-			log.Printf("[FocusGuard Daemon] Servidor DNS ativo em %s (upstream %s)", dnsSrv.Addr(), dnsUpstream)
-			// Sinkhole de rede ("Plug & Play"): abre a porta 53 inbound no
-			// firewall e limpa o cache DNS local, para os dispositivos da LAN
-			// alcançarem o servidor e a máquina resolver pelo sinkhole
-			// (best-effort).
-			setupDNSHostMachine(enf)
-			if configured, err := netDNS.SetLocalDNS(); err != nil {
-				log.Printf("[FocusGuard Daemon] aviso: falha ao conectar adaptadores de rede ao DNS local: %v", err)
-			} else if len(configured) > 0 {
-				log.Printf("[FocusGuard Daemon] adaptadores de rede conectados ao DNS local: %v", configured)
-			}
-		}
-	}
-	components = append(components, daemon.StopOnly(func() {
-		if restored, err := netDNS.RestoreDNS(); err == nil && len(restored) > 0 {
-			log.Printf("[FocusGuard Daemon] adaptadores de rede restaurados para DHCP no shutdown: %v", restored)
-		}
-		_ = dnsSrv.Stop()
-	}))
-
 	// Focus Interceptor Page (Fase 3): listener HTTP :80 + HTTPS :443
 	// best-effort que serve a página de bloqueio (com frase motivacional)
 	// quando o flag persistido está ativo. Desktop: loopback dual-stack
 	// (127.0.0.1 + ::1, casando com as duas entradas que o enforcer escreve
-	// no hosts) — a página funciona na edição padrão. Server: todas as
-	// interfaces, e o DNS responde os bloqueados com o IP local (em vez de
-	// 0.0.0.0) para a rede conectar no listener. O :443 cobre sites
+	// no hosts) — a página funciona na edição padrão. O :443 cobre sites
 	// HTTPS-only (HSTS) com cert auto-assinado por SNI. Portas ocupadas nunca
 	// derrubam o daemon — o bloqueio continua valendo sem a página.
 	interceptorBinds := []string{"127.0.0.1:80", "[::1]:80"}
 	interceptorTLS := []string{"127.0.0.1:443", "[::1]:443"}
-	interceptorAnswer := ""
-	if isServerEdition() {
-		interceptorBinds = []string{interceptor.DefaultBindAddr}
-		interceptorTLS = []string{interceptor.DefaultTLSBindAddr}
-		interceptorAnswer = localIP4()
-	}
 	il := &interceptorLifecycle{
 		checker:   sched,
-		dns:       dnsSrv,
 		bindAddrs: interceptorBinds,
 		tlsAddrs:  interceptorTLS,
-		dnsAnswer: interceptorAnswer,
 		caDir:     filepath.Join(filepath.Dir(statePath), "ca"),
 	}
 	if sched.InterceptorEnabled() {
@@ -1281,14 +1073,6 @@ func runDaemon() bool {
 	goalStore := goal.NewStore(filepath.Join(filepath.Dir(statePath), "goal.json"))
 	server.SetGoal(goalStore)
 
-	// Regras por dispositivo (Fase 4 — edição Server): catálogo de políticas
-	// por IP persistido em devices.json. O scheduler o consulta em
-	// IsBlockedFor (o DNS server decide pelo IP de origem); as ações
-	// devices-* abaixo são a superfície de edição. Na edição desktop o
-	// catálogo fica vazio e o comportamento é o clássico (sem per-device).
-	deviceStore := devices.NewStore(filepath.Join(filepath.Dir(statePath), "devices.json"))
-	sched.SetDeviceRules(deviceStore)
-
 	// Relatório semanal automático (Fase 5.1): agendamento persistido em
 	// reports.json (dia/hora/pasta). O worker abaixo gera o relatório no
 	// horário configurado (e no boot, se o horário já passou); a ação
@@ -1301,10 +1085,10 @@ func runDaemon() bool {
 	}
 
 	// Composition root (Fase 5): as ações de domínio (block, apps-*,
-	// goal-*, presets, preset-*, user-*, dns-*) são atendidas pelos handlers
+	// goal-*, presets, preset-*, user-*) são atendidas pelos handlers
 	// dos pacotes de domínio (interfaces estreitas, DIP) — não pelos adapters
 	// do ipc. O ipc.Server registra só os handlers de nível servidor
-	// (ping/status/tamper/services); este bloco fecha o registry (34 ações)
+	// (ping/status/tamper/services); este bloco fecha o registry
 	// que o ValidateRegistry abaixo verifica no boot.
 	// blocks via ipc.DomainAction (handlers de domínio com tipos próprios,
 	// adaptados ao wire — pós-reorg item 2). O conflito ask-first devolve o
@@ -1379,62 +1163,8 @@ func runDaemon() bool {
 			return &ipc.Response{Success: true, Goal: out.Goal, Message: out.Message}, nil
 		},
 	}.Handler())
-	// dns via ipc.DomainAction (DIP — pós-reorg item 2).
-	// dns-start também prepara a máquina hospedeira (porta 53 inbound no
-	// firewall + flush do cache DNS + conexão de adaptadores Wi-Fi/Ethernet)
-	// para os dispositivos da rede e a máquina local resolverem pelo sinkhole.
-	hDNSStart := dns.NewStart(dnsSrv, sched, netDNS, func() {
-		dohHook()
-		setupDNSHostMachine(enf)
-	})
-	server.Register(ipc.DomainAction[dns.NoInput, dns.StartResult]{
-		Name:   hDNSStart.Action(),
-		Decode: ipc.NoInputDecode[dns.NoInput](),
-		Handle: hDNSStart.Handle,
-		Encode: func(out *dns.StartResult) (*ipc.Response, error) {
-			resp := &ipc.Response{Success: true, Message: out.Message}
-			mergeDNSWire(resp, out.Status)
-			return resp, nil
-		},
-	}.Handler())
-	hDNSStop := dns.NewStop(dnsSrv, sched, netDNS)
-	server.Register(ipc.DomainAction[dns.NoInput, dns.StopResult]{
-		Name:   hDNSStop.Action(),
-		Decode: ipc.NoInputDecode[dns.NoInput](),
-		Handle: hDNSStop.Handle,
-		Encode: func(out *dns.StopResult) (*ipc.Response, error) {
-			resp := &ipc.Response{Success: true, Message: out.Message}
-			mergeDNSWire(resp, out.Status)
-			return resp, nil
-		},
-	}.Handler())
-	hDNSStatus := dns.NewStatus(dnsSrv, sched, netDNS)
-	server.Register(ipc.DomainAction[dns.NoInput, dns.StatusResult]{
-		Name:   hDNSStatus.Action(),
-		Decode: ipc.NoInputDecode[dns.NoInput](),
-		Handle: hDNSStatus.Handle,
-		Encode: func(out *dns.StatusResult) (*ipc.Response, error) {
-			resp := &ipc.Response{Success: true}
-			mergeDNSWire(resp, out.Status)
-			return resp, nil
-		},
-	}.Handler())
-	hDNSSetUpstream := dns.NewSetUpstream(dnsSrv, sched, netDNS)
-	server.Register(ipc.DomainAction[dns.SetUpstreamInput, dns.SetUpstreamResult]{
-		Name: hDNSSetUpstream.Action(),
-		Decode: func(r *ipc.Request) (*dns.SetUpstreamInput, error) {
-			return &dns.SetUpstreamInput{Upstream: r.Upstream}, nil
-		},
-		Handle: hDNSSetUpstream.Handle,
-		Encode: func(out *dns.SetUpstreamResult) (*ipc.Response, error) {
-			resp := &ipc.Response{Success: true, Message: out.Message}
-			mergeDNSWire(resp, out.Status)
-			return resp, nil
-		},
-	}.Handler())
 	// interceptor-set/interceptor-status via ipc.DomainAction (DIP — pós-reorg
-	// item 2). O onChanged liga/desliga o listener HTTP e a resposta do DNS
-	// (Fase 3) — o mesmo caminho do boot quando o flag persistido está ativo.
+	// item 2). O onChanged liga/desliga o listener HTTP e HTTPS.
 	registerInterceptorSet(server, sched, il.set)
 	hInterceptorStatus := interceptordomain.NewStatus(sched)
 	server.Register(ipc.DomainAction[interceptordomain.NoInput, interceptordomain.StatusResult]{
@@ -1443,42 +1173,6 @@ func runDaemon() bool {
 		Handle: hInterceptorStatus.Handle,
 		Encode: func(out *interceptordomain.StatusResult) (*ipc.Response, error) {
 			return &ipc.Response{Success: true, InterceptorEnabled: out.Status.Enabled}, nil
-		},
-	}.Handler())
-	// devices via ipc.DomainAction (Fase 4 — edição Server). O *devices.Store
-	// satisfaz a Service dos handlers; o scheduler o consulta em IsBlockedFor.
-	hDevicesList := devices.NewList(deviceStore)
-	server.Register(ipc.DomainAction[devices.NoInput, devices.ListResult]{
-		Name:   hDevicesList.Action(),
-		Decode: ipc.NoInputDecode[devices.NoInput](),
-		Handle: hDevicesList.Handle,
-		Encode: func(out *devices.ListResult) (*ipc.Response, error) {
-			return &ipc.Response{Success: true, Devices: out.Devices}, nil
-		},
-	}.Handler())
-	hDevicesUpsert := devices.NewUpsert(deviceStore)
-	server.Register(ipc.DomainAction[devices.UpsertInput, devices.UpsertResult]{
-		Name: hDevicesUpsert.Action(),
-		Decode: func(r *ipc.Request) (*devices.UpsertInput, error) {
-			if r.Device == nil {
-				return nil, ipcerr.New(ipcerr.CodeInvalid, "dispositivo ausente na requisição")
-			}
-			return &devices.UpsertInput{Device: *r.Device}, nil
-		},
-		Handle: hDevicesUpsert.Handle,
-		Encode: func(out *devices.UpsertResult) (*ipc.Response, error) {
-			return &ipc.Response{Success: true, Message: out.Message}, nil
-		},
-	}.Handler())
-	hDevicesRemove := devices.NewRemove(deviceStore)
-	server.Register(ipc.DomainAction[devices.RemoveInput, devices.RemoveResult]{
-		Name: hDevicesRemove.Action(),
-		Decode: func(r *ipc.Request) (*devices.RemoveInput, error) {
-			return &devices.RemoveInput{IP: r.DeviceIP}, nil
-		},
-		Handle: hDevicesRemove.Handle,
-		Encode: func(out *devices.RemoveResult) (*ipc.Response, error) {
-			return &ipc.Response{Success: true, Message: out.Message}, nil
 		},
 	}.Handler())
 	// reports via ipc.DomainAction (Fase 5.1 — mesmo padrão do composition
@@ -1527,24 +1221,6 @@ func runDaemon() bool {
 		Handle: hAchievements.Handle,
 		Encode: func(out *achievements.Result) (*ipc.Response, error) {
 			return &ipc.Response{Success: true, Achievements: out.Achievements}, nil
-		},
-	}.Handler())
-	// dns-telemetry via ipc.DomainAction (DIP — pós-reorg item 2).
-	hTelemetry := telemetry.NewGetHandler(telRec)
-	server.Register(ipc.DomainAction[telemetry.TelemetryInput, telemetry.TelemetryResult]{
-		Name: hTelemetry.Action(),
-		Decode: func(r *ipc.Request) (*telemetry.TelemetryInput, error) {
-			return &telemetry.TelemetryInput{Limit: r.TelemetryLimit}, nil
-		},
-		Handle: hTelemetry.Handle,
-		Encode: func(out *telemetry.TelemetryResult) (*ipc.Response, error) {
-			return &ipc.Response{
-				Success:          true,
-				TelemetryEntries: out.Entries,
-				TelemetrySummary: out.Summary,
-				TelemetryTotal:   out.TotalBlocked,
-				TelemetryLimit:   out.Limit,
-			}, nil
 		},
 	}.Handler())
 	// users via ipc.DomainAction (DIP — pós-reorg item 2).

@@ -55,15 +55,10 @@ type Server struct {
 	// daemon — o lê); o handler de update (domínio, composition root) o lê via
 	// UpdateChecker().
 	updateChecker UpdateChecker
-	// pomodoro/goalStore/dnsCtrl/presets continuam no Server porque o status
-	// (e os adapters de referência) os leem; analytics/schedules/pomodoroPrefs
-	// saíram (Fase 5 + item 1 — os handlers reais os recebem por construtor no
-	// composition root; os adapters de referência via refDeps).
 	pomodoro  PomodoroRunner
 	presets   PresetManager
 	goalStore GoalManager
 	tamperLog TamperProvider
-	dnsCtrl   DNSController
 	eventHub  *eventhub.Hub
 	metrics   *metrics.Registry
 
@@ -185,50 +180,6 @@ type UserManager interface {
 	SetPassword(username, password string) error
 }
 
-// DNSStatus é o snapshot do controller DNS no wire do ipc — tipo próprio do
-// transporte (o ipc não importa dnsserver; o composition root projeta o
-// dnsserver.Status do controller real para cá — pós-reorg item 1).
-type DNSStatus struct {
-	Listening bool
-	Addr      string
-	Upstream  string
-	Queries   uint64
-	Blocked   uint64
-	BindError string
-}
-
-// DNSController drives the DNS sinkhole server lifecycle used by the
-// dns-start/dns-stop/dns-status/dns-set-upstream actions. The daemon wires a
-// controller satisfeito pelo *dnsserver.Controller via adapter no composition
-// root (que projeta dnsserver.Status → ipc.DNSStatus); tests stub it. The
-// persisted enabled flag and upstream live in the scheduler, not the
-// controller — the actions combine both for status.
-type DNSController interface {
-	Start() error
-	Stop() error
-	SetUpstream(upstream string) error
-	Status() DNSStatus
-}
-
-// SetDNS wires the DNS sinkhole controller into the server. Nil makes the
-// dns-* actions fail with a clear message.
-func (s *Server) SetDNS(c DNSController) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.dnsCtrl = c
-}
-
-// mergeDNS copies the live DNS controller state into an IPC response together
-// with the persisted enabled flag (which lives in the scheduler).
-func mergeDNS(resp *Response, st DNSStatus, enabled bool) {
-	resp.DNSEnabled = enabled
-	resp.DNSListening = st.Listening
-	resp.DNSAddr = st.Addr
-	resp.DNSUpstream = st.Upstream
-	resp.DNSQueries = st.Queries
-	resp.DNSBlocked = st.Blocked
-	resp.DNSBindError = st.BindError
-}
 
 // catalog returns the configured PresetManager or the built-in fallback.
 func (s *Server) catalog() PresetManager {

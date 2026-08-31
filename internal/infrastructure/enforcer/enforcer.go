@@ -293,13 +293,20 @@ func buildRestoreScript(ips []string, mask string) string {
 // is handled by runNetshAddBatch with a failure-tolerant delete BEFORE this
 // script runs — an inline delete of a non-existent rule aborts the batch the
 // same way (netsh propagates a failing line to the process exit code).
+func netshRemoteIP(ip string) string {
+	if strings.Contains(ip, ":") && !strings.Contains(ip, "/") {
+		return ip + "/128"
+	}
+	return ip
+}
+
 func buildNetshAddScript(ips []string) string {
 	var b strings.Builder
 	for _, ip := range validateIPs(ips) {
 		b.WriteString("advfirewall firewall add rule name=FocusGuard_")
 		b.WriteString(strings.ReplaceAll(ip, ":", "_"))
 		b.WriteString(" dir=out action=block remoteip=")
-		b.WriteString(ip)
+		b.WriteString(netshRemoteIP(ip))
 		b.WriteString("\r\n")
 	}
 	b.WriteString("exit\r\n")

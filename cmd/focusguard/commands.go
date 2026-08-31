@@ -59,16 +59,6 @@ var commands = map[string]Command{
 			"  focusguard apps remove <processo>       Parar de encerrar um processo",
 		},
 	},
-	"dns": {
-		Name: "dns",
-		Run:  handleDNSCommand,
-		Usage: []string{
-			"  focusguard dns start                    Iniciar o servidor DNS sinkhole (porta 53)",
-			"  focusguard dns stop                     Desligar o servidor DNS sinkhole",
-			"  focusguard dns status                   Mostrar o status do servidor DNS",
-			"  focusguard dns upstream <host[:porta]>  Alterar o upstream DNS (ex: 9.9.9.9)",
-		},
-	},
 	"interceptor": {
 		Name: "interceptor",
 		Run:  handleInterceptorCommand,
@@ -88,15 +78,6 @@ var commands = map[string]Command{
 		Run:  func(_ *ipc.Client, _ []string) { handleCAUninstallCommand() },
 		Usage: []string{
 			"  focusguard ca-uninstall             Remover a CA local do trust store (elevado)",
-		},
-	},
-	"devices": {
-		Name: "devices",
-		Run:  handleDevicesCommand,
-		Usage: []string{
-			"  focusguard devices [list]                Listar políticas por dispositivo (Server)",
-			"  focusguard devices set <ip> --policy <block_all|allow_list|inherit> [--name X] [--allow d1,d2]",
-			"  focusguard devices remove <ip>           Remover a política de um dispositivo",
 		},
 	},
 	"pomodoro": {
@@ -253,7 +234,7 @@ var missionCommand = Command{
 // usageOrder preserva a ordem de exibição da seção "Uso:" do help (mapas não
 // têm ordem). Nomes canônicos — aliases ficam de fora (mission é o canônico).
 var usageOrder = []string{
-	"block", "presets", "preset", "schedule", "apps", "dns", "interceptor", "ca-install", "ca-uninstall", "devices", "pomodoro",
+	"block", "presets", "preset", "schedule", "apps", "interceptor", "ca-install", "ca-uninstall", "pomodoro",
 	"pomodoro-defaults", "mission", "pomodoro-stop", "stats", "report", "achievements",
 	"tamper-log", "goal", "status", "doctor", "metrics", "web", "update", "install", "uninstall",
 	"install-watchdog", "uninstall-watchdog", "install-tray", "uninstall-tray",

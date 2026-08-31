@@ -26,21 +26,15 @@ package ipc
 
 import (
 	"context"
-	"errors"
 	"fmt"
-	"net"
-	"strconv"
-	"strings"
 	"time"
 
 	"focusguard/internal/domain/achievements"
 	"focusguard/internal/domain/analytics"
-	"focusguard/internal/domain/devices"
 	"focusguard/internal/domain/pomodoro"
 	"focusguard/internal/domain/preset"
 	"focusguard/internal/domain/reports"
 	"focusguard/internal/domain/schedule"
-	"focusguard/internal/domain/telemetry"
 	"focusguard/internal/infrastructure/update"
 )
 
@@ -51,13 +45,10 @@ type refDeps struct {
 	s             *Server
 	apps          AppsManager
 	users         UserManager
-	onDNSStarted  func()
 	analytics     AnalyticsProvider
 	schedules     ScheduleManager
 	pomodoroPrefs PomodoroPrefs
-	telemetry     TelemetryQuerier
 	interceptor   InterceptorPersister
-	devices       DevicesService
 	reports       ReportsConfigStore
 }
 
@@ -86,16 +77,8 @@ func registerDomainReferenceHandlers(s *Server, deps *refDeps) {
 	s.registry.Register(funcHandler{action: "user-add", handle: deps.handleUserAdd})
 	s.registry.Register(funcHandler{action: "user-remove", handle: deps.handleUserRemove})
 	s.registry.Register(funcHandler{action: "user-set-password", handle: deps.handleUserSetPassword})
-	s.registry.Register(funcHandler{action: "dns-start", handle: deps.handleDNSStart})
-	s.registry.Register(funcHandler{action: "dns-stop", handle: s.handleDNSStop})
-	s.registry.Register(funcHandler{action: "dns-status", handle: s.handleDNSStatus})
-	s.registry.Register(funcHandler{action: "dns-set-upstream", handle: s.handleDNSSetUpstream})
-	s.registry.Register(funcHandler{action: "dns-telemetry", handle: deps.handleDNSTelemetry})
 	s.registry.Register(funcHandler{action: "interceptor-set", handle: deps.handleInterceptorSet})
 	s.registry.Register(funcHandler{action: "interceptor-status", handle: deps.handleInterceptorStatus})
-	s.registry.Register(funcHandler{action: "devices-list", handle: deps.handleDevicesList})
-	s.registry.Register(funcHandler{action: "devices-upsert", handle: deps.handleDevicesUpsert})
-	s.registry.Register(funcHandler{action: "devices-remove", handle: deps.handleDevicesRemove})
 	s.registry.Register(funcHandler{action: "reports-config-get", handle: deps.handleReportConfigGet})
 	s.registry.Register(funcHandler{action: "reports-config-set", handle: deps.handleReportConfigSet})
 	s.registry.Register(funcHandler{action: "reports-generate", handle: deps.handleReportGenerate})
@@ -290,157 +273,7 @@ func (s *Server) handleBlock(_ context.Context, req *Request) (*Response, error)
 	return &Response{Success: true, Message: fmt.Sprintf("Domain %s blocked  %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006"))}, nil
 }
 
-// ---------------------------------------------------------------------------
-// dns-*
-// ---------------------------------------------------------------------------
 
-// dnsController returns the wired DNS sinkhole controller under the lock
-// (o daemon pode configurá-lo depois de NewServer).
-func (s *Server) dnsController() DNSController {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return s.dnsCtrl
-}
-
-// handleDNSStart sobe o sinkhole e persiste o flag "ligado". O hook
-// onDNSStarted (bloqueio DoH do daemon) vem das refDeps — o daemon o injeta
-// no handler real (dns.NewStart) por construtor.
-func (d *refDeps) handleDNSStart(_ context.Context, _ *Request) (*Response, error) {
-	c := d.s.dnsController()
-	if c == nil {
-		return nil, Err(CodeNotConfigured, "servidor DNS não configurado")
-	}
-	if err := c.Start(); err != nil {
-		return nil, err
-	}
-	// Persiste o flag só depois de o listener subir; se a gravação falhar,
-	// desliga o servidor para o estado nunca ficar "ligado mas não
-	// persistido" (no próximo boot voltaria desligado).
-	if err := d.s.scheduler.SetDNSEnabled(true); err != nil {
-		_ = c.Stop()
-		return nil, err
-	}
-	if fn := d.onDNSStarted; fn != nil {
-		fn()
-	}
-	resp := &Response{Success: true, Message: "Servidor DNS iniciado em " + c.Status().Addr}
-	mergeDNS(resp, c.Status(), d.s.scheduler.DNSEnabled())
-	return resp, nil
-}
-
-// handleDNSStop desliga o sinkhole e persiste o flag "desligado".
-func (s *Server) handleDNSStop(_ context.Context, _ *Request) (*Response, error) {
-	c := s.dnsController()
-	if c == nil {
-		return nil, Err(CodeNotConfigured, "servidor DNS não configurado")
-	}
-	if err := c.Stop(); err != nil {
-		return nil, err
-	}
-	if err := s.scheduler.SetDNSEnabled(false); err != nil {
-		return nil, err
-	}
-	resp := &Response{Success: true, Message: "Servidor DNS desligado"}
-	mergeDNS(resp, c.Status(), s.scheduler.DNSEnabled())
-	return resp, nil
-}
-
-// handleDNSStatus reporta o estado vivo + persistido do sinkhole.
-func (s *Server) handleDNSStatus(_ context.Context, _ *Request) (*Response, error) {
-	c := s.dnsController()
-	if c == nil {
-		return nil, Err(CodeNotConfigured, "servidor DNS não configurado")
-	}
-	resp := &Response{Success: true}
-	mergeDNS(resp, c.Status(), s.scheduler.DNSEnabled())
-	return resp, nil
-}
-
-// handleDNSSetUpstream troca o resolvedor upstream (persistido no scheduler e
-// aplicado no controller vivo, com restart se ligado).
-func (s *Server) handleDNSSetUpstream(_ context.Context, req *Request) (*Response, error) {
-	c := s.dnsController()
-	if c == nil {
-		return nil, Err(CodeNotConfigured, "servidor DNS não configurado")
-	}
-	upstream, err := normalizeUpstream(req.Upstream)
-	if err != nil {
-		return nil, Err(CodeInvalid, err.Error())
-	}
-	// Persiste primeiro (espelho em disco), depois aplica no listener vivo
-	// (restart se estiver ligado). Um restart que falhe deixa o servidor
-	// parado com o erro no dns-status — e o próximo boot usa o valor
-	// persistido (mesmo padrão do dns-start com bind ocupado).
-	if err := s.scheduler.SetDNSUpstream(upstream); err != nil {
-		return nil, err
-	}
-	if err := c.SetUpstream(upstream); err != nil {
-		return nil, err
-	}
-	resp := &Response{Success: true, Message: fmt.Sprintf("Upstream DNS alterado para %s", upstream)}
-	mergeDNS(resp, c.Status(), s.scheduler.DNSEnabled())
-	return resp, nil
-}
-
-// normalizeUpstream valida um upstream fornecido pelo usuário e o devolve em
-// host:porta (um host puro ganha a porta padrão do DNS, 53). Entrada vazia é
-// rejeitada — o chamador pode sempre passar um resolvedor concreto.
-func normalizeUpstream(in string) (string, error) {
-	in = strings.TrimSpace(in)
-	if in == "" {
-		return "", errors.New("informe um upstream (ex: 1.1.1.2, 9.9.9.9:53)")
-	}
-	host, port, err := net.SplitHostPort(in)
-	if err != nil {
-		// Sem porta explícita (ex: "1.1.1.2", "dns.google") → porta 53.
-		if !strings.Contains(in, ":") {
-			return net.JoinHostPort(in, "53"), nil
-		}
-		return "", fmt.Errorf("upstream inválido %q (use host ou host:porta)", in)
-	}
-	if host == "" || port == "" {
-		return "", fmt.Errorf("upstream inválido %q (use host ou host:porta)", in)
-	}
-	p, err := strconv.Atoi(port)
-	if err != nil || p < 1 || p > 65535 {
-		return "", fmt.Errorf("porta de upstream inválida %q", port)
-	}
-	return net.JoinHostPort(host, port), nil
-}
-
-// ---------------------------------------------------------------------------
-// dns-telemetry (adapter de referência — Fase 1.2 do features-plan)
-// ---------------------------------------------------------------------------
-
-// TelemetryQuerier é a superfície de leitura do telemetria (satisfeita por
-// *telemetry.Recorder). O ipc não pode importar o domínio (ciclo), então o
-// adapter de referência usa a interface — espelho do handler real de domínio.
-type TelemetryQuerier interface {
-	Queries() ([]telemetry.BlockedQuery, error)
-}
-
-// handleDNSTelemetry lista as queries bloqueadas recentes + resumo agregado.
-func (d *refDeps) handleDNSTelemetry(_ context.Context, req *Request) (*Response, error) {
-	q := d.telemetry
-	if q == nil {
-		return nil, Err(CodeNotConfigured, "telemetria não configurada")
-	}
-	qs, err := q.Queries()
-	if err != nil {
-		return nil, err
-	}
-	limit := req.TelemetryLimit
-	if limit <= 0 || limit > 200 {
-		limit = 50
-	}
-	return &Response{
-		Success:          true,
-		TelemetryEntries: telemetry.Recent(qs, limit),
-		TelemetrySummary: telemetry.Summarize(qs),
-		TelemetryTotal:   len(qs),
-		TelemetryLimit:   limit,
-	}, nil
-}
 
 // ---------------------------------------------------------------------------
 // interceptor-set / interceptor-status (adapters de referência — Fase 3)
@@ -480,59 +313,7 @@ func (d *refDeps) handleInterceptorStatus(_ context.Context, _ *Request) (*Respo
 	return &Response{Success: true, InterceptorEnabled: p.InterceptorEnabled()}, nil
 }
 
-// ---------------------------------------------------------------------------
-// devices-list / devices-upsert / devices-remove (adapters de referência —
-// Fase 4, edição Server)
-// ---------------------------------------------------------------------------
 
-// DevicesService é a superfície do catálogo de dispositivos (satisfeita pelo
-// *devices.Store; o ipc não pode importá-lo diretamente nos adapters).
-type DevicesService interface {
-	List() []devices.Device
-	Get(ip string) (devices.Device, bool)
-	Upsert(d devices.Device) error
-	Remove(ip string) error
-}
-
-// handleDevicesList lista o catálogo de dispositivos.
-func (d *refDeps) handleDevicesList(_ context.Context, _ *Request) (*Response, error) {
-	svc := d.devices
-	if svc == nil {
-		return nil, Err(CodeNotConfigured, "catálogo de dispositivos não configurado")
-	}
-	return &Response{Success: true, Devices: svc.List()}, nil
-}
-
-// handleDevicesUpsert cria/atualiza a política de um dispositivo.
-func (d *refDeps) handleDevicesUpsert(_ context.Context, req *Request) (*Response, error) {
-	svc := d.devices
-	if svc == nil {
-		return nil, Err(CodeNotConfigured, "catálogo de dispositivos não configurado")
-	}
-	if req.Device == nil {
-		return nil, Err(CodeInvalid, "dispositivo ausente na requisição")
-	}
-	if err := svc.Upsert(*req.Device); err != nil {
-		return nil, err
-	}
-	label := req.Device.Name
-	if label == "" {
-		label = req.Device.IP
-	}
-	return &Response{Success: true, Message: fmt.Sprintf("Política de %s atualizada", label)}, nil
-}
-
-// handleDevicesRemove remove a política de um dispositivo.
-func (d *refDeps) handleDevicesRemove(_ context.Context, req *Request) (*Response, error) {
-	svc := d.devices
-	if svc == nil {
-		return nil, Err(CodeNotConfigured, "catálogo de dispositivos não configurado")
-	}
-	if err := svc.Remove(req.DeviceIP); err != nil {
-		return nil, err
-	}
-	return &Response{Success: true, Message: fmt.Sprintf("Dispositivo %s removido", req.DeviceIP)}, nil
-}
 
 // ---------------------------------------------------------------------------
 // reports-config-get / reports-config-set / reports-generate (adapters de

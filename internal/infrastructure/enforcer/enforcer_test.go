@@ -514,8 +514,9 @@ func TestBuildNetshAddScript(t *testing.T) {
 		},
 		{
 			"ipv6 normalizes rule name without migration delete",
-			[]string{"2606:4700:4700::1111"},
-			"advfirewall firewall add rule name=FocusGuard_2606_4700_4700__1111 dir=out action=block remoteip=2606:4700:4700::1111\r\n" +
+			[]string{"2606:4700:4700::1111", "2a03:2880:f374:22:face:b00c:0:4420"},
+			"advfirewall firewall add rule name=FocusGuard_2606_4700_4700__1111 dir=out action=block remoteip=2606:4700:4700::1111/128\r\n" +
+				"advfirewall firewall add rule name=FocusGuard_2a03_2880_f374_22_face_b00c_0_4420 dir=out action=block remoteip=2a03:2880:f374:22:face:b00c:0:4420/128\r\n" +
 				"exit\r\n",
 		},
 		{

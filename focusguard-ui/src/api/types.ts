@@ -86,15 +86,6 @@ export interface ScheduleRule {
   enabled: boolean;
 }
 
-// Device is one network device with an optional policy override.
-export interface Device {
-  ip: string;
-  mac?: string;
-  name?: string;
-  policy?: "inherit" | "block_all" | "allow_list"; // Policy "" e "inherit" são equivalentes (regra global decide).
-  allowed_domains?: string[]; // AllowedDomains are the only domains reachable under PolicyAllowList
-}
-
 // Achievement is one badge. Unlocked is derived from the stats; Progress is
 export interface Achievement {
   id: string;
@@ -112,21 +103,6 @@ export interface ReportConfig {
   hour?: number;
   minute?: number;
   export_path?: string;
-}
-
-// BlockedQuery is one sinkholed DNS request, recorded by the dnsserver hook.
-export interface TelemetryEntry {
-  domain: string;
-  client_ip: string;
-  timestamp: string; // RFC3339
-}
-
-// Summary aggregates blocked queries per domain: count, last client IPs (up
-export interface TelemetrySummary {
-  domain: string;
-  count: number;
-  last_ips: string[];
-  last_blocked?: string; // RFC3339
 }
 
 // Event is one detected tamper attempt.
@@ -175,15 +151,11 @@ export interface ApiRequest {
   name?: string; // Name is the focus-session/mission label for the pomodoro action.
   user_name?: string; // UserName/UserPassword drive the user-* actions (web login and user
   user_password?: string;
-  upstream?: string; // Upstream drives the dns-set-upstream action: the resolver (host[:port])
   extend?: boolean; // Extend/Replace resolve the conflict of the user-driven block action:
   replace?: boolean;
   since?: number; // Since drives the event-subscribe long-poll (Fase 7): the last event
   reset?: boolean; // Reset clears the daemon's latency metrics before snapshotting (Fase 8 —
-  telemetry_limit?: number; // TelemetryLimit bounds the dns-telemetry entries (0 = daemon default 50).
   interceptor_enabled?: boolean; // InterceptorEnabled drives the interceptor-set action (Fase 3): whether
-  device?: Device; // Device drives the devices-upsert action (Fase 4 — edição Server): the
-  device_ip?: string; // DeviceIP drives devices-remove: the IP of the device whose rule is
   report_config?: ReportConfig; // ReportConfig drives reports-config-set (Fase 5.1): the weekly report
   report_export_path?: string; // ReportExportPath drives reports-generate: an optional path override
 }
@@ -220,22 +192,8 @@ export interface ApiResponse {
   users?: string[]; // Users lists the web UI usernames (user-list) — names only, never hashes.
   user_is_admin?: boolean; // UserIsAdmin reports whether the user-verify credentials belong to the
   update_pending_reboot?: boolean; // UpdatePendingReboot marks an update that could not replace the running
-  dns_enabled?: boolean; // DNSEnabled reports whether the DNS sinkhole server should be running
-  dns_listening?: boolean;
-  dns_addr?: string;
-  dns_upstream?: string;
-  dns_queries?: number;
-  dns_blocked?: number;
-  dns_bind_error?: string;
-  lan_ip?: string; // LanIP/LanMAC report the machine's own IPv4 and MAC on the LAN
-  lan_mac?: string;
-  telemetry_entries?: TelemetryEntry[]; // Telemetry reports the DNS sinkhole's blocked-query activity
-  telemetry_summary?: TelemetrySummary[];
-  telemetry_total?: number;
-  telemetry_limit?: number; // TelemetryLimit echoes the requested limit so the UI can paginate (0 =
   interceptor_enabled?: boolean; // InterceptorEnabled reports the persisted Focus Interceptor Page flag
-  devices?: Device[]; // Devices lists the per-device policies (devices-list, Fase 4 — edição
-  report_config?: ReportConfig; // Fase 5.1) and ReportPath the generated files (reports-generate).
+  report_config?: ReportConfig; // ReportConfig carries the weekly report schedule (reports-config-get,
   report_path?: string;
   achievements?: Achievement[]; // Achievements lists the gamification badges with unlock/progress derived
 }

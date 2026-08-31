@@ -69,15 +69,15 @@ rules). It's a client-server application:
 Main features: temporary blocks (no manual unblock), category presets,
 pomodoro, recurring scheduling, daily goals + streaks, analytics with export,
 process guard (kills denylisted processes), tamper detection (tamper log),
-DNS sinkhole (port 53, "Rei da Rede"), multi-binary auto-update with rollback,
+interceptor page (local HTTP 80 / HTTPS 443 with local CA), multi-binary auto-update with rollback,
 and a **complete web UI**.
 
 > ✅ **Web interface (complete):** `focusguard-web` (user-space, on demand)
 > serves the React + TS UI (`focusguard-ui/`) and **proxies IPC actions to
 > the daemon** at `http://127.0.0.1:48902` — **no changes to the daemon**.
-> All 12 screens are implemented (Dashboard, Bloquear, Pomodoro,
-> Agenda, Apps, Presets, Estatísticas, Segurança, Configurações, Login,
-> Rede, Guia) with login/sessions, SSE real-time events, and auth-gated actions.
+> All 10 screens are implemented (Dashboard, Bloquear, Pomodoro,
+> Agenda, Apps, Presets, Estatísticas, Segurança, Configurações, Login)
+> with login/sessions, SSE real-time events, and auth-gated actions.
 > See the plan and API contract in `docs/ui-plan.md` before writing related
 > code.
 
@@ -171,8 +171,6 @@ implementation details belong in code comments, not here.Packages are grouped in
 | `infrastructure/autostart` | Installs/removes the service + tray autostart + desktop shortcut |
 | `domain/blocks` | Domain handlers for the `block`/`block-all` actions (`Blocker`/`Catalog`) |
 | `system/daemon` | Daemon lifecycle: `Run(ctx) error` + ordered shutdown (B10) |
-| `domain/dns` | Domain handlers for the DNS sinkhole (`start`/`stop`/`status`/`set-upstream`) and network adapter orchestration |
-| `infrastructure/dnsserver` | Embedded DNS sinkhole (port 53, miekg/dns) + upstream forwarding |
 | `infrastructure/enforcer` | Applies blocks at the OS level (hosts + firewall), per platform |
 | `transport/eventhub` | In-process event pub/sub (ring buffer + long-poll `Wait`) — daemon state changes |
 | `infrastructure/filelog` | Shared file logging (append + rotation) next to the executable |
@@ -181,10 +179,10 @@ implementation details belong in code comments, not here.Packages are grouped in
 | `infrastructure/hostswatch` | Detects/reverts tampering of `hosts` |
 | `transport/httpapi` | Web UI HTTP server: IPC proxy + static assets + security guards |
 | `infrastructure/icon` | Generates `.ico`/`.png` from the canonical artwork |
+| `domain/interceptor` | Focus Interceptor Page domain handlers (`interceptor-set`/`interceptor-status`) |
 | `transport/ipc` | Client-server protocol (Request/Response JSON) + action registry (`Handler`/`Registry`/`ActionSpec`) |
 | `transport/ipcerr` | Stable IPC error codes (`Error`) — mirror of `internal/transport/ipc/codes.go`, additive-only |
 | `transport/metrics` | Per-action latency registry (ring + percentiles) — daemon IPC and web proxy |
-| `infrastructure/netdns` | Configures and restores network adapters DNS (Wi-Fi/Ethernet) at OS level (`netsh`/`resolvectl`) |
 | `domain/policy` | `Block` model and business rules (`IsActive`, `CanUnblock`, ...) |
 | `domain/pomodoro` | Work/rest/cycle sessions |
 | `domain/preset` | Catalog of block categories (builtin + custom) |

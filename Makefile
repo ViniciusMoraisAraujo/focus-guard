@@ -92,23 +92,12 @@ contract-check:
 session-check:
 	bash scripts/check-session-log.sh --today
 
-# msi gera o instalador da edição desktop do Windows
-# (focusguard-<versão>-amd64.msi) via go-msi + WiX Toolset. Requer um ambiente
-# Windows (o go-msi chama o WiX via cmd.exe) com go-msi e WiX 3.10+ instalados
-# — ver scripts/build-msi.sh.
+# msi gera o instalador do Windows (focusguard-<versão>-amd64.msi)
+# via go-msi + WiX Toolset. Requer um ambiente Windows (o go-msi chama o WiX
+# via cmd.exe) com go-msi e WiX 3.10+ instalados — ver scripts/build-msi.sh.
 # Uso: make msi VERSION=0.9.0 [ARCH=amd64|arm64]
 msi:
-	bash scripts/build-msi.sh $(VERSION) $(ARCH) desktop
-
-# msi-server gera o instalador da edição Server (headless, "Rei da Rede") —
-# focusguard-server-<versão>-amd64.msi. Mesmo UpgradeCode da desktop: instalar
-# um sobre o outro converte a máquina. O DNS liga sozinho no 1º boot apenas em
-# instalação LIMPA (sem state.json); numa conversão de instalação existente,
-# habilite na tela Rede ou com `focusguard dns start`. Para gerar os dois
-# instaladores da release:
-#   make msi VERSION=0.9.0 && make msi-server VERSION=0.9.0
-msi-server:
-	bash scripts/build-msi.sh $(VERSION) $(ARCH) server
+	bash scripts/build-msi.sh $(VERSION) $(ARCH)
 
 install:
 	@echo "=== Instalando FocusGuard ==="

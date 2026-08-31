@@ -35,18 +35,14 @@ func okPing() *ipc.Response { return &ipc.Response{Success: true, Message: "pong
 func okStatus() *ipc.Response {
 	return &ipc.Response{Success: true, CurrentVersion: "0.16.4", FirewallRules: 4, DoHActive: true, ExpectedDoH: true}
 }
-func okDNS() *ipc.Response {
-	return &ipc.Response{Success: true, DNSEnabled: true, DNSListening: true, DNSAddr: "0.0.0.0:53, [::]:53", DNSUpstream: "1.1.1.2:53"}
-}
 
 // healthyEnv monta um ambiente com tudo passando: daemon acessível, serviços
-// rodando, state válido, hosts consistente, firewall ok, versões completas,
-// DNS ativo.
+// rodando, state válido, hosts consistente, firewall ok, versões completas.
 func healthyEnv(t *testing.T) doctorEnv {
 	t.Helper()
 	dir := t.TempDir()
 	statePath := filepath.Join(dir, "state.json")
-	if err := os.WriteFile(statePath, []byte(`{"version":1,"blocks":{},"dns_enabled":true}`), 0600); err != nil {
+	if err := os.WriteFile(statePath, []byte(`{"version":1,"blocks":{}}`), 0600); err != nil {
 		t.Fatal(err)
 	}
 	hostsPath := filepath.Join(dir, "hosts")
@@ -67,7 +63,7 @@ func healthyEnv(t *testing.T) doctorEnv {
 
 	return doctorEnv{
 		client: &fakeDoctorClient{
-			responses: map[string]*ipc.Response{"ping": okPing(), "status": okStatus(), "dns-status": okDNS()},
+			responses: map[string]*ipc.Response{"ping": okPing(), "status": okStatus()},
 		},
 		statePath: statePath,
 		hostsPath: hostsPath,
@@ -79,11 +75,8 @@ func healthyEnv(t *testing.T) doctorEnv {
 }
 
 // fakeServiceRunning faz toda consulta de serviço devolver "rodando".
-// Também responde ao netsh (checkDNSInbound) e powershell (checkDefender).
+// Também responde ao powershell (checkDefender).
 func fakeServiceRunning(name string, args ...string) ([]byte, error) {
-	if name == "netsh" {
-		return []byte("Rule Name: FocusGuard_DNS_Inbound_UDP\nEnabled: Yes"), nil
-	}
 	if name == "powershell" {
 		return []byte("C:\\Program Files\\FocusGuard\nC:\\ProgramData\\FocusGuard"), nil
 	}
@@ -124,27 +117,6 @@ type fakeError struct{ msg string }
 
 func (e *fakeError) Error() string { return e.msg }
 
-func TestDoctor_DNSBindErrorFails(t *testing.T) {
-	env := healthyEnv(t)
-	env.client = &fakeDoctorClient{
-		responses: map[string]*ipc.Response{
-			"ping":   okPing(),
-			"status": okStatus(),
-			"dns-status": {Success: true, DNSEnabled: true, DNSListening: false,
-				DNSBindError: "porta 53 em uso"},
-		},
-	}
-
-	results := runDoctor(env)
-	dns := findResult(results, "DNS")
-	if dns == nil || dns.Status != statusFail {
-		t.Fatalf("DNS habilitado e parado deveria falhar — got %+v", dns)
-	}
-	if !strings.Contains(dns.Message, "não está ouvindo") {
-		t.Errorf("mensagem DNS = %q, want mencionando não está ouvindo", dns.Message)
-	}
-}
-
 func TestDoctor_HostsOrphanEntryFails(t *testing.T) {
 	env := healthyEnv(t)
 	// Bloqueio ativo no daemon sem entrada correspondente no hosts.
@@ -155,7 +127,6 @@ func TestDoctor_HostsOrphanEntryFails(t *testing.T) {
 				Success: true, CurrentVersion: "0.16.4", FirewallRules: 4, DoHActive: true, ExpectedDoH: true,
 				Blocks: []policy.Block{{Domain: "youtube.com", ExpiresAt: time.Now().Add(time.Hour)}},
 			},
-			"dns-status": okDNS(),
 		},
 	}
 
@@ -177,9 +148,8 @@ func TestDoctor_HostsOrphanClearedPasses(t *testing.T) {
 	}
 	env.client = &fakeDoctorClient{
 		responses: map[string]*ipc.Response{
-			"ping":       okPing(),
-			"status":     {Success: true, CurrentVersion: "0.16.4", FirewallRules: 4, DoHActive: true, ExpectedDoH: true, Blocks: []policy.Block{{Domain: "youtube.com", ExpiresAt: time.Now().Add(time.Hour)}}},
-			"dns-status": okDNS(),
+			"ping":   okPing(),
+			"status": {Success: true, CurrentVersion: "0.16.4", FirewallRules: 4, DoHActive: true, ExpectedDoH: true, Blocks: []policy.Block{{Domain: "youtube.com", ExpiresAt: time.Now().Add(time.Hour)}}},
 		},
 	}
 
@@ -292,9 +262,8 @@ func TestDoctor_FirewallExpectedButInactiveFails(t *testing.T) {
 	env := healthyEnv(t)
 	env.client = &fakeDoctorClient{
 		responses: map[string]*ipc.Response{
-			"ping":       okPing(),
-			"status":     {Success: true, CurrentVersion: "0.16.4", FirewallRules: 0, DoHActive: false, ExpectedDoH: true},
-			"dns-status": okDNS(),
+			"ping":   okPing(),
+			"status": {Success: true, CurrentVersion: "0.16.4", FirewallRules: 0, DoHActive: false, ExpectedDoH: true},
 		},
 	}
 
@@ -317,8 +286,8 @@ func TestDoctor_JSONOutput(t *testing.T) {
 	for _, r := range results {
 		out.Checks = append(out.Checks, doctorCheckJSON{Name: r.Name, Status: string(r.Status), Message: r.Message})
 	}
-	if len(out.Checks) != 11 {
-		t.Errorf("JSON com %d checagens, want 11", len(out.Checks))
+	if len(out.Checks) != 9 {
+		t.Errorf("JSON com %d checagens, want 9", len(out.Checks))
 	}
 	for _, c := range out.Checks {
 		if c.Status != "pass" {
@@ -382,77 +351,6 @@ func TestDoctor_CANotGeneratedPasses(t *testing.T) {
 	c := findResult(results, "CA local")
 	if c == nil || c.Status != statusPass {
 		t.Fatalf("CA ausente deveria passar (configuração) — got %+v", c)
-	}
-}
-
-// --- DNS dual-stack e inbound ---
-
-func TestDoctor_DNSDualStackPasses(t *testing.T) {
-	env := healthyEnv(t)
-	results := runDoctor(env)
-	dns := findResult(results, "DNS")
-	if dns == nil || dns.Status != statusPass {
-		t.Fatalf("DNS dual-stack deveria passar — got %+v", dns)
-	}
-	if !strings.Contains(dns.Message, "dual-stack") {
-		t.Errorf("mensagem DNS = %q, want mencionando dual-stack", dns.Message)
-	}
-}
-
-func TestDoctor_DNSIPv4OnlyWarns(t *testing.T) {
-	env := healthyEnv(t)
-	env.client = &fakeDoctorClient{
-		responses: map[string]*ipc.Response{
-			"ping":       okPing(),
-			"status":     okStatus(),
-			"dns-status": {Success: true, DNSEnabled: true, DNSListening: true, DNSAddr: "0.0.0.0:53", DNSUpstream: "1.1.1.2:53"},
-		},
-	}
-	results := runDoctor(env)
-	dns := findResult(results, "DNS")
-	if dns == nil || dns.Status != statusWarn {
-		t.Fatalf("DNS só IPv4 deveria warn — got %+v", dns)
-	}
-	if !strings.Contains(dns.Message, "só IPv4") {
-		t.Errorf("mensagem DNS = %q, want mencionando só IPv4", dns.Message)
-	}
-}
-
-func TestDoctor_DNSInboundMissingFails(t *testing.T) {
-	if runtime.GOOS != "windows" {
-		t.Skip("checkDNSInbound é Windows-only")
-	}
-	env := healthyEnv(t)
-	env.exec = func(name string, args ...string) ([]byte, error) {
-		if name == "sc" {
-			return []byte("running"), nil
-		}
-		// netsh devolve erro (regra ausente)
-		return []byte(""), errors.New("não existe")
-	}
-	results := runDoctor(env)
-	dnsIn := findResult(results, "DNS inbound")
-	if dnsIn == nil || dnsIn.Status != statusFail {
-		t.Fatalf("regras inbound ausentes deveria falhar — got %+v", dnsIn)
-	}
-	if !strings.Contains(dnsIn.Message, "ausentes") {
-		t.Errorf("mensagem = %q, want mencionando ausentes", dnsIn.Message)
-	}
-}
-
-func TestDoctor_DNSInboundSkippedWhenDisabled(t *testing.T) {
-	env := healthyEnv(t)
-	env.client = &fakeDoctorClient{
-		responses: map[string]*ipc.Response{
-			"ping":       okPing(),
-			"status":     okStatus(),
-			"dns-status": {Success: true, DNSEnabled: false},
-		},
-	}
-	results := runDoctor(env)
-	dnsIn := findResult(results, "DNS inbound")
-	if dnsIn == nil || dnsIn.Status != statusPass {
-		t.Fatalf("DNS desligado deveria passar (sem regras necessárias) — got %+v", dnsIn)
 	}
 }
 

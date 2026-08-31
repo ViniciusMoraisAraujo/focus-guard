@@ -31,7 +31,6 @@ func (s *Server) handleStatus(_ context.Context, _ *Request) (*Response, error) 
 	pg := s.pomodoro
 	gs := s.goalStore
 	cur := s.currentVersion
-	c := s.dnsCtrl
 	s.mu.RUnlock()
 	resp.UpdateAvailable = us.Available
 	resp.UpdateVersion = us.NewVersion
@@ -46,19 +45,8 @@ func (s *Server) handleStatus(_ context.Context, _ *Request) (*Response, error) 
 	if resp.CurrentVersion == "" {
 		resp.CurrentVersion = cur
 	}
-	// DNS sinkhole: enabled vem do scheduler (persistido); o restante vem
-	// do controller (estado vivo + contadores). Sem controller (dev), o
-	// status ainda informa o flag persistido.
-	if c != nil {
-		mergeDNS(resp, c.Status(), s.scheduler.DNSEnabled())
-	} else {
-		resp.DNSEnabled = s.scheduler.DNSEnabled()
-	}
 	// Focus Interceptor Page (Fase 3): flag persistido para a tela
 	// Configurações ligar/desligar a página de bloqueio.
 	resp.InterceptorEnabled = s.scheduler.InterceptorEnabled()
-	// IP/MAC da máquina na LAN (Guia): os valores da reserva DHCP do roteador.
-	// Best-effort — vazio sem rota default.
-	resp.LanIP, resp.LanMAC = lanInfo()
 	return resp, nil
 }
