@@ -29,8 +29,8 @@ func (s *saveFailingStore) Save(st *store.State) error {
 // when store.Save fails, Block must NOT leave the domain in RAM — no block,
 // no timer, nothing persisted (the enforcer is never touched because the
 // failure happens before the apply). A zombie block would show in status
-// forever with no timer to expire it. BlockDomains/BlockAllInternet already
-// roll back on Save failure; Block must behave the same.
+// forever with no timer to expire it. BlockDomains already
+// rolls back on Save failure; Block must behave the same.
 func TestScheduler_Block_SaveErrorRollsBackRAM(t *testing.T) {
 	st, err := store.NewStore(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {

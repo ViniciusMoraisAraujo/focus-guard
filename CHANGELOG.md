@@ -7,6 +7,16 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
+## [0.21.1] - 2026-08-31
+
+### 🧹 Limpeza e Consistência
+
+- **Remoção Completa de Resquícios do Modo Pânico / Bloqueio Total da Internet** —
+  eliminação definitiva das flags e opções `--internet` e `--allow` no comando `focusguard block`,
+  limpeza de exemplos na ajuda da linha de comando (`printUsage`), atualização da documentação
+  (`README.md`, `AGENT.md`) e testes unitários dedicados (`TestPrintUsage_ExcludesInternet`)
+  garantindo que o sistema atue de forma consistente exclusivamente no bloqueio por domínio e categorias.
+
 ## [0.21.0] - 2026-08-28
 
 ### 🚀 Funcionalidades e Melhorias

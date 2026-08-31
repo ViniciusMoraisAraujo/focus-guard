@@ -20,7 +20,7 @@ das ações IPC para o daemon). O `dist` compilado é copiado para
 | `src/api/client.ts` | `action()` (fetch POST `/api/action`), `pingDaemon()`, `execAction()` + `api.*` helpers (+ `client.test.ts`) |
 | `src/context/` | Providers de estado: `auth-context.tsx` (login/sessão), `data-context.tsx` (status 10s, stats 60s, `daemonUp`), `index.tsx`, `types.ts` (+ `context.test.tsx`) |
 | `src/App.tsx` | Shell: sidebar desktop + Sheet mobile, navegação entre as 12 telas |
-| `src/screens/` | 12 telas: Dashboard, Bloquear, Panico, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca, Configuracoes, Login, Rede |
+| `src/screens/` | 12 telas: Dashboard, Bloquear, Pomodoro, Agenda, Apps, Presets, Estatisticas, Seguranca, Configuracoes, Login, Rede, Guia |
 | `src/components/` | `circular-timer.tsx`, `weekly-grid.tsx` (+ `weekly-grid.test.tsx`), `screen.tsx`, `theme-provider.tsx`, `theme-toggle.tsx` |
 | `src/components/ui/` | Componentes shadcn-style (button, card, dialog, sheet, tabs, tooltip, sonner, etc.) |
 | `src/hooks/useCountdown.ts` | Countdown client-side |
@@ -34,7 +34,7 @@ das ações IPC para o daemon). O `dist` compilado é copiado para
 2. **Serialização Go → JS**: `goal` e durações vêm em **nanossegundos**
    (converter `ns/1e9/60`); `ExpiresAt`/`StartedAt`/`at` são **RFC3339**
    (`new Date(rfc3339)`); `duration` (input) é string Go (`"30m"`, `"4h"`).
-3. **Modo pânico** = domínio sentinela `*all-internet*` no status.
+3. **Bloqueio por domínio** — o bloqueio opera exclusivamente por domínio ou categorias (presets).
 4. **Daemon offline** = HTTP 503 → a UI mostra o banner "daemon desligado".
 5. **Sem `dangerouslySetInnerHTML`** — React escapa por padrão; CSP restritiva
    servida pelo backend.

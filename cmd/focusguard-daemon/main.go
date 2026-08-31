@@ -1023,7 +1023,7 @@ func runDaemon() bool {
 	// Event hub (Fase 7): o daemon publica mudanças de estado coarse para o
 	// focusguard-web, que as relê (status/stats) e entrega ao navegador via
 	// SSE — no lugar do polling do frontend. O scheduler avisa em toda mutação
-	// de blocos (block/extend/batch/pânico/expiração/reconciliação); o hub tem
+	// de blocos (block/extend/batch/expiração/reconciliação); o hub tem
 	// um ring buffer (64) para um subscriber que reconecta pegar o que perdeu.
 	hub := eventhub.New(64)
 	sched.SetOnChange(func() { hub.Publish(ipc.EventBlocksChanged) })

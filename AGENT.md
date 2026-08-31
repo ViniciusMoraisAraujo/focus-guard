@@ -66,19 +66,18 @@ rules). It's a client-server application:
   generates the multi-size icon `focusguard.ico` (Windows) and
   `focusguard.png` (Linux).
 
-Main features: temporary blocks (no manual unblock), panic mode
-(`block --internet`) with allowlist, category presets, pomodoro, recurring
-scheduling, daily goals + streaks, analytics with export, process guard
-(kills denylisted processes), tamper detection (tamper log), DNS sinkhole
-(port 53, "Rei da Rede"), multi-binary auto-update with rollback, and a
-**complete web UI**.
+Main features: temporary blocks (no manual unblock), category presets,
+pomodoro, recurring scheduling, daily goals + streaks, analytics with export,
+process guard (kills denylisted processes), tamper detection (tamper log),
+DNS sinkhole (port 53, "Rei da Rede"), multi-binary auto-update with rollback,
+and a **complete web UI**.
 
 > ✅ **Web interface (complete):** `focusguard-web` (user-space, on demand)
 > serves the React + TS UI (`focusguard-ui/`) and **proxies IPC actions to
 > the daemon** at `http://127.0.0.1:48902` — **no changes to the daemon**.
-> All 12 screens are implemented (Dashboard, Bloquear, Pânico, Pomodoro,
+> All 12 screens are implemented (Dashboard, Bloquear, Pomodoro,
 > Agenda, Apps, Presets, Estatísticas, Segurança, Configurações, Login,
-> Rede) with login/sessions, SSE real-time events, and auth-gated actions.
+> Rede, Guia) with login/sessions, SSE real-time events, and auth-gated actions.
 > See the plan and API contract in `docs/ui-plan.md` before writing related
 > code.
 
@@ -327,7 +326,7 @@ go test ./... -count=1 -timeout=60s   # make test
 ├── Makefile                    # build, icon, winres, ui, contract(-check), msi, test, vet, fmt, tidy, clean, install, uninstall, session-check
 ├── internal/transport/httpapi/  # HTTP: IPC proxy + static assets + localhost security
 ├── focusguard-ui/              # React + Vite + TS frontend (12 screens)
-│   └── src/screens/              # Dashboard, Block, Panic, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security, Login, Rede
+│   └── src/screens/              # Dashboard, Block, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security, Login, Rede, Guia
 ├── .goreleaser.yaml            # release pipeline
 ├── .github/workflows/
 │   ├── release.yml             # CI: tag v* → GoReleaser + MSI (desktop/server)

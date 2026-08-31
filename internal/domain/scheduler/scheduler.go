@@ -247,7 +247,7 @@ type Scheduler struct {
 	snapshotDirty atomic.Bool
 	// onChange is a coarse "state changed" hook (Fase 7): the daemon wires it
 	// to publish blocks-changed on the event hub, so the web UI can refresh
-	// without polling. Called after every mutation (block/extend/batch/panic/
+	// without polling. Called after every mutation (block/extend/batch/
 	// expiry/reconcile) WITHOUT holding s.mu — the callback must never call
 	// back into the scheduler.
 	onChange func()

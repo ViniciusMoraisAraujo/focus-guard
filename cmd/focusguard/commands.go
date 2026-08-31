@@ -23,7 +23,6 @@ var commands = map[string]Command{
 		Usage: []string{
 			"  focusguard block <dominio> --duration <tempo>",
 			"  focusguard block --preset <categoria> --duration <tempo>",
-			"  focusguard block --internet [--allow <dominios>] --duration <tempo>   Modo pânico / allowlist",
 		},
 	},
 	"presets": {

@@ -264,7 +264,7 @@ func TestHandleBlockCommand_ConflictResponse(t *testing.T) {
 }
 
 // TestHandleBlockCommand_ConflictFlagsWithPresetRejected verifies --extend and
-// --replace are rejected when combined with --preset/--internet (they only make
+// --replace are rejected when combined with --preset (they only make
 // sense for a specific domain).
 func TestHandleBlockCommand_ConflictFlagsWithPresetRejected(t *testing.T) {
 	client := ipc.NewClient()
@@ -1901,11 +1901,11 @@ func TestPrintUsage_IncludesGoal(t *testing.T) {
 	}
 }
 
-func TestPrintUsage_IncludesInternet(t *testing.T) {
+func TestPrintUsage_ExcludesInternet(t *testing.T) {
 	output := captureStdout(t, printUsage)
-	for _, c := range []string{"--internet", "--allow"} {
-		if !strings.Contains(output, c) {
-			t.Errorf("usage deveria mencionar %q", c)
+	for _, c := range []string{"--internet", "Modo pânico"} {
+		if strings.Contains(output, c) {
+			t.Errorf("usage NÃO deveria mencionar %q", c)
 		}
 	}
 }

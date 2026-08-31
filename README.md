@@ -17,7 +17,7 @@ abrir terminal.
 
 - 🖥️ **Painel web completo** — bloquear, pomodoro, agenda, estatísticas, segurança e configurações em um só lugar
 - 🔔 **Bandeja do sistema** — bloco rápido de 4h com um clique, status e atualização
-- 🚫 **Bloqueio de sites** — por domínio, por categoria (`social`, `video`, `news`, `games`) ou **toda a internet** (modo pânico, com allowlist)
+- 🚫 **Bloqueio de sites** — por domínio ou por categoria (`social`, `video`, `news`, `games`)
 - ⏳ **Temporário por natureza** — expira sozinho; nada de desbloqueio antecipado
 - 🍅 **Pomodoro com categorias** — ciclos de trabalho/descanso, modo estrito e sessões nomeadas (missões)
 - ⏰ **Agenda recorrente** — bloqueia em dias e horários fixos, com importação de calendário (.ics)
@@ -90,13 +90,13 @@ Linux: `sudo ./install-linux.sh uninstall`.
 |---|---|
 | **Dashboard** | Status da proteção, bloqueios ativos com countdown, meta do dia |
 | **Bloquear** | Bloqueia um site ou categoria por um tempo |
-| **Pânico** | Corta toda a internet de uma vez (com allowlist opcional) |
 | **Pomodoro** | Sessões de foco com ciclos de trabalho/descanso e missões |
 | **Agenda** | Regras recorrentes por dia/horário + importação de calendário (.ics) |
 | **Apps** | Escolhe quais apps são encerrados durante o foco (ex: Spotify, Steam) |
 | **Presets** | Cria categorias personalizadas de sites |
 | **Estatísticas** | Gráficos de foco, streak, missões e exportação de relatórios |
 | **Rede** | DNS sinkhole e página de bloqueio (edição Server) |
+| **Guia** | Manual de configuração e tutoriais passo a passo por fabricante |
 | **Segurança** | Histórico de tentativas de burla e eventos de relógio |
 | **Configurações** | Meta diária, senha/usuários, canal de atualizações |
 

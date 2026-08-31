@@ -20,8 +20,6 @@ func printUsage() {
 	fmt.Println("  focusguard block twitter.com --duration 4h")
 	fmt.Println("  focusguard block youtube.com 30m")
 	fmt.Println("  focusguard block --preset social --duration 2h")
-	fmt.Println("  focusguard block --internet --duration 30m")
-	fmt.Println("  focusguard block --internet --allow docs.google.com,drive.google.com --duration 2h")
 	fmt.Println("  focusguard pomodoro --preset social --work 25 --rest 5 --cycles 4 --strict")
 	fmt.Println("  focusguard schedule add --preset social --days seg,ter,qua,qui,sex --start 08:00 --end 12:00")
 	fmt.Println("  focusguard schedule")
