@@ -47,7 +47,14 @@ jobs:
       - name: Run Android Unit Tests
         run: |
           cd android
-          ./gradlew testDebugUnitTest --stacktrace
+          ./gradlew testDebugUnitTest --stacktrace || {
+            echo "::error::Unit tests failed! Displaying test results:"
+            for f in $(find app/build/test-results/testDebugUnitTest/ -name "*.xml"); do
+              echo "=== TEST RESULT: $f ==="
+              cat "$f"
+            done
+            exit 1
+          }
 
       - name: Build Debug & Release APKs
         run: |

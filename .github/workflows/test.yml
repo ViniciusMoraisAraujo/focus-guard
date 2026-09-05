@@ -173,4 +173,11 @@ jobs:
       - name: Run Android unit tests
         run: |
           cd android
-          ./gradlew testDebugUnitTest --stacktrace
+          ./gradlew testDebugUnitTest --stacktrace || {
+            echo "::error::Unit tests failed! Displaying test results:"
+            for f in $(find app/build/test-results/testDebugUnitTest/ -name "*.xml"); do
+              echo "=== TEST RESULT: $f ==="
+              cat "$f"
+            done
+            exit 1
+          }
