@@ -204,9 +204,12 @@ implementation details belong in code comments, not here.Packages are grouped in
 
 ## 4. Code conventions (current rules)
 
-1. **TDD** — write tests alongside the feature, in the same commit. Packages
-   have extensive coverage (see the test table in the README). Don't break
-   existing tests.
+1. **TDD (Test-Driven Development) — SEMPRE utilizado (testes ANTES)**:
+   Todo desenvolvimento de novas features, regras de negócio ou correções de bugs
+   DEVE seguir estritamente a metodologia de testes primeiro (Red → Green → Refactor).
+   Escreva o teste que falha antes de implementar o código de produção, no mesmo commit.
+   Pacotes têm cobertura extensiva (ver tabela no README). Nunca quebre testes
+   existentes e nunca adicione código de produção sem o respectivo teste escrito antes.
 2. **Per-platform files** — use `_windows.go`, `_linux.go`, `_other.go`
    suffixes (implicit build tags) for OS-specific code, with a shared
    interface in the base file (e.g., `enforcer.go`, `systray.go`).
@@ -325,6 +328,9 @@ go test ./... -count=1 -timeout=60s   # make test
 ├── internal/transport/httpapi/  # HTTP: IPC proxy + static assets + localhost security
 ├── focusguard-ui/              # React + Vite + TS frontend (12 screens)
 │   └── src/screens/              # Dashboard, Block, Settings, Pomodoro, Schedule, Apps, Presets, Stats, Security, Login, Rede, Guia
+├── android/                    # Native Android app (Kotlin + Jetpack Compose + Material 3)
+│   ├── app/                      # Main application module (MainActivity, VpnService, AccessibilityService)
+│   └── gradle/                   # Version Catalog (libs.versions.toml) + Gradle Wrapper 8.7
 ├── .goreleaser.yaml            # release pipeline
 ├── .github/workflows/
 │   ├── release.yml             # CI: tag v* → GoReleaser + MSI (desktop/server)

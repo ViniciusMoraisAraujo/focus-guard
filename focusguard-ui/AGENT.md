@@ -41,9 +41,7 @@ das ações IPC para o daemon). O `dist` compilado é copiado para
 6. Build: `npm ci && npm run build` (hooks do goreleaser/`make ui`); `tsc`
    deve passar (TS estrito).
 7. Dev: `cd focusguard-ui && npm run dev` (Vite :5173 com proxy `/api`).
-8. Testes (vitest): `npm test` — cobre o `weekly-grid` (janelas overnight,
-   lanes, marcador "agora"), o `context/` (fallback SSE→polling) e o
-   `client.ts`; rode junto com o `tsc` ao mexer na UI.
+8. **Testes e TDD (vitest)**: use sempre a metodologia **TDD (escreva os testes antes)** para novas telas, componentes, handlers de API e hooks. Execute `npm test` (cobre o `weekly-grid`, `context/` com fallback SSE→polling, `client.ts` e suites E2E); rode junto com o `tsc` ao mexer na UI.
 9. **Resumo de sessão** — ao final da sessão, atualize o
    `../docs/session-log/YYYY-MM-DD.md` (handoff diário para o próximo agente
    — regra do AGENT.md raiz §4.15).
