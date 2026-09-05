@@ -1,4 +1,4 @@
-.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet hooks session-check clean install uninstall msi help fmt tidy
+.PHONY: all build build-cli build-daemon build-web ui icon winres contract contract-check test vet hooks session-check clean install uninstall msi help fmt tidy android-test android-apk
 
 GO       := go
 BIN_DIR  := bin
@@ -130,6 +130,14 @@ test:
 vet:
 	$(GO) vet ./...
 
+# android-test roda os testes unitários do app Android via Gradle wrapper
+android-test:
+	cd android && JAVA_HOME=/usr/lib/jvm/java-1.21.0-openjdk-amd64 ./gradlew testDebugUnitTest
+
+# android-apk compila os APKs (Debug e Release) do app Android
+android-apk:
+	cd android && JAVA_HOME=/usr/lib/jvm/java-1.21.0-openjdk-amd64 ./gradlew assembleDebug assembleRelease
+
 clean:
 	rm -rf $(BIN_DIR)
 	rm -f focusguard-daemon.exe focusguard.exe
@@ -150,6 +158,8 @@ help:
 	@echo "  make uninstall   Remove da inicializacao"
 	@echo "  make test        Executa todos os testes"
 	@echo "  make vet         Verifica com go vet"
+	@echo "  make android-test Executa testes unitarios do app Android"
+	@echo "  make android-apk  Compila os APKs Debug e Release do Android"
 	@echo "  make session-check  Falha se o resumo da sessão de hoje não existir"
 	@echo "  make clean       Remove artefatos de build"
 	@echo "  make fmt         Formata codigo fonte"

@@ -145,3 +145,26 @@ jobs:
         run: |
           GOOS=windows CGO_ENABLED=0 go build ./...
           GOOS=windows CGO_ENABLED=0 go vet ./...
+
+  # Validação TDD da plataforma Android: executa a suíte completa de testes
+  # unitários do app Android com JDK 21.
+  android-unit-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          java-version: '21'
+          distribution: 'temurin'
+          cache: gradle
+
+      - name: Make gradlew executable
+        run: chmod +x android/gradlew
+
+      - name: Run Android unit tests
+        run: |
+          cd android
+          ./gradlew testDebugUnitTest --continue

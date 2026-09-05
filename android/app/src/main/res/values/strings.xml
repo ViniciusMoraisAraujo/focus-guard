@@ -1,0 +1,11 @@
+<resources>
+    <string name="app_name">FocusGuard</string>
+    <string name="focus_guard_tagline">Bloqueador de distrações de alta integridade</string>
+    <string name="start_focus">Iniciar Foco</string>
+    <string name="quick_timer">Timer Rápido</string>
+    <string name="pomodoro">Pomodoro</string>
+    <string name="active_session">Sessão em Andamento</string>
+    <string name="accessibility_service_desc">Utilizado pelo FocusGuard para detectar a abertura de aplicativos bloqueados durante sessões de foco ativas e proteger o seu tempo.</string>
+    <string name="notification_channel_name">Sessão de Foco Ativa</string>
+    <string name="notification_channel_desc">Mantém o serviço de bloqueio ativo e exibe o tempo restante no painel do Android.</string>
+</resources>
