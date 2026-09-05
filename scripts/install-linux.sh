@@ -281,6 +281,8 @@ setup_socket_group() {
 
   # Cria e configura a pasta de estado persistente com posse focusguard:focusguard
   install -d -m 0770 -o focusguard -g focusguard "${STATE_DIR}" 2>/dev/null || true
+  chown -R focusguard:focusguard "${STATE_DIR}" 2>/dev/null || true
+  chmod -R u=rwX,g=rwX,o= "${STATE_DIR}" 2>/dev/null || true
   # Cria e configura o diretório de runtime do socket
   install -d -m 0775 -o focusguard -g focusguard "/run/focusguard" 2>/dev/null || true
 

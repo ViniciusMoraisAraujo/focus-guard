@@ -55,12 +55,12 @@ type Server struct {
 	// daemon — o lê); o handler de update (domínio, composition root) o lê via
 	// UpdateChecker().
 	updateChecker UpdateChecker
-	pomodoro  PomodoroRunner
-	presets   PresetManager
-	goalStore GoalManager
-	tamperLog TamperProvider
-	eventHub  *eventhub.Hub
-	metrics   *metrics.Registry
+	pomodoro      PomodoroRunner
+	presets       PresetManager
+	goalStore     GoalManager
+	tamperLog     TamperProvider
+	eventHub      *eventhub.Hub
+	metrics       *metrics.Registry
 
 	onUpdateApplied func()
 	currentVersion  string
@@ -179,7 +179,6 @@ type UserManager interface {
 	Remove(username string) error
 	SetPassword(username, password string) error
 }
-
 
 // catalog returns the configured PresetManager or the built-in fallback.
 func (s *Server) catalog() PresetManager {

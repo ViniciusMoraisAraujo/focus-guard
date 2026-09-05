@@ -434,8 +434,6 @@ func checkVersions(env doctorEnv) doctorResult {
 	return doctorResult{Name: "Versões", Status: statusPass, Message: msg + " e binários irmãos presentes"}
 }
 
-
-
 // ---------------------------------------------------------------------------
 // Saída
 // ---------------------------------------------------------------------------

@@ -167,4 +167,4 @@ jobs:
       - name: Run Android unit tests
         run: |
           cd android
-          ./gradlew testDebugUnitTest --continue
+          ./gradlew testDebugUnitTest --stacktrace --continue

@@ -356,7 +356,6 @@ func (e *windowsEnforcer) flushDNS() {
 	_, _ = cmd.CombinedOutput()
 }
 
-
 func parseFocusGuardRuleNames(output []byte) map[string]bool {
 	names := make(map[string]bool)
 	for _, line := range bytes.Split(output, []byte("\n")) {

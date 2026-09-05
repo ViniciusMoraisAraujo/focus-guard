@@ -82,7 +82,9 @@ class PomodoroEngineTest {
         for (i in 1..3) {
             engine.start(mission = "Ciclo $i")
             currentTimeMs += workDurationMs + 1L // Transitions to REST
+            assertEquals(PomodoroPhase.REST, engine.getState().phase)
             currentTimeMs += restDurationMs + 1L // Rest expires
+            assertEquals(PomodoroPhase.IDLE, engine.getState().phase)
         }
 
         // Start 4th cycle

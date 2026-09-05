@@ -470,7 +470,6 @@ func TestGetStateFilePath_Linux(t *testing.T) {
 	}
 }
 
-
 func TestGetStateFilePath_MacOS(t *testing.T) {
 	orig := goos
 	goos = "darwin"
@@ -1350,8 +1349,6 @@ func (f *fakeDaemonEnforcer) UnblockAll() error         { return nil }
 func (f *fakeDaemonEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }
-
-
 
 // seededStateFile writes a state.json containing one active block, so the
 // scheduler has RAM content after bootstrap without any DNS lookups.

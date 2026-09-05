@@ -663,4 +663,3 @@ func (e *linuxEnforcer) removeIptablesDoHRule(provider DoHProvider) error {
 	}
 	return nil
 }
-

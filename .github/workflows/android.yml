@@ -41,7 +41,7 @@ jobs:
       - name: Run Android Unit Tests
         run: |
           cd android
-          ./gradlew testDebugUnitTest --continue
+          ./gradlew testDebugUnitTest --stacktrace --continue
 
       - name: Build Debug & Release APKs
         run: |

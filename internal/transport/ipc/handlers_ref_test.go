@@ -273,8 +273,6 @@ func (s *Server) handleBlock(_ context.Context, req *Request) (*Response, error)
 	return &Response{Success: true, Message: fmt.Sprintf("Domain %s blocked  %s", block.Domain, block.ExpiresAt.Local().Format("15:04:05 02/01/2006"))}, nil
 }
 
-
-
 // ---------------------------------------------------------------------------
 // interceptor-set / interceptor-status (adapters de referência — Fase 3)
 // ---------------------------------------------------------------------------
@@ -312,8 +310,6 @@ func (d *refDeps) handleInterceptorStatus(_ context.Context, _ *Request) (*Respo
 	}
 	return &Response{Success: true, InterceptorEnabled: p.InterceptorEnabled()}, nil
 }
-
-
 
 // ---------------------------------------------------------------------------
 // reports-config-get / reports-config-set / reports-generate (adapters de

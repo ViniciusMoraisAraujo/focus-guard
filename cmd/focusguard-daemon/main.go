@@ -195,8 +195,6 @@ func startProcessGuard(sched processguard.ActivityChecker, denylist []string) pr
 	return pg
 }
 
-
-
 // clockLoggerAdapter adapta o *tamper.Recorder (Log(Event)) ao
 // clockguard.Logger (Log(source, action, detail)).
 type clockLoggerAdapter struct{ rec *tamper.Recorder }
@@ -861,8 +859,6 @@ func runDaemon() bool {
 	}
 
 	statePath := getStateFilePath()
-
-
 
 	st, err := store.NewStore(statePath)
 	if err != nil {

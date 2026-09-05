@@ -733,7 +733,6 @@ func TestFlushDNS_RunsIpconfig(t *testing.T) {
 	}
 }
 
-
 // TestFlushDNS_BestEffort verifies a flush failure (ipconfig ausente, sem
 // privilégio) is silently ignored — the netsh block rule already stops new
 // flows.
@@ -899,4 +898,3 @@ func TestStatus_MutationInvalidatesCache(t *testing.T) {
 		t.Errorf("mudança deve invalidar o cache e gerar nova consulta, got %d netsh show calls: %v", len(netshShows), second.calls)
 	}
 }
-

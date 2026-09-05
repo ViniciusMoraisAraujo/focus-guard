@@ -36,6 +36,7 @@ class PomodoroEngine(
     }
 
     fun start(mission: String = "") {
+        updatePhaseTransitionsIfNeeded()
         if (mission.isNotBlank()) {
             this.mission = mission
         }
