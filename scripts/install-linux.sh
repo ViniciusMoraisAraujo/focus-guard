@@ -181,29 +181,25 @@ install_desktop_shortcut() {
   fi
   gid="$(id -gn "${user}" 2>/dev/null || echo "${user}")"
 
-  echo "[FocusGuard] Criando atalho do FocusGuard no Desktop do usuário ${user}..."
-  if ! install -d -m 0755 -o "${user}" -g "${gid}" "${home}/.local/share/icons/hicolor/256x256/apps"; then
-    echo "[FocusGuard] Aviso: não foi possível criar o diretório de ícones. Atalho não criado." >&2
-    return 0
-  fi
-  install -m 0644 "${dir}/focusguard.png" "${home}/.local/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
+  # Instala o ícone em locais do sistema (/usr/share/pixmaps e hicolor) e na pasta protegida
+  install -m 0644 "${dir}/focusguard.png" "${INSTALL_DIR}/focusguard.png" 2>/dev/null || true
+  install -m 0644 "${dir}/focusguard.png" "/usr/share/pixmaps/focusguard.png" 2>/dev/null || true
+  install -d -m 0755 "/usr/share/icons/hicolor/256x256/apps" 2>/dev/null || true
+  install -m 0644 "${dir}/focusguard.png" "/usr/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
 
-  desktop_dir="${home}/Desktop"
-  if ! install -d -m 0755 -o "${user}" -g "${gid}" "${desktop_dir}"; then
-    # Sem diretório Desktop, tenta ~/Área de Trabalho (pt-BR) e cai fora se falhar.
-    desktop_dir="${home}/Área de Trabalho"
-    if ! install -d -m 0755 -o "${user}" -g "${gid}" "${desktop_dir}"; then
-      echo "[FocusGuard] Aviso: sem diretório Desktop. Atalho não criado." >&2
-      return 0
-    fi
+  # Instala o ícone no hicolor do usuário em múltiplos tamanhos
+  install -d -m 0755 -o "${user}" -g "${gid}" "${home}/.local/share/icons/hicolor/256x256/apps" 2>/dev/null || true
+  install -m 0644 -o "${user}" -g "${gid}" "${dir}/focusguard.png" "${home}/.local/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
+
+  if cmd_exists convert; then
+    for sz in 16 24 32 48 64 128; do
+      install -d -m 0755 -o "${user}" -g "${gid}" "${home}/.local/share/icons/hicolor/${sz}x${sz}/apps" 2>/dev/null || true
+      convert "${dir}/focusguard.png" -resize "${sz}x${sz}" "${home}/.local/share/icons/hicolor/${sz}x${sz}/apps/focusguard.png" 2>/dev/null || true
+      chown "${user}:${gid}" "${home}/.local/share/icons/hicolor/${sz}x${sz}/apps/focusguard.png" 2>/dev/null || true
+    done
   fi
 
-  desktop_file="${desktop_dir}/focusguard.desktop"
-  # A CLI sem argumentos abre a interface web no navegador (a TUI foi
-  # removida) — Terminal=false: clicar no atalho não precisa de console e
-  # abre o painel em http://127.0.0.1:48902 direto.
-  cat > "${desktop_file}" <<EOF
-[Desktop Entry]
+  local desktop_content="[Desktop Entry]
 Type=Application
 Name=FocusGuard
 Comment=Bloqueio focado de distrações
@@ -211,14 +207,45 @@ Exec=${INSTALL_DIR}/focusguard
 Icon=focusguard
 Terminal=false
 Categories=Utility;Security;
-EOF
-  chmod 0755 "${desktop_file}" 2>/dev/null || true
-  chown "${user}:${gid}" "${desktop_file}" 2>/dev/null || true
-  echo "[FocusGuard] ✔ Atalho do FocusGuard criado (${desktop_file})."
+Keywords=focus;block;distraction;productivity;bloqueio;foco;
+StartupNotify=false"
+
+  # Instala no menu de aplicativos do sistema e do usuário
+  install -d -m 0755 "/usr/share/applications" 2>/dev/null || true
+  echo "${desktop_content}" > "/usr/share/applications/focusguard.desktop" 2>/dev/null || true
+  chmod 0644 "/usr/share/applications/focusguard.desktop" 2>/dev/null || true
+
+  install -d -m 0755 -o "${user}" -g "${gid}" "${home}/.local/share/applications" 2>/dev/null || true
+  echo "${desktop_content}" > "${home}/.local/share/applications/focusguard.desktop" 2>/dev/null || true
+  chmod 0644 "${home}/.local/share/applications/focusguard.desktop" 2>/dev/null || true
+  chown "${user}:${gid}" "${home}/.local/share/applications/focusguard.desktop" 2>/dev/null || true
+
+  # Atalho na Área de Trabalho (Desktop)
+  desktop_dir="${home}/Desktop"
+  if ! [[ -d "${desktop_dir}" ]]; then
+    desktop_dir="${home}/Área de Trabalho"
+  fi
+  if [[ -d "${desktop_dir}" ]]; then
+    desktop_file="${desktop_dir}/focusguard.desktop"
+    echo "${desktop_content}" > "${desktop_file}"
+    chmod 0755 "${desktop_file}" 2>/dev/null || true
+    chown "${user}:${gid}" "${desktop_file}" 2>/dev/null || true
+    echo "[FocusGuard] ✔ Atalho do FocusGuard criado na Área de Trabalho (${desktop_file})."
+  fi
+
+  # Atualiza caches de ícones e aplicativos
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  gtk-update-icon-cache -f -t "${home}/.local/share/icons/hicolor" 2>/dev/null || true
+  update-desktop-database /usr/share/applications 2>/dev/null || true
+  update-desktop-database "${home}/.local/share/applications" 2>/dev/null || true
+  echo "[FocusGuard] ✔ Ícones e entradas de menu registradas."
 }
 
 remove_desktop_shortcut() {
   local home desktop
+  rm -f "/usr/share/applications/focusguard.desktop" 2>/dev/null || true
+  rm -f "/usr/share/pixmaps/focusguard.png" 2>/dev/null || true
+  rm -f "/usr/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
   if ! home="$(tray_user_home)"; then
     return 0
   fi
@@ -228,7 +255,12 @@ remove_desktop_shortcut() {
       echo "[FocusGuard] Atalho do FocusGuard removido (${desktop})."
     fi
   done
-  rm -f "${home}/.local/share/icons/hicolor/256x256/apps/focusguard.png" 2>/dev/null || true
+  rm -f "${home}/.local/share/applications/focusguard.desktop" 2>/dev/null || true
+  rm -f "${home}/.local/share/icons/hicolor/*/apps/focusguard.png" 2>/dev/null || true
+  gtk-update-icon-cache -f -t /usr/share/icons/hicolor 2>/dev/null || true
+  gtk-update-icon-cache -f -t "${home}/.local/share/icons/hicolor" 2>/dev/null || true
+  update-desktop-database /usr/share/applications 2>/dev/null || true
+  update-desktop-database "${home}/.local/share/applications" 2>/dev/null || true
 }
 
 install_service() {

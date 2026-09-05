@@ -566,6 +566,9 @@ func TestRunDaemon_ServiceStop_NoActiveBlocks(t *testing.T) {
 }
 
 func TestRunDaemon_ServiceStop_WithActiveBlocks(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root: active blocks reconciliation calls Linux enforcer")
+	}
 	setupDaemonTestEnv(t)
 	stubProbeDaemonAlive(t, false)
 

@@ -72,6 +72,7 @@ type Server struct {
 	// para disparar o onUpdateApplied (restart do daemon) — mesma ordem do
 	// switch legado.
 	updateApplied bool
+	stopped       bool
 }
 
 // PresetManager is the preset catalog used by the block/pomodoro/presets
@@ -387,12 +388,26 @@ func (s *Server) RefreshUpdateStatus(ctx context.Context) (UpdateStatus, error) 
 }
 
 func (s *Server) Start() error {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return nil
+	}
+	s.mu.Unlock()
+
 	l, err := Listen()
 	if err != nil {
 		return fmt.Errorf("listen: %w", err)
 	}
 
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		_ = l.Close()
+		return nil
+	}
 	s.listener = l
+	s.mu.Unlock()
 
 	for {
 		conn, err := s.listener.Accept()
@@ -407,8 +422,13 @@ func (s *Server) Start() error {
 }
 
 func (s *Server) Stop() error {
-	if s.listener != nil {
-		s.listener.Close()
+	s.mu.Lock()
+	s.stopped = true
+	l := s.listener
+	s.mu.Unlock()
+
+	if l != nil {
+		return l.Close()
 	}
 	return nil
 }

@@ -161,10 +161,16 @@ jobs:
           distribution: 'temurin'
           cache: gradle
 
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Configure Android SDK Path
+        run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
+
       - name: Make gradlew executable
         run: chmod +x android/gradlew
 
       - name: Run Android unit tests
         run: |
           cd android
-          ./gradlew testDebugUnitTest --stacktrace --continue
+          ./gradlew testDebugUnitTest --stacktrace
