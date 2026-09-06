@@ -12,8 +12,17 @@ android {
         applicationId = "com.focusguard.app"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "0.1.0-alpha"
+
+        val appVersionName = (project.findProperty("versionName") as? String)
+            ?: System.getenv("VERSION")?.removePrefix("v")
+            ?: System.getenv("FG_VERSION")?.removePrefix("v")
+            ?: "0.1.0-alpha"
+        val appVersionCode = (project.findProperty("versionCode") as? String)?.toIntOrNull()
+            ?: (System.getenv("VERSION_CODE")?.toIntOrNull())
+            ?: 1
+
+        versionCode = appVersionCode
+        versionName = appVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
         vectorDrawables {
@@ -23,9 +32,14 @@ android {
 
     signingConfigs {
         create("release") {
-            val keystoreFile = System.getenv("ANDROID_KEYSTORE_FILE")
-            if (keystoreFile != null && file(keystoreFile).exists()) {
-                storeFile = file(keystoreFile)
+            val keystorePath = System.getenv("ANDROID_KEYSTORE_FILE")
+            val keystoreFile = if (keystorePath != null) {
+                val f = file(keystorePath)
+                if (f.exists()) f else rootProject.file(keystorePath)
+            } else null
+
+            if (keystoreFile != null && keystoreFile.exists()) {
+                storeFile = keystoreFile
                 storePassword = System.getenv("ANDROID_KEYSTORE_PASSWORD")
                 keyAlias = System.getenv("ANDROID_KEY_ALIAS")
                 keyPassword = System.getenv("ANDROID_KEY_PASSWORD")

@@ -86,10 +86,10 @@ Fornece um bloqueador de distrações independente e de alta integridade diretam
 
 ## Validação
 
-- **Compilação do APK de Debug**:
+- **Compilação dos APKs (Debug & Release)**:
   ```bash
   cd android
-  ./gradlew assembleDebug
+  ./gradlew assembleDebug assembleRelease
   ```
 - **Execução dos Testes Unitários**:
   ```bash
