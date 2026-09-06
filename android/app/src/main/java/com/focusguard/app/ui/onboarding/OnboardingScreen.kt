@@ -81,7 +81,7 @@ fun OnboardingScreen(
     val lifecycleOwner = LocalLifecycleOwner.current
     DisposableEffect(lifecycleOwner) {
         val observer = LifecycleEventObserver { _, event ->
-            if (event == LifecycleEvent.ON_RESUME) {
+            if (event == Lifecycle.Event.ON_RESUME) {
                 permissionStatus = PermissionManager.checkPermissions(context)
             }
         }
