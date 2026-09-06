@@ -60,6 +60,55 @@ func TestStoreSaveAndLoad(t *testing.T) {
 	}
 }
 
+func TestStore_Load_PurgesLegacySentinels(t *testing.T) {
+	tempDir := t.TempDir()
+	dbPath := filepath.Join(tempDir, "state.json")
+
+	legacyJSON := `{
+  "version": 1,
+  "blocks": {
+    "*all-internet*": {
+      "domain": "*all-internet*",
+      "started_at": "2026-08-23T17:01:00Z",
+      "expires_at": "2026-08-23T18:01:00Z"
+    },
+    "youtube.com": {
+      "domain": "youtube.com",
+      "started_at": "2026-09-05T20:25:00Z",
+      "expires_at": "2026-09-05T20:55:00Z"
+    }
+  }
+}`
+	if err := os.WriteFile(dbPath, []byte(legacyJSON), 0644); err != nil {
+		t.Fatalf("seed legacy state: %v", err)
+	}
+
+	s, err := NewStore(dbPath)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+
+	state, err := s.Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+
+	if _, exists := state.Blocks["*all-internet*"]; exists {
+		t.Errorf("expected *all-internet* to be purged from state in memory")
+	}
+	if _, exists := state.Blocks["youtube.com"]; !exists {
+		t.Errorf("expected valid domain youtube.com to remain")
+	}
+
+	diskData, err := os.ReadFile(dbPath)
+	if err != nil {
+		t.Fatalf("read disk: %v", err)
+	}
+	if strings.Contains(string(diskData), "*all-internet*") {
+		t.Errorf("expected *all-internet* to be purged from disk file, got:\n%s", diskData)
+	}
+}
+
 // TestSave_OnSaveRunsAfterWrite verifies that the onSave callback is invoked
 // after the file content is already on disk, so watchers can hash exactly what
 // was written (content-based self-write detection instead of a time window).

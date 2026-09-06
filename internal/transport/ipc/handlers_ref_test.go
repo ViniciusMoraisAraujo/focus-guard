@@ -3,7 +3,7 @@ package ipc
 // ---------------------------------------------------------------------------
 // Adapters de REFERÊNCIA das ações de domínio (somente testes).
 //
-// Fase 5: os handlers reais de block/block-all, apps-*, goal-*, presets,
+// Fase 5: os handlers reais de block, apps-*, goal-*, presets,
 // preset-*, user-* e dns-* vivem nos pacotes de domínio (internal/blocks,
 // internal/dns, internal/goal, internal/presets, internal/users,
 // internal/apps) e são registrados pelo composition root
@@ -209,7 +209,7 @@ func (s *Server) handleGoalSet(_ context.Context, req *Request) (*Response, erro
 }
 
 // ---------------------------------------------------------------------------
-// block / block-all
+// block
 // ---------------------------------------------------------------------------
 
 // handleBlock bloqueia um domínio (ou um preset inteiro) por um período.

@@ -7,7 +7,14 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
-## [0.23.0] - 2026-09-05
+## [0.23.0] - 2026-09-06
+
+### 🛡️ Interceptor HTTPS Linux & Automação de CA para Navegadores
+
+- **Confiança Automática de CA em Navegadores Linux (Zero-Import)** —
+  implantação nativa de políticas enterprise (`CACertificates` em `/etc/{brave,chromium,opt/chrome,opt/edge}/policies/managed/focusguard-ca.json` e `Certificates.Install` em `/etc/firefox/policies/policies.json`), permitindo que navegadores modernos Chromium (Brave, Chrome, Edge) e Firefox confiem imediatamente no certificado HTTPS do FocusGuard sem requerer importação manual de certificados pelo usuário nas configurações do navegador.
+- **Expurgo Automático de Sentinelas Legadas e Desbloqueio Resiliente** —
+  higienização automática de entradas antigas de pânico (`*all-internet*`) durante a inicialização (`Store.Load()`), evitando repetições infinitas de erro no scheduler ao expirar blocos legados.
 
 ### 📱 Aplicativo Nativo Android & Modos de Foco
 

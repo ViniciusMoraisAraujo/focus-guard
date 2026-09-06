@@ -73,6 +73,7 @@ import com.focusguard.app.ui.theme.SurfaceVariantDark
 import com.focusguard.app.ui.theme.TextMuted
 import com.focusguard.app.ui.theme.TextPrimary
 import com.focusguard.app.ui.theme.TextSecondary
+import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 
@@ -81,6 +82,10 @@ import kotlinx.coroutines.withContext
 fun AppsScreen(
     onBack: () -> Unit
 ) {
+    BackHandler {
+        onBack()
+    }
+
     val context = LocalContext.current
     val isFocusActive by FocusGuardManager.isFocusActive.collectAsState()
 

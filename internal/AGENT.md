@@ -21,11 +21,11 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
 | `domain/analytics` | Histórico JSONL de sessões; streak, stats, exports CSV/JSON/HTML |
 | `domain/apps` | Denylist de processos (apps.json) p/ o process guard; fallback `steam, discord` |
 | `infrastructure/autostart` | Serviço (`sc`/systemd), autostart do tray (HKCU Run / XDG), atalho desktop + `ExtractIcon` |
-| `domain/blocks` | Handlers de domínio das ações `block`/`block-all` (`Blocker`/`Catalog`) |
+| `domain/blocks` | Handlers de domínio da ação `block` (`Blocker`/`Catalog`) |
 | `system/daemon` | Ciclo de vida do daemon: `Run(ctx) error` + shutdown ordenado (B10) |
 | `infrastructure/dns` | Handlers de domínio do sinkhole DNS (`start`/`stop`/`status`/`set-upstream`) |
 | `infrastructure/dnsserver` | Sinkhole DNS embutido (porta 53, miekg/dns) + forward de upstream |
-| `infrastructure/enforcer` | Aplica bloqueios no SO: hosts + firewall (`enforcer_linux.go`/`enforcer_windows.go`); `BlockAll`/allowlist; sanitização de domínios |
+| `infrastructure/enforcer` | Aplica bloqueios no SO: hosts + firewall (`enforcer_linux.go`/`enforcer_windows.go`); sanitização de domínios |
 | `transport/eventhub` | Pub/sub de eventos em processo (ring buffer + long-poll `Wait`) — mudanças de estado |
 | `infrastructure/filelog` | Log de arquivo compartilhado (append + rotação) ao lado do executável |
 | `infrastructure/fsutil` | SHA-256 de arquivo (watchers) |
@@ -105,7 +105,7 @@ restauram adulterações, IPC é o contrato entre CLI/tray/web ↔ daemon.
   disparar, `onExpire` via o bloco ativo e retornava sem re-armar (nunca
   expirava). Corrigido: `Block` reverte (`delete` + `invalidateSnapshot`) e
   `ExtendBlock` restaura o bloco original no erro do Save, como
-  `BlockDomains`/`BlockAllInternet` já faziam — testes TDD
+  `BlockDomains` já fazia — testes TDD
   (`save_rollback_test.go`).
 - **`scheduler/scheduler.go` (`SetDNSEnabled`/`SetDNSUpstream`)** — na falha
   do `Save`, a RAM mantinha o setting divergente do disco até o próximo boot

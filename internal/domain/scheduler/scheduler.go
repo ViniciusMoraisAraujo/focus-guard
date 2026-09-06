@@ -448,6 +448,9 @@ func (s *Scheduler) bootstrapLocked() error {
 		return fmt.Errorf("scheduler: erro ao carregar estado: %w", err)
 	}
 	for domain, block := range state.Blocks {
+		if domain == "*all-internet*" || strings.Contains(domain, "*") {
+			continue
+		}
 		s.blocks[domain] = block
 	}
 	s.lastKnownTime = state.LastKnownTime
@@ -522,11 +525,12 @@ func (s *Scheduler) Reconcile() error {
 	// saem quando o enforcer confirmar. Na falha (ex.: serviço de firewall
 	// ainda subindo no boot), o bloqueio permanece no estado para retry —
 	// nunca um state.json "limpo" com regras órfãs no sistema.
-	expiryClean := true
+	var successfulUnblocks []string
 	for _, e := range toUnblock {
 		if err := s.enforcer.UnblockDomain(e.domain, e.ips); err != nil {
-			expiryClean = false
 			log.Printf("[Scheduler] Falha ao remover regras de %s (será re-tentado): %v", e.domain, err)
+		} else {
+			successfulUnblocks = append(successfulUnblocks, e.domain)
 		}
 	}
 	if len(activeIPs) > 0 {
@@ -545,19 +549,18 @@ func (s *Scheduler) Reconcile() error {
 	}
 
 	// Commit: remove os expirados do RAM e grava o estado limpo só quando o
-	// enforcer confirmou a remoção. Na falha, os bloqueios ficam no RAM/estado
-	// e um timer de retry re-tenta a limpeza (também no próximo Reconcile —
-	// próximo boot, tamper ou mudança externa de state.json).
+	// enforcer confirmou a remoção. Bloqueios que falharam permanecem no RAM
+	// e no estado para retry; bloqueios limpos com sucesso são descarregados.
 	s.mu.Lock()
-	if expiryClean && hasExpired {
-		for _, e := range toUnblock {
-			if _, exists := s.blocks[e.domain]; !exists {
+	if len(successfulUnblocks) > 0 {
+		for _, domain := range successfulUnblocks {
+			if _, exists := s.blocks[domain]; !exists {
 				continue // outro caminho (onExpire) já cuidou
 			}
-			delete(s.blocks, e.domain)
-			if t, ok := s.timers[e.domain]; ok {
+			delete(s.blocks, domain)
+			if t, ok := s.timers[domain]; ok {
 				t.Stop()
-				delete(s.timers, e.domain)
+				delete(s.timers, domain)
 			}
 		}
 		s.invalidateSnapshot()
@@ -569,13 +572,10 @@ func (s *Scheduler) Reconcile() error {
 			return fmt.Errorf("scheduler: erro ao restaurar/salvar estado: %w", err)
 		}
 	}
-	if !expiryClean && hasExpired {
-		for _, e := range toUnblock {
-			if _, exists := s.blocks[e.domain]; exists {
-				s.armExpiryRetryLocked(e.domain)
-			}
+	for _, e := range toUnblock {
+		if _, exists := s.blocks[e.domain]; exists {
+			s.armExpiryRetryLocked(e.domain)
 		}
-
 	}
 	s.mu.Unlock()
 

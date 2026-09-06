@@ -38,10 +38,7 @@ class FocusAccessibilityService : AccessibilityService() {
     }
 
     private fun handleBlockedAppTrigger(packageName: String) {
-        // Redireciona o usuário para a Home para fechar a visualização do app bloqueado
-        performGlobalAction(GLOBAL_ACTION_HOME)
-
-        // Exibe a tela de Interceptor Overlay com exercício de respiração
+        // Exibe a tela de Interceptor cobrindo o aplicativo bloqueado com exercício de respiração
         com.focusguard.app.ui.interceptor.InterceptorActivity.launch(this, packageName)
     }
 

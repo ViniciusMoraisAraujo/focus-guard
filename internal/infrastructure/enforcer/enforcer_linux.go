@@ -146,7 +146,7 @@ func (e *linuxEnforcer) syncLocked(activeBlocks map[string][]string) error {
 	for domain := range activeBlocks {
 		d, err := sanitizeDomain(domain)
 		if err != nil {
-			return err
+			continue // ignore invalid/legacy domains in activeBlocks sync
 		}
 		if seen[d] {
 			continue
@@ -332,9 +332,9 @@ func (e *linuxEnforcer) addHostEntry(domain string) error {
 }
 
 func (e *linuxEnforcer) removeHostEntry(domain string) error {
-	domain, err := sanitizeDomain(domain)
+	sanitized, err := sanitizeDomain(domain)
 	if err != nil {
-		return err
+		sanitized = strings.TrimSpace(strings.NewReplacer("\r", "", "\n", "").Replace(domain))
 	}
 
 	lines, err := e.readHostsLines()
@@ -342,7 +342,7 @@ func (e *linuxEnforcer) removeHostEntry(domain string) error {
 		return err
 	}
 
-	marker := fmt.Sprintf("# FOCUSGUARD: %s", domain)
+	marker := fmt.Sprintf("# FOCUSGUARD: %s", sanitized)
 	var newLines []string
 	for _, line := range lines {
 		if !strings.Contains(line, marker) {

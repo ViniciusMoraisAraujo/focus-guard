@@ -205,6 +205,31 @@ func TestRemoveHostEntry_SanitizesWWW(t *testing.T) {
 	}
 }
 
+// TestRemoveHostEntry_LegacyOrInvalidDomain_DoesNotFail tests that unblocking
+// a legacy sentinel like *all-internet* or an invalid domain name does not return
+// an error and removes any residual marker matching the domain.
+func TestRemoveHostEntry_LegacyOrInvalidDomain_DoesNotFail(t *testing.T) {
+	tempDir := t.TempDir()
+	tempHostsPath := filepath.Join(tempDir, "hosts")
+	initialContent := "127.0.0.1 localhost\n127.0.0.1 *all-internet* # FOCUSGUARD: *all-internet*\n"
+	if err := os.WriteFile(tempHostsPath, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+	enf := &linuxEnforcer{hostsPath: tempHostsPath}
+
+	if err := enf.removeHostEntry("*all-internet*"); err != nil {
+		t.Fatalf("expected removeHostEntry to succeed for legacy sentinel, got: %v", err)
+	}
+
+	data, err := os.ReadFile(tempHostsPath)
+	if err != nil {
+		t.Fatalf("read hosts: %v", err)
+	}
+	if strings.Contains(string(data), "*all-internet*") {
+		t.Errorf("expected *all-internet* marker removed, got:\n%s", data)
+	}
+}
+
 func TestHostsFileOperations(t *testing.T) {
 	tempDir := t.TempDir()
 	tempHostsPath := filepath.Join(tempDir, "hosts")

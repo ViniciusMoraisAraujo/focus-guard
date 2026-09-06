@@ -15,10 +15,10 @@ WARN=0
 SKIP=0
 NOTES=()
 
-pass() { echo -e "  \033[1;32m✔\033[0m $*"; ((PASS++)); }
-fail() { echo -e "  \033[1;31m✘\033[0m $*"; ((FAIL++)); }
-warn() { echo -e "  \033[1;33m⚠\033[0m $*"; ((WARN++)); }
-skip() { echo -e "  \033[1;36m⊘\033[0m $* (skip)"; ((SKIP++)); }
+pass() { echo -e "  \033[1;32m✔\033[0m $*"; PASS=$((PASS + 1)); }
+fail() { echo -e "  \033[1;31m✘\033[0m $*"; FAIL=$((FAIL + 1)); }
+warn() { echo -e "  \033[1;33m⚠\033[0m $*"; WARN=$((WARN + 1)); }
+skip() { echo -e "  \033[1;36m⊘\033[0m $* (skip)"; SKIP=$((SKIP + 1)); }
 note() { NOTES+=("$*"); }
 
 echo "============================================"

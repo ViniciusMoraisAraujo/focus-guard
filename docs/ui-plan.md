@@ -167,7 +167,6 @@ Transporte: JSON sobre HTTP, `Content-Type: application/json`, sempre
 | `ExpiresAt` / `StartedAt` | RFC3339 | `time.Time` do Go — `new Date(rfc3339)` no JS |
 | `duration` (input) | string Go | `"30m"`, `"4h"` — o parser é `time.ParseDuration` |
 | `total_focus` / `per_day[].duration` | ns | Stats do analytics (só sessões **concluídas** de pomodoro) |
-| modo pânico | domínio sentinela | `domain === "*all-internet*"` identifica o block-all |
 | erros | `success: false` + `message` | A UI deve SEMPRE tratar `success:false` e exibir `message` |
 | daemon offline | HTTP 503 | A UI trata como estado "daemon desligado" (banner) |
 
@@ -231,11 +230,6 @@ focusguard-ui/                 # frontend React + Vite + TS
 - Modo categoria (chips de presets com contagem de domínios) ou domínio livre.
 - Chips de duração (30m/1h/2h/4h/8h) + custom em minutos.
 - Toasts com a mensagem real do daemon; botão desabilitado durante a chamada.
-
-### 7.3 Modo pânico
-- Botão vermelho grande com confirmação explícita (modal).
-- Duração + allowlist opcional (textarea separado por vírgula).
-- Detecta pânico ativo (`*all-internet*`) e avisa.
 
 ### 7.4 Configurações
 - Meta diária (chips 2h/4h/6h/8h + custom) → `goal-set`.

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -88,6 +89,9 @@ func (s *Store) Load() (*State, error) {
 		if state.Blocks == nil {
 			state.Blocks = make(map[string]policy.Block)
 		}
+		if cleanLegacyState(&state) {
+			_ = s.Save(&state)
+		}
 		return &state, nil
 	}
 
@@ -97,6 +101,9 @@ func (s *Store) Load() (*State, error) {
 	// com o estado limpo. Sem essa ordem, qualquer chamador de Load() direto
 	// (ex.: boot do scheduler) tornaria a réplica inútil.
 	if st, ok := s.loadFromReplicaIfEnabled(); ok {
+		if cleanLegacyState(st) {
+			_ = s.Save(st)
+		}
 		return st, nil
 	}
 
@@ -230,4 +237,20 @@ func (s *Store) writeLocked(data []byte) error {
 	s.writeReplicaLocked(data)
 
 	return nil
+}
+
+// cleanLegacyState removes legacy sentinels (such as *all-internet* from the
+// removed block-all feature) or invalid wildcard domain keys from persisted blocks.
+func cleanLegacyState(state *State) bool {
+	if state == nil || state.Blocks == nil {
+		return false
+	}
+	modified := false
+	for domain := range state.Blocks {
+		if domain == "*all-internet*" || strings.Contains(domain, "*") {
+			delete(state.Blocks, domain)
+			modified = true
+		}
+	}
+	return modified
 }

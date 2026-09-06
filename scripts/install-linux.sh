@@ -340,6 +340,14 @@ do_install() {
 
 do_uninstall() {
   require_root
+  echo "[FocusGuard] Desinstalando CA e políticas de navegadores..."
+  if [[ -x "${INSTALL_DIR}/focusguard" ]]; then
+    "${INSTALL_DIR}/focusguard" ca-uninstall 2>/dev/null || true
+  fi
+  rm -f /etc/brave/policies/managed/focusguard-ca.json \
+        /etc/chromium/policies/managed/focusguard-ca.json \
+        /etc/opt/chrome/policies/managed/focusguard-ca.json \
+        /etc/opt/edge/policies/managed/focusguard-ca.json 2>/dev/null || true
   echo "[FocusGuard] Parando e desabilitando serviço..."
   systemctl stop "${SERVICE_NAME}" 2>/dev/null || true
   systemctl disable "${SERVICE_NAME}" 2>/dev/null || true

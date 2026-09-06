@@ -62,6 +62,7 @@ import com.focusguard.app.ui.theme.SurfaceVariantDark
 import com.focusguard.app.ui.theme.TextMuted
 import com.focusguard.app.ui.theme.TextPrimary
 import com.focusguard.app.ui.theme.TextSecondary
+import androidx.activity.compose.BackHandler
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 
@@ -69,6 +70,10 @@ import kotlinx.coroutines.isActive
 fun PomodoroScreen(
     onBack: () -> Unit
 ) {
+    BackHandler {
+        onBack()
+    }
+
     val context = LocalContext.current
     var pomodoroState by remember {
         mutableStateOf(FocusGuardManager.pomodoroEngine.getState())

@@ -1347,8 +1347,6 @@ func (f *fakeDaemonEnforcer) Sync(_ map[string][]string) error {
 }
 func (f *fakeDaemonEnforcer) BlockDoH() error           { return nil }
 func (f *fakeDaemonEnforcer) UnblockDoH() error         { return nil }
-func (f *fakeDaemonEnforcer) BlockAll(_ []string) error { return nil }
-func (f *fakeDaemonEnforcer) UnblockAll() error         { return nil }
 func (f *fakeDaemonEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }

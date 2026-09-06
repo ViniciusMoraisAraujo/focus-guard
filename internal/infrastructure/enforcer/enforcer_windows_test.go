@@ -129,6 +129,23 @@ func TestRemoveHostEntry_NoOpWhenDomainNotPresent(t *testing.T) {
 	}
 }
 
+func TestRemoveHostEntry_LegacyOrInvalidDomain_DoesNotFail(t *testing.T) {
+	e := newTestEnforcer(t)
+	initialContent := "127.0.0.1 localhost\n127.0.0.1 *all-internet* # FOCUSGUARD: *all-internet*\n"
+	if err := os.WriteFile(e.hostsPath, []byte(initialContent), 0644); err != nil {
+		t.Fatalf("seed hosts: %v", err)
+	}
+
+	if err := e.removeHostEntry("*all-internet*"); err != nil {
+		t.Fatalf("expected removeHostEntry to succeed for legacy sentinel, got: %v", err)
+	}
+
+	after := readRawHosts(t, e.hostsPath)
+	if strings.Contains(after, "*all-internet*") {
+		t.Errorf("expected *all-internet* marker removed, got:\n%s", after)
+	}
+}
+
 func TestParseFocusGuardRuleNames(t *testing.T) {
 	output := `Regra:
     Nome da regra:    FocusGuard_1.1.1.1

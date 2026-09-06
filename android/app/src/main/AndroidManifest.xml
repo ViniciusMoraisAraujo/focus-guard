@@ -43,7 +43,9 @@
         <activity
             android:name=".ui.interceptor.InterceptorActivity"
             android:exported="false"
-            android:launchMode="singleTop"
+            android:launchMode="singleTask"
+            android:taskAffinity="com.focusguard.app.interceptor"
+            android:excludeFromRecents="true"
             android:theme="@style/Theme.FocusGuard" />
 
         <!-- Serviço em primeiro plano para contagem e integridade da sessão -->

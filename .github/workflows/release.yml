@@ -13,7 +13,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -57,7 +57,7 @@ jobs:
     needs: goreleaser
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
@@ -126,17 +126,17 @@ jobs:
     needs: goreleaser
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Set up JDK 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           java-version: '21'
           distribution: 'temurin'
           cache: gradle
 
       - name: Setup Android SDK
-        uses: android-actions/setup-android@v3
+        uses: android-actions/setup-android@v4
 
       - name: Configure Android SDK Path
         run: echo "sdk.dir=$ANDROID_HOME" > android/local.properties
@@ -150,13 +150,18 @@ jobs:
           ./gradlew testDebugUnitTest --stacktrace
 
       - name: Configure Signing Keystore (optional)
-        if: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        if: env.KEYSTORE_BASE64 != ''
         run: |
-          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 --decode > android/app/release.jks
-          echo "ANDROID_KEYSTORE_FILE=release.jks" >> $GITHUB_ENV
-          echo "ANDROID_KEYSTORE_PASSWORD=${{ secrets.ANDROID_KEYSTORE_PASSWORD }}" >> $GITHUB_ENV
-          echo "ANDROID_KEY_ALIAS=${{ secrets.ANDROID_KEY_ALIAS }}" >> $GITHUB_ENV
-          echo "ANDROID_KEY_PASSWORD=${{ secrets.ANDROID_KEY_PASSWORD }}" >> $GITHUB_ENV
+          echo "$KEYSTORE_BASE64" | base64 --decode > android/app/release.jks
+          echo "ANDROID_KEYSTORE_FILE=release.jks" >> "$GITHUB_ENV"
+          echo "ANDROID_KEYSTORE_PASSWORD=$KEYSTORE_PASSWORD" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_ALIAS=$KEY_ALIAS" >> "$GITHUB_ENV"
+          echo "ANDROID_KEY_PASSWORD=$KEY_PASSWORD" >> "$GITHUB_ENV"
 
       - name: Build Android APKs
         env:
@@ -177,7 +182,7 @@ jobs:
           ls -la build-apks/
 
       - name: Upload APK artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: focusguard-apks
           path: build-apks/*.apk
@@ -208,13 +213,31 @@ jobs:
   #
   # Se os secrets não estiverem configurados, o job é pulado (signing
   # é opcional nas primeiras releases enquanto o certificado não é obtido).
+  check-windows-signing:
+    name: Check Windows Signing Certificate
+    runs-on: ubuntu-latest
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      - name: Verify certificate secret presence
+        id: check
+        env:
+          WIN_CERT: ${{ secrets.WINDOWS_SIGN_CERTIFICATE }}
+        run: |
+          if [ -n "$WIN_CERT" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::WINDOWS_SIGN_CERTIFICATE não configurado. Assinatura Authenticode será pulada."
+          fi
+
   sign-windows:
     runs-on: windows-latest
-    needs: [goreleaser, windows-msi]
-    if: ${{ secrets.WINDOWS_SIGN_CERTIFICATE != '' }}
+    needs: [goreleaser, windows-msi, check-windows-signing]
+    if: needs.check-windows-signing.outputs.enabled == 'true'
     steps:
       - name: Checkout (scripts)
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           sparse-checkout: scripts/sign-windows.ps1
           sparse-checkout-cone-mode: false

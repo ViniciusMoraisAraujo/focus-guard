@@ -26,6 +26,8 @@ type mockEnforcer struct {
 	syncCalls        int
 	blockDoHCalls    int
 	unblockDoHCalls  int
+	unblockErrDomain string
+	unblockErr       error
 }
 
 func newMockEnforcer() *mockEnforcer {
@@ -46,6 +48,9 @@ func (m *mockEnforcer) BlockDomain(domain string, ips []string) error {
 func (m *mockEnforcer) UnblockDomain(domain string, ips []string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if m.unblockErrDomain == domain && m.unblockErr != nil {
+		return m.unblockErr
+	}
 	m.unblockedDomains[domain] = ips
 	return nil
 }
@@ -464,6 +469,90 @@ func TestScheduler_Reconcile_CleansExpired(t *testing.T) {
 
 	if _, exists := state.Blocks["expired.com"]; exists {
 		t.Errorf("Expected expired.com to be removed from state after Reconcile")
+	}
+}
+
+func TestScheduler_Reconcile_LegacySentinelIgnoredOrCleaned(t *testing.T) {
+	sched, _, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			"*all-internet*": {
+				Domain:      "*all-internet*",
+				StartedAt:   now.Add(-48 * time.Hour),
+				ExpiresAt:   now.Add(-24 * time.Hour),
+				ResolvedIPs: nil,
+			},
+		},
+	}
+
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("Failed to prepare test state: %v", err)
+	}
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() failed: %v", err)
+	}
+
+	blocks, err := sched.ListBlocks()
+	if err != nil {
+		t.Fatalf("ListBlocks() failed: %v", err)
+	}
+	if len(blocks) != 0 {
+		t.Errorf("Expected 0 blocks after Reconcile with legacy sentinel, got %d: %+v", len(blocks), blocks)
+	}
+	if sched.HasActiveBlocks() {
+		t.Errorf("Expected HasActiveBlocks to be false")
+	}
+}
+
+func TestScheduler_Reconcile_IndividualUnblockFailuresDoNotBlockOthers(t *testing.T) {
+	sched, enf, st := setupTestScheduler(t)
+
+	now := time.Now().UTC().Round(time.Second)
+
+	initialState := &store.State{
+		Blocks: map[string]policy.Block{
+			"failing.com": {
+				Domain:      "failing.com",
+				StartedAt:   now.Add(-48 * time.Hour),
+				ExpiresAt:   now.Add(-24 * time.Hour),
+				ResolvedIPs: []string{"1.2.3.4"},
+			},
+			"succeeding.com": {
+				Domain:      "succeeding.com",
+				StartedAt:   now.Add(-48 * time.Hour),
+				ExpiresAt:   now.Add(-24 * time.Hour),
+				ResolvedIPs: []string{"5.6.7.8"},
+			},
+		},
+	}
+
+	if err := st.Save(initialState); err != nil {
+		t.Fatalf("Save test state: %v", err)
+	}
+
+	enf.mu.Lock()
+	enf.unblockErrDomain = "failing.com"
+	enf.unblockErr = errors.New("simulated unblock failure")
+	enf.mu.Unlock()
+
+	if err := sched.Reconcile(); err != nil {
+		t.Fatalf("Reconcile() failed: %v", err)
+	}
+
+	// succeeding.com must have been removed from RAM and disk
+	state, err := st.Load()
+	if err != nil {
+		t.Fatalf("Load state: %v", err)
+	}
+	if _, exists := state.Blocks["succeeding.com"]; exists {
+		t.Errorf("succeeding.com should have been removed from disk state")
+	}
+	if _, exists := state.Blocks["failing.com"]; !exists {
+		t.Errorf("failing.com should remain in disk state for retry")
 	}
 }
 
