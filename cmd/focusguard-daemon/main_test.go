@@ -1345,8 +1345,8 @@ func (f *fakeDaemonEnforcer) Sync(_ map[string][]string) error {
 	atomic.AddInt32(&f.syncCalls, 1)
 	return nil
 }
-func (f *fakeDaemonEnforcer) BlockDoH() error           { return nil }
-func (f *fakeDaemonEnforcer) UnblockDoH() error         { return nil }
+func (f *fakeDaemonEnforcer) BlockDoH() error   { return nil }
+func (f *fakeDaemonEnforcer) UnblockDoH() error { return nil }
 func (f *fakeDaemonEnforcer) Status() (enforcer.EnforcerStatus, error) {
 	return enforcer.EnforcerStatus{}, nil
 }

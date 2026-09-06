@@ -225,11 +225,11 @@ func (c *CA) removeFromStore(run StoreRunner) error {
 }
 
 // IsInStore detecta a CA no trust store do Linux e nos navegadores:
-// 1. A prova real do SO é a CÓPIA instalada em storeInstalledDir (o update-ca-certificates
-//    copia a âncora local para lá) com DER idêntico.
-// 2. Os navegadores baseados em Chromium (Brave, Chrome, Chromium, Edge) devem possuir
-//    a política enterprise CACertificates configurada com o DER da CA.
-// 3. O Firefox deve possuir a política corporativa Certificates.Install configurada.
+//  1. A prova real do SO é a CÓPIA instalada em storeInstalledDir (o update-ca-certificates
+//     copia a âncora local para lá) com DER idêntico.
+//  2. Os navegadores baseados em Chromium (Brave, Chrome, Chromium, Edge) devem possuir
+//     a política enterprise CACertificates configurada com o DER da CA.
+//  3. O Firefox deve possuir a política corporativa Certificates.Install configurada.
 func (c *CA) IsInStore(run StoreRunner) (bool, error) {
 	// 1. Verifica no sistema operacional (cópia instalada pelo update-ca-certificates)
 	installed := filepath.Join(storeInstalledDir, storeInstalledName)
