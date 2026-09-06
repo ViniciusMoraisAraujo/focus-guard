@@ -333,7 +333,7 @@ go test ./... -count=1 -timeout=60s   # make test
 │   └── gradle/                   # Version Catalog (libs.versions.toml) + Gradle Wrapper 8.7
 ├── .goreleaser.yaml            # release pipeline
 ├── .github/workflows/
-│   ├── release.yml             # CI: tag v* → GoReleaser + MSI (desktop/server)
+│   ├── release.yml             # CI: tag v* → GoReleaser + Windows MSI + Android APK
 │   └── test.yml                # CI: build+vet, -race (Linux), socket chown as root
 ├── .gitattributes              # *.sh → eol=lf
 ├── packaging/                  # build-time assets

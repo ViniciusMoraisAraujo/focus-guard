@@ -7,6 +7,23 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
+## [0.23.0] - 2026-09-05
+
+### 📱 Aplicativo Nativo Android & Modos de Foco
+
+- **Lançamento do FocusGuard Android** —
+  aplicativo móvel nativo desenvolvido em Kotlin, Jetpack Compose e Material 3, operando em espaço de usuário 100% sem root (`zero-root`).
+- **Bloqueio de Sites via VpnService Local** —
+  interceptação local de tráfego DNS na porta 53 com sinkhole (`0.0.0.0`) para domínios proibidos, preservando privacidade sem proxy ou latência externa.
+- **Bloqueio de Apps e Tela de Interceptor via Acessibilidade** —
+  detecção instantânea em primeiro plano (`AccessibilityService`) e sobreposição visual (`TYPE_APPLICATION_OVERLAY`) com contagem regressiva, exercício de respiração guiada (*Box Breathing* 4-4-4-4) e salvaguardas anti-burla.
+- **Modos de Foco Pomodoro & Timer Rápido** —
+  motor de estados determinístico Pomodoro (`PomodoroEngine`: Foco ➔ Descanso Curto ➔ Descanso Longo) com bloqueio estrito contra desistência/interrupção durante o trabalho e diálogo modal para temporizadores rápidos personalizados.
+- **Presets e Gerenciador de Aplicativos** —
+  gerenciamento visual com busca reativa e categorias prontas (*Redes Sociais*, *Vídeos & Streaming*).
+- **Esteira de Release Oficial Multiplataforma** —
+  inclusão do job `android-release` no workflow `.github/workflows/release.yml` para compilação automatizada, validação de testes unitários e publicação dos APKs de release (`focusguard-<version>.apk`) e debug diretamente anexados a cada tag `v*` de release no GitHub.
+
 ## [0.22.0] - 2026-08-31
 
 ### 🧹 Remoção e Simplificação de Arquitetura
