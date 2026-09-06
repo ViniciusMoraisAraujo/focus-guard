@@ -7,6 +7,13 @@ e este projeto adere ao [Versionamento Semântico](https://semver.org/lang/pt-BR
 
 ## [Não publicado]
 
+## [0.23.1] - 2026-09-06
+
+### 🐛 Correções & CI/CD
+
+- **Correção da Assinatura e Publicação de APKs Android no CI** —
+  resolvido erro de validação de keystore (`validateSigningRelease`) no Android Gradle Plugin utilizando fallback automático para a assinatura de depuração na ausência de certificado de produção, e corrigida sintaxe do gatilho condicional da keystore no workflow de release (`release.yml`).
+
 ## [0.23.0] - 2026-09-06
 
 ### 🛡️ Interceptor HTTPS Linux & Automação de CA para Navegadores

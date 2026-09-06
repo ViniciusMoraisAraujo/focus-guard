@@ -24,6 +24,9 @@ jobs:
       - name: Session-log structure check
         run: bash scripts/check-session-log.sh
 
+      - name: Rules sync check (GEMINI.md vs AGENT.md)
+        run: make sync-rules-check
+
   # Etapa 0/1 do docs/linux-validation-plan.md: a suíte COMPLETA no Linux —
   # roda tudo (go test ./...), incluindo cmd/focusguard-daemon de forma hermética
   # e desprivilegiada (setupDaemonTestEnv em t.TempDir()).

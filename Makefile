@@ -92,6 +92,20 @@ contract-check:
 session-check:
 	bash scripts/check-session-log.sh --today
 
+# sync-rules espelha os arquivos GEMINI.md -> AGENT.md na raiz e subdiretórios
+sync-rules:
+	@for dir in . android cmd focusguard-ui internal scripts; do \
+		cp "$$dir/GEMINI.md" "$$dir/AGENT.md"; \
+	done
+	@echo "✔ Arquivos GEMINI.md sincronizados para AGENT.md"
+
+# sync-rules-check valida se os arquivos AGENT.md e GEMINI.md estão 100% idênticos
+sync-rules-check:
+	@for dir in . android cmd focusguard-ui internal scripts; do \
+		diff -u "$$dir/GEMINI.md" "$$dir/AGENT.md" || { echo "✖ Erro: $$dir/AGENT.md diverge de $$dir/GEMINI.md. Execute 'make sync-rules'."; exit 1; }; \
+	done
+	@echo "✔ Todos os arquivos GEMINI.md e AGENT.md estão em sincronia"
+
 # msi gera o instalador do Windows (focusguard-<versão>-amd64.msi)
 # via go-msi + WiX Toolset. Requer um ambiente Windows (o go-msi chama o WiX
 # via cmd.exe) com go-msi e WiX 3.10+ instalados — ver scripts/build-msi.sh.
@@ -161,6 +175,8 @@ help:
 	@echo "  make android-test Executa testes unitarios do app Android"
 	@echo "  make android-apk  Compila os APKs Debug e Release do Android"
 	@echo "  make session-check  Falha se o resumo da sessão de hoje não existir"
+	@echo "  make sync-rules  Sincroniza GEMINI.md para AGENT.md"
+	@echo "  make sync-rules-check  Verifica paridade entre GEMINI.md e AGENT.md"
 	@echo "  make clean       Remove artefatos de build"
 	@echo "  make fmt         Formata codigo fonte"
 	@echo "  make tidy        go mod tidy"
