@@ -20,9 +20,10 @@ class FocusAccessibilityService : AccessibilityService() {
         val packageName = event.packageName?.toString() ?: return
         val className = event.className?.toString() ?: ""
         val isSessionActive = FocusGuardManager.checkStatus()
+        val isTimedBlocked = FocusGuardManager.timedBlockManager.isPackageBlocked(packageName, FocusGuardManager.presetManager)
 
         // 1. Verificação de aplicativo bloqueado
-        if (FocusGuardManager.appPolicy.shouldBlock(packageName, isSessionActive)) {
+        if (FocusGuardManager.appPolicy.shouldBlock(packageName, isSessionActive, isTimedBlocked)) {
             handleBlockedAppTrigger(packageName)
             return
         }

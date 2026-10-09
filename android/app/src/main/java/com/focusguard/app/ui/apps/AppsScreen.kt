@@ -36,6 +36,7 @@ import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
 import androidx.compose.material3.Switch
 import androidx.compose.material3.SwitchDefaults
 import androidx.compose.material3.Text
@@ -393,14 +394,33 @@ fun AppRow(
 
             Spacer(modifier = Modifier.width(14.dp))
 
+            val isTimedBlocked = FocusGuardManager.timedBlockManager.isPackageBlocked(app.packageName, FocusGuardManager.presetManager)
+
             Column(modifier = Modifier.weight(1f)) {
-                Text(
-                    text = app.appName,
-                    style = MaterialTheme.typography.titleMedium,
-                    fontWeight = FontWeight.Medium,
-                    color = TextPrimary,
-                    fontSize = 15.sp
-                )
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Text(
+                        text = app.appName,
+                        style = MaterialTheme.typography.titleMedium,
+                        fontWeight = FontWeight.Medium,
+                        color = TextPrimary,
+                        fontSize = 15.sp
+                    )
+                    if (isTimedBlocked) {
+                        Spacer(modifier = Modifier.width(6.dp))
+                        Surface(
+                            color = CyanAccent.copy(alpha = 0.15f),
+                            shape = RoundedCornerShape(4.dp)
+                        ) {
+                            Text(
+                                text = "⏱️ Ativo",
+                                color = CyanAccent,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold,
+                                modifier = Modifier.padding(horizontal = 5.dp, vertical = 1.dp)
+                            )
+                        }
+                    }
+                }
                 Text(
                     text = app.packageName,
                     style = MaterialTheme.typography.labelSmall,

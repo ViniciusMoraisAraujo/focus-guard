@@ -63,14 +63,14 @@ fun InterceptorScreen(
 ) {
     val breathingCycle = remember { BreathingCycle(phaseDurationSec = 4) }
     var elapsedMs by remember { mutableLongStateOf(0L) }
-    var remainingMs by remember { mutableLongStateOf(FocusGuardManager.session.remainingTimeMs()) }
+    var remainingMs by remember { mutableLongStateOf(FocusGuardManager.getRemainingTime(blockedPackage)) }
 
     // Loop para atualizar respiração (60fps suave) e contador de tempo restante
     LaunchedEffect(Unit) {
         val startTime = System.currentTimeMillis()
         while (isActive) {
             elapsedMs = System.currentTimeMillis() - startTime
-            remainingMs = FocusGuardManager.session.remainingTimeMs()
+            remainingMs = FocusGuardManager.getRemainingTime(blockedPackage)
             delay(50L)
         }
     }

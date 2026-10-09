@@ -11,8 +11,10 @@ import kotlinx.coroutines.flow.asStateFlow
 object FocusGuardManager {
     val session: FocusSession = FocusSession()
 
+    val timedBlockManager: TimedBlockManager = TimedBlockManager()
+
     val presetManager: PresetManager = PresetManager(
-        isSessionActiveProvider = { session.isActive() }
+        isSessionActiveProvider = { checkStatus() }
     )
 
     val appPolicy: AppBlockPolicy = AppBlockPolicy(
@@ -54,8 +56,34 @@ object FocusGuardManager {
         _isFocusActive.value = true
     }
 
+    fun blockApp(packageName: String, displayName: String, durationMs: Long): TimedBlock {
+        val block = timedBlockManager.blockApp(packageName, displayName, durationMs)
+        _isFocusActive.value = true
+        return block
+    }
+
+    fun blockPreset(presetId: String, displayName: String, durationMs: Long): TimedBlock {
+        val block = timedBlockManager.blockPreset(presetId, displayName, durationMs)
+        _isFocusActive.value = true
+        return block
+    }
+
+    fun getRemainingTime(packageName: String): Long {
+        val timedRemaining = timedBlockManager.getRemainingTimeForPackage(packageName, presetManager)
+        if (timedRemaining > 0L) {
+            return timedRemaining
+        }
+        return session.remainingTimeMs()
+    }
+
+    fun maxRemainingTimeMs(): Long {
+        val sessionRemaining = session.remainingTimeMs()
+        val timedRemaining = timedBlockManager.maxRemainingTimeMs()
+        return maxOf(sessionRemaining, timedRemaining)
+    }
+
     fun checkStatus(): Boolean {
-        val active = session.isActive() || pomodoroEngine.isBlockingActive()
+        val active = session.isActive() || pomodoroEngine.isBlockingActive() || timedBlockManager.hasActiveBlocks()
         _isFocusActive.value = active
         return active
     }

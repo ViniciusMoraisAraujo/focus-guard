@@ -20,6 +20,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.filled.Block
 import androidx.compose.material.icons.filled.HourglassEmpty
+import androidx.compose.material.icons.filled.Lock
 import androidx.compose.material.icons.filled.Security
 import androidx.compose.material.icons.filled.Timer
 import androidx.compose.material3.Button
@@ -64,6 +65,7 @@ import com.focusguard.app.domain.PermissionManager
 import com.focusguard.app.ui.onboarding.OnboardingScreen
 
 import com.focusguard.app.ui.apps.AppsScreen
+import com.focusguard.app.ui.block.BlockScreen
 import com.focusguard.app.ui.components.QuickTimerDialog
 import com.focusguard.app.ui.pomodoro.PomodoroScreen
 
@@ -84,9 +86,11 @@ class MainActivity : ComponentActivity() {
                     when (currentScreen) {
                         "apps" -> AppsScreen(onBack = { currentScreen = "main" })
                         "pomodoro" -> PomodoroScreen(onBack = { currentScreen = "main" })
+                        "block" -> BlockScreen(onBack = { currentScreen = "main" })
                         else -> FocusGuardMainScreen(
                             onOpenApps = { currentScreen = "apps" },
-                            onOpenPomodoro = { currentScreen = "pomodoro" }
+                            onOpenPomodoro = { currentScreen = "pomodoro" },
+                            onOpenBlock = { currentScreen = "block" }
                         )
                     }
                 }
@@ -98,9 +102,11 @@ class MainActivity : ComponentActivity() {
 @Composable
 fun FocusGuardMainScreen(
     onOpenApps: () -> Unit = {},
-    onOpenPomodoro: () -> Unit = {}
+    onOpenPomodoro: () -> Unit = {},
+    onOpenBlock: () -> Unit = {}
 ) {
     val isFocusActive by FocusGuardManager.isFocusActive.collectAsState()
+    val activeBlocks by FocusGuardManager.timedBlockManager.blocksFlow.collectAsState()
     val context = LocalContext.current
     var showQuickTimerDialog by remember { mutableStateOf(false) }
 
@@ -181,7 +187,7 @@ fun FocusGuardMainScreen(
                         contentAlignment = Alignment.Center
                     ) {
                         Icon(
-                            imageVector = Icons.Default.HourglassEmpty,
+                            imageVector = if (activeBlocks.isNotEmpty()) Icons.Default.Lock else Icons.Default.HourglassEmpty,
                             contentDescription = "Status",
                             tint = EmeraldPrimary,
                             modifier = Modifier.size(36.dp)
@@ -189,15 +195,29 @@ fun FocusGuardMainScreen(
                     }
                     Spacer(modifier = Modifier.height(16.dp))
                     Text(
-                        text = if (isFocusActive) "Sessão de Foco Ativa" else "Pronto para Focar",
+                        text = if (activeBlocks.isNotEmpty()) {
+                            "${activeBlocks.size} Bloqueio(s) Ativo(s)"
+                        } else if (isFocusActive) {
+                            "Sessão de Foco Ativa"
+                        } else {
+                            "Pronto para Focar"
+                        },
                         style = MaterialTheme.typography.headlineMedium,
                         fontSize = 20.sp,
                         fontWeight = FontWeight.SemiBold,
-                        color = if (isFocusActive) EmeraldPrimary else TextPrimary
+                        color = if (isFocusActive || activeBlocks.isNotEmpty()) EmeraldPrimary else TextPrimary
                     )
                     Spacer(modifier = Modifier.height(6.dp))
                     Text(
-                        text = if (isFocusActive) "Distrações e aplicativos proibidos estão bloqueados" else "Nenhuma sessão ativa no momento",
+                        text = if (activeBlocks.isNotEmpty()) {
+                            val first = activeBlocks.first()
+                            if (activeBlocks.size == 1) "${first.displayName} bloqueado por tempo"
+                            else "${first.displayName} e mais ${activeBlocks.size - 1} bloqueados"
+                        } else if (isFocusActive) {
+                            "Distrações e aplicativos proibidos estão bloqueados"
+                        } else {
+                            "Nenhuma restrição ativa no momento"
+                        },
                         style = MaterialTheme.typography.bodyMedium,
                         color = TextMuted
                     )
@@ -223,10 +243,20 @@ fun FocusGuardMainScreen(
 
             // Mode Cards
             ModeCard(
+                title = "Bloquear",
+                description = "Bloqueie apps ou categorias por tempo (30m, 1h, 2h...)",
+                icon = Icons.Default.Lock,
+                accentColor = EmeraldPrimary,
+                onClick = onOpenBlock
+            )
+
+            Spacer(modifier = Modifier.height(12.dp))
+
+            ModeCard(
                 title = "Pomodoro",
                 description = "25m de foco ininterrupto + 5m de descanso",
                 icon = Icons.Default.Timer,
-                accentColor = EmeraldPrimary,
+                accentColor = CyanAccent,
                 onClick = onOpenPomodoro
             )
 
@@ -236,7 +266,7 @@ fun FocusGuardMainScreen(
                 title = "Timer Rápido",
                 description = "Defina uma duração personalizada para o bloqueio",
                 icon = Icons.Default.HourglassEmpty,
-                accentColor = CyanAccent,
+                accentColor = TextSecondary,
                 onClick = { showQuickTimerDialog = true }
             )
 
@@ -246,7 +276,7 @@ fun FocusGuardMainScreen(
                 title = "Apps & Sites Bloqueados",
                 description = "Gerenciar lista de redes sociais e distrações",
                 icon = Icons.Default.Block,
-                accentColor = TextSecondary,
+                accentColor = TextMuted,
                 onClick = onOpenApps
             )
 

@@ -101,4 +101,26 @@ class AppBlockPolicyTest {
         policy.removeBlockedPackage("com.reddit.frontpage")
         assertFalse(policy.shouldBlock("com.reddit.frontpage", isSessionActive = true))
     }
+
+    @Test
+    fun `blocks app when isTimedBlocked is true even if session is inactive`() {
+        val shouldBlock = policy.shouldBlock(
+            packageName = "com.instagram.android",
+            isSessionActive = false,
+            isTimedBlocked = true
+        )
+        assertTrue("App with active timed block should be blocked even when global session is inactive", shouldBlock)
+    }
+
+    @Test
+    fun `never blocks essential whitelist apps even if isTimedBlocked is true`() {
+        assertFalse(
+            "Phone Dialer should never be blocked even if timed blocked",
+            policy.shouldBlock("com.google.android.dialer", isSessionActive = false, isTimedBlocked = true)
+        )
+        assertFalse(
+            "FocusGuard app should never be blocked even if timed blocked",
+            policy.shouldBlock("com.focusguard.app", isSessionActive = false, isTimedBlocked = true)
+        )
+    }
 }

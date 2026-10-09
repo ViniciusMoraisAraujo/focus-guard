@@ -35,12 +35,24 @@ class FocusForegroundService : Service() {
 
         const val ACTION_START = "com.focusguard.app.action.START_FOCUS"
         const val ACTION_STOP = "com.focusguard.app.action.STOP_FOCUS"
+        const val ACTION_SYNC_BLOCKS = "com.focusguard.app.action.SYNC_BLOCKS"
         const val EXTRA_DURATION_MS = "extra_duration_ms"
 
         fun start(context: Context, durationMs: Long) {
             val intent = Intent(context, FocusForegroundService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_DURATION_MS, durationMs)
+            }
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                context.startForegroundService(intent)
+            } else {
+                context.startService(intent)
+            }
+        }
+
+        fun sync(context: Context) {
+            val intent = Intent(context, FocusForegroundService::class.java).apply {
+                action = ACTION_SYNC_BLOCKS
             }
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(intent)
@@ -70,8 +82,18 @@ class FocusForegroundService : Service() {
                 startForeground(NOTIFICATION_ID, buildNotification("Sessão iniciada"))
                 startPeriodicUpdates()
             }
+            ACTION_SYNC_BLOCKS -> {
+                val remainingMs = FocusGuardManager.maxRemainingTimeMs()
+                if (remainingMs > 0L) {
+                    startForeground(NOTIFICATION_ID, buildNotification("Bloqueio ativo"))
+                    startPeriodicUpdates()
+                } else {
+                    stopForeground(STOP_FOREGROUND_REMOVE)
+                    stopSelf()
+                }
+            }
             ACTION_STOP -> {
-                if (FocusGuardManager.session.canCancel()) {
+                if (FocusGuardManager.session.canCancel() && !FocusGuardManager.timedBlockManager.hasActiveBlocks()) {
                     FocusGuardManager.session.stop()
                     stopPeriodicUpdates()
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -86,7 +108,7 @@ class FocusForegroundService : Service() {
         updateJob?.cancel()
         updateJob = serviceScope.launch {
             while (isActive) {
-                val remainingMs = FocusGuardManager.session.remainingTimeMs()
+                val remainingMs = FocusGuardManager.maxRemainingTimeMs()
                 if (remainingMs <= 0L) {
                     FocusGuardManager.checkStatus()
                     stopForeground(STOP_FOREGROUND_REMOVE)
@@ -94,7 +116,17 @@ class FocusForegroundService : Service() {
                     break
                 }
                 val notificationManager = getSystemService(NotificationManager::class.java)
-                notificationManager?.notify(NOTIFICATION_ID, buildNotification(formatRemaining(remainingMs)))
+                val activeBlocks = FocusGuardManager.timedBlockManager.getActiveBlocks()
+                val statusText = if (activeBlocks.isNotEmpty()) {
+                    if (activeBlocks.size == 1) {
+                        "${activeBlocks[0].displayName}: ${formatRemaining(remainingMs)}"
+                    } else {
+                        "${activeBlocks.size} apps bloqueados: ${formatRemaining(remainingMs)}"
+                    }
+                } else {
+                    formatRemaining(remainingMs)
+                }
+                notificationManager?.notify(NOTIFICATION_ID, buildNotification(statusText))
                 delay(1000L)
             }
         }

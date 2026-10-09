@@ -22,11 +22,18 @@ class AppBlockPolicy(
     /**
      * Avalia se um pacote em primeiro plano deve ser interceptado e bloqueado.
      */
-    fun shouldBlock(packageName: String, isSessionActive: Boolean): Boolean {
-        if (!isSessionActive) {
+    fun shouldBlock(
+        packageName: String,
+        isSessionActive: Boolean,
+        isTimedBlocked: Boolean = false
+    ): Boolean {
+        if (essentialWhitelist.contains(packageName)) {
             return false
         }
-        if (essentialWhitelist.contains(packageName)) {
+        if (isTimedBlocked) {
+            return true
+        }
+        if (!isSessionActive) {
             return false
         }
         return blocked.contains(packageName)
